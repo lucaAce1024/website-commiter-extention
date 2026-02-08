@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>导航站提交助手 - 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="title">
+        <span class="icon">📋</span>
+        导航站提交助手
+      </h1>
+      <p class="subtitle">管理您的站点和导航站提交配置</p>
+    </header>
+
+    <!-- Tabs Navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="sites">
+        <span class="tab-icon">🌐</span>
+        站点管理
+      </button>
+      <button class="tab" data-tab="navSites">
+        <span class="tab-icon">📚</span>
+        导航站列表
+      </button>
+      <button class="tab" data-tab="mappings">
+        <span class="tab-icon">🔍</span>
+        识别与填充
+      </button>
+      <button class="tab" data-tab="backup">
+        <span class="tab-icon">💾</span>
+        备份与恢复
+      </button>
+      <button class="tab" data-tab="settings">
+        <span class="tab-icon">⚙️</span>
+        设置
+      </button>
+    </nav>
+
+    <!-- Tab Contents -->
+    <main class="content">
+      <!-- Sites Tab -->
+      <section id="tab-sites" class="tab-content active">
+        <div class="content-header">
+          <h2>站点管理</h2>
+          <button class="btn btn-primary" id="addSiteBtn">
+            <span class="btn-icon">➕</span>
+            添加站点
+          </button>
+        </div>
+
+        <div id="sitesList" class="items-list">
+          <!-- Sites will be rendered here -->
+        </div>
+
+        <div id="noSitesHint" class="empty-state hidden">
+          <div class="empty-icon">🌐</div>
+          <p>还没有添加任何站点</p>
+          <button class="btn btn-secondary" id="addFirstSiteBtn">添加第一个站点</button>
+        </div>
+      </section>
+
+      <!-- Navigation Sites Tab -->
+      <section id="tab-navSites" class="tab-content">
+        <div class="content-header">
+          <h2>导航站列表</h2>
+          <div class="header-actions">
+            <button class="btn btn-secondary" id="importNavSitesBtn">
+              <span class="btn-icon">📥</span>
+              导入
+            </button>
+            <button class="btn btn-primary" id="addNavSiteBtn">
+              <span class="btn-icon">➕</span>
+              添加导航站
+            </button>
+          </div>
+        </div>
+
+        <div id="navSitesList" class="items-list">
+          <!-- Nav sites will be rendered here -->
+        </div>
+
+        <div id="noNavSitesHint" class="empty-state hidden">
+          <div class="empty-icon">📚</div>
+          <p>还没有添加任何导航站</p>
+          <button class="btn btn-secondary" id="addFirstNavSiteBtn">添加第一个导航站</button>
+        </div>
+      </section>
+
+      <!-- Mappings Tab -->
+      <section id="tab-mappings" class="tab-content">
+        <div class="content-header">
+          <h2>识别与填充</h2>
+          <button class="btn btn-secondary" id="clearAllMappingsBtn">
+            <span class="btn-icon">🗑️</span>
+            清除所有缓存
+          </button>
+        </div>
+
+        <div class="info-box">
+          <p>这里显示各导航站的字段识别缓存。当自动识别不准确时，您可以手动调整映射。</p>
+        </div>
+
+        <div id="mappingsList" class="mappings-list">
+          <!-- Mappings will be rendered here -->
+        </div>
+
+        <div id="noMappingsHint" class="empty-state hidden">
+          <div class="empty-icon">🔍</div>
+          <p>还没有任何缓存的识别结果</p>
+        </div>
+      </section>
+
+      <!-- Backup Tab -->
+      <section id="tab-backup" class="tab-content">
+        <div class="content-header">
+          <h2>备份与恢复</h2>
+        </div>
+
+        <div class="backup-section">
+          <h3>创建备份</h3>
+          <p class="section-desc">导出完整的配置备份，包括所有站点、导航站、识别缓存和提交记录。</p>
+          <div class="backup-options">
+            <label class="checkbox-label">
+              <input type="checkbox" id="includeRecords" checked>
+              包含提交记录
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="includeMappings" checked>
+              包含识别缓存
+            </label>
+          </div>
+          <button class="btn btn-primary" id="createBackupBtn">
+            <span class="btn-icon">💾</span>
+            创建备份
+          </button>
+        </div>
+
+        <div class="backup-section">
+          <h3>从备份恢复</h3>
+          <p class="section-desc">选择之前导出的备份文件来恢复配置。</p>
+          <div class="restore-options">
+            <select id="restoreMode" class="select">
+              <option value="replace">完全替换（覆盖现有数据）</option>
+              <option value="merge">合并（保留现有数据，合并冲突）</option>
+            </select>
+          </div>
+          <input type="file" id="backupFileInput" accept=".json" class="file-input">
+          <button class="btn btn-primary" id="restoreBackupBtn" disabled>
+            <span class="btn-icon">📥</span>
+            恢复备份
+          </button>
+        </div>
+
+        <div class="backup-section">
+          <h3>当前存储概况</h3>
+          <div id="backupSummary" class="backup-summary">
+            <div class="summary-item">
+              <span class="summary-label">站点数量:</span>
+              <span class="summary-value" id="summarySites">-</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">导航站数量:</span>
+              <span class="summary-value" id="summaryNavSites">-</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">提交记录:</span>
+              <span class="summary-value" id="summaryRecords">-</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">识别缓存:</span>
+              <span class="summary-value" id="summaryMappings">-</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Tab -->
+      <section id="tab-settings" class="tab-content">
+        <div class="content-header">
+          <h2>设置</h2>
+        </div>
+
+        <div class="settings-section">
+          <h3>LLM 配置（可选）</h3>
+          <p class="section-desc">配置 LLM API 可以提高表单字段识别准确率。不配置时将使用关键词匹配。</p>
+
+          <div class="form-group">
+            <label for="llmEnabled" class="checkbox-label">
+              <input type="checkbox" id="llmEnabled">
+              启用 LLM 辅助识别
+            </label>
+          </div>
+
+          <div id="llmConfigFields" class="config-fields hidden">
+            <div class="form-group">
+              <label for="llmProvider">API 提供商</label>
+              <select id="llmProvider" class="select">
+                <option value="openai">OpenAI</option>
+                <option value="glm">智谱 GLM</option>
+                <option value="groq">Groq</option>
+                <option value="custom">自定义</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="llmEndpoint">API 端点</label>
+              <input type="text" id="llmEndpoint" class="input" placeholder="https://api.openai.com/v1/chat/completions">
+            </div>
+
+            <div class="form-group">
+              <label for="llmApiKey">API Key</label>
+              <input type="password" id="llmApiKey" class="input" placeholder="sk-...">
+            </div>
+
+            <div class="form-group">
+              <label for="llmModel">模型</label>
+              <input type="text" id="llmModel" class="input" placeholder="gpt-3.5-turbo">
+            </div>
+
+            <button class="btn btn-secondary" id="testLlmBtn">
+              <span class="btn-icon">🔧</span>
+              测试连接
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>其他设置</h3>
+
+          <div class="form-group">
+            <label for="autoSubmit" class="checkbox-label">
+              <input type="checkbox" id="autoSubmit">
+              允许自动提交（慎用）
+            </label>
+            <p class="hint">开启后将在填充完成自动点击提交按钮。建议仅在熟悉的导航站使用。</p>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="saveSettingsBtn">
+            <span class="btn-icon">💾</span>
+            保存设置
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="modalTitle">标题</h3>
+          <button class="modal-close" id="modalCloseBtn">×</button>
+        </div>
+        <div class="modal-body" id="modalBody">
+          <!-- Modal content will be rendered here -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden">
+      <span id="toastMessage"></span>
+    </div>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "导航站自动提交工具",
+  "name__en": "Navigation Site Auto Submitter",
+  "version": "1.0.0",
+  "description": "自动识别并填充导航站收录表单，提升网站提交效率",
+  "description__en": "Automatically identify and fill navigation site submission forms",
+  "icons": {
+    "128": "icons/icon.svg"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "128": "icons/icon.svg"
+    }
+  },
+  "options_page": "options/options.html",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/formHandler.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

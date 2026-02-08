@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Icon Generator</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      padding: 40px;
+    }
+    canvas {
+      border: 1px solid #ccc;
+      margin: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Extension Icon Generator</h1>
+  <p>Click the button to download PNG icons in all required sizes</p>
+  <button id="downloadBtn">Download All Icons</button>
+
+  <script>
+    const sizes = [16, 48, 128];
+
+    function drawIcon(canvas, size) {
+      const ctx = canvas.getContext('2d');
+      const scale = size / 128;
+
+      // Background
+      ctx.fillStyle = '#4f46e5';
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, 24 * scale);
+      ctx.fill();
+
+      // Document
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.beginPath();
+      ctx.roundRect(32 * scale, 24 * scale, 64 * scale, 80 * scale, 4 * scale);
+      ctx.fill();
+
+      // Form lines
+      ctx.fillStyle = '#4f46e5';
+      ctx.beginPath();
+      ctx.roundRect(40 * scale, 40 * scale, 48 * scale, 8 * scale, 2 * scale);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.roundRect(40 * scale, 56 * scale, 48 * scale, 8 * scale, 2 * scale);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.roundRect(40 * scale, 72 * scale, 32 * scale, 8 * scale, 2 * scale);
+      ctx.fill();
+
+      // Checkmark circle
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(96 * scale, 96 * scale, 20 * scale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Checkmark
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 6 * scale;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(86 * scale, 96 * scale);
+      ctx.lineTo(92 * scale, 102 * scale);
+      ctx.lineTo(106 * scale, 88 * scale);
+      ctx.stroke();
+    }
+
+    function downloadIcon(size) {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      drawIcon(canvas, size);
+
+      canvas.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `icon${size}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    document.getElementById('downloadBtn').addEventListener('click', () => {
+      sizes.forEach(size => downloadIcon(size));
+    });
+  </script>
+</body>
+</html>

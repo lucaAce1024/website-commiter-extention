@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>导航站提交助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="title">
+        <span class="icon">📋</span>
+        导航站提交助手
+      </h1>
+    </header>
+
+    <!-- Site Selector -->
+    <section class="section">
+      <div class="section-header">
+        <label for="siteSelect" class="label">当前站点</label>
+        <button id="manageSitesBtn" class="btn-link" title="管理站点">⚙️ 管理</button>
+      </div>
+      <select id="siteSelect" class="select">
+        <option value="">-- 请选择站点 --</option>
+      </select>
+      <div id="noSitesHint" class="hint hidden">
+        还没有站点，<a href="#" id="addSiteLink">添加一个</a>
+      </div>
+    </section>
+
+    <!-- Current Page Status -->
+    <section class="section">
+      <div class="section-header">
+        <span class="label">当前页面</span>
+        <span id="pageDomain" class="page-domain"></span>
+      </div>
+
+      <div id="formStatus" class="form-status">
+        <div class="status-row">
+          <span class="status-label">表单识别:</span>
+          <span id="recognitionStatus" class="status-value">检测中...</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">可填字段:</span>
+          <span id="fieldCount" class="status-value">-</span>
+        </div>
+      </div>
+
+      <div id="noFormHint" class="hint hidden">
+        未在当前页面检测到提交表单
+      </div>
+    </section>
+
+    <!-- Actions -->
+    <section class="section actions">
+      <button id="fillFormBtn" class="btn btn-primary" disabled>
+        <span class="btn-icon">✏️</span>
+        自动填充当前页面
+      </button>
+      <button id="recognizeBtn" class="btn btn-secondary">
+        <span class="btn-icon">🔍</span>
+        重新识别
+      </button>
+    </section>
+
+    <!-- Quick Links -->
+    <section class="section">
+      <div class="section-header">
+        <span class="label">快捷操作</span>
+      </div>
+      <div class="quick-links">
+        <button id="openNavSitesBtn" class="btn-link">📚 导航站列表</button>
+        <button id="openOptionsBtn" class="btn-link">⚙️ 设置</button>
+      </div>
+    </section>
+
+    <!-- Status Messages -->
+    <div id="statusMessage" class="status-message hidden">
+      <span id="statusText"></span>
+      <button id="closeStatusBtn" class="close-btn">×</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
