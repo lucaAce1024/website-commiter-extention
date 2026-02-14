@@ -1,17 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "导航站自动提交工具",
-  "name__en": "Navigation Site Auto Submitter",
+  "name": "外链提交助手",
+  "name__en": "Backlink Submitter",
   "version": "1.0.0",
   "description": "自动识别并填充导航站收录表单，提升网站提交效率",
   "description__en": "Automatically identify and fill navigation site submission forms",
   "icons": {
-    "128": "icons/icon.svg"
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "action": {
     "default_popup": "popup/popup.html",
     "default_icon": {
-      "128": "icons/icon.svg"
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
     }
   },
   "options_page": "options/options.html",

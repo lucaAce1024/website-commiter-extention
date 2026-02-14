@@ -52,7 +52,8 @@ body {
 }
 
 .icon {
-  font-size: 18px;
+  width: 48px;
+  height: 48px;
 }
 
 /* Section */
