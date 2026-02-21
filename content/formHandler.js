@@ -331,7 +331,12 @@ function recognizeByKeywords(formMetadata) {
       weights: { type: 2, name: 2, placeholder: 1, label: 2 }
     },
     category: {
-      keywords: ['category', 'cat', 'type', 'class', '分类', '类别', '类型'],
+      keywords: ['category', 'categories', 'cat', 'type', 'class', '分类', '类别', '类型'],
+      isSelect: true,
+      weights: { name: 2, label: 2 }
+    },
+    tags: {
+      keywords: ['tag', 'tags', '标签'],
       isSelect: true,
       weights: { name: 2, label: 2 }
     },
@@ -340,13 +345,13 @@ function recognizeByKeywords(formMetadata) {
       weights: { name: 2, placeholder: 1 }
     },
     shortDescription: {
-      keywords: ['short', 'desc', 'description', 'summary', 'intro', 'brief', '简介', '简述', '描述', 'shortdesc'],
-      weights: { name: 2, placeholder: 1 }
+      keywords: ['short', 'desc', 'description', 'summary', 'intro', 'brief', 'introduction', '简介', '简述', '描述', 'shortdesc'],
+      weights: { name: 2, placeholder: 1, label: 2 }
     },
     longDescription: {
       keywords: ['long', 'detail', 'description', 'content', 'about', 'info', '详细', '介绍', '描述', '详情'],
       isTextarea: true,
-      weights: { name: 2, placeholder: 1 }
+      weights: { name: 2, placeholder: 1, label: 2 }
     },
     logo: {
       keywords: ['logo', 'icon', 'image', 'favicon', '图标', '标志'],
@@ -355,7 +360,7 @@ function recognizeByKeywords(formMetadata) {
       weights: { name: 2, placeholder: 1, label: 2 }
     },
     screenshot: {
-      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', '截图', '预览图', 'app image', 'appimage', 'app-image', '界面截图', '应用截图'],
+      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', 'image', '截图', '预览图', 'app image', 'appimage', 'app-image', '界面截图', '应用截图'],
       type: 'url',
       isFileInput: true,
       weights: { name: 2, placeholder: 1, label: 2 }
@@ -402,6 +407,10 @@ function recognizeByKeywords(formMetadata) {
         const hint = (placeholderLower + ' ' + labelLower + ' ' + ariaLabelLower).trim();
         if (/^https?:\/\//.test(hint) || hint.includes('://')) score += 4;
       }
+      // navfolders 等：Introduction 用简短描述填充
+      if (standardField === 'shortDescription' && labelLower.includes('introduction')) {
+        score += 5;
+      }
 
       if (score > 0) {
         scores[standardField] = score;
@@ -411,6 +420,14 @@ function recognizeByKeywords(formMetadata) {
     // 「App Image」只匹配界面截图，不匹配 Logo：label/name 含 app image 时排除 logo
     const hintForExclude = (labelLower + ' ' + nameLower + ' ' + ariaLabelLower).trim();
     if (hintForExclude.includes('app image') || hintForExclude.includes('appimage')) {
+      delete scores.logo;
+    }
+    // 仅「Image」无 logo/icon 时归为界面截图（如 navfolders Image 字段）
+    if ((/^image\s*[\(\s]?/.test(labelLower) || labelLower.trim() === 'image') && !hintForExclude.includes('logo') && !hintForExclude.includes('icon')) {
+      delete scores.logo;
+    }
+    // id/name 含 image 且不含 logo 时归为界面截图（如 navfolders dropzone-file-image）
+    if ((idLower.includes('image') || nameLower.includes('image')) && !idLower.includes('logo') && !nameLower.includes('logo')) {
       delete scores.logo;
     }
 
@@ -852,21 +869,25 @@ function findBestCategoryMatch(select, userCategory) {
 }
 
 /**
- * Fill select element with category
+ * Fill select element (category / tags 等下拉，支持逗号分隔多值取首个匹配)
  */
 function fillSelectElement(select, value, siteData) {
-  // Try to find the best matching option
-  const bestMatch = findBestCategoryMatch(select, value);
-
-  if (bestMatch) {
-    select.value = bestMatch.value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    console.log(`${TAG} Matched category "${value}" to option "${bestMatch.text}"`);
-    return true;
+  const toTry = [value];
+  if (typeof value === 'string' && value.includes(',')) {
+    toTry.length = 0;
+    toTry.push(value.trim(), ...value.split(',').map(s => s.trim()).filter(Boolean));
   }
-
-  // Try with site category as fallback
-  if (siteData.category && siteData.category !== value) {
+  for (const v of toTry) {
+    if (!v) continue;
+    const bestMatch = findBestCategoryMatch(select, v);
+    if (bestMatch) {
+      select.value = bestMatch.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log(`${TAG} Matched "${v}" to option "${bestMatch.text}"`);
+      return true;
+    }
+  }
+  if (siteData.category && value !== siteData.category) {
     const categoryMatch = findBestCategoryMatch(select, siteData.category);
     if (categoryMatch) {
       select.value = categoryMatch.value;
@@ -875,8 +896,6 @@ function fillSelectElement(select, value, siteData) {
       return true;
     }
   }
-
-  // Log available options for debugging
   const availableOptions = Array.from(select.options).map(opt => opt.text).join(', ');
   console.warn(`${TAG} Could not find matching option for: "${value}"`);
   console.warn(`${TAG} Available options: ${availableOptions}`);
@@ -951,22 +970,43 @@ function fillFileInputWithDataUrl(fileInput, dataUrl) {
 }
 
 /**
- * Fill input element
+ * Fill input or textarea element（避免 Illegal invocation：textarea 用 HTMLTextAreaElement，且 setter 失败时回退直接赋值）
+ * 若为 Markdown 编辑器（SimpleMDE/CodeMirror）包裹的 textarea，会同步到编辑器实例使界面显示更新
  */
 function fillInputElement(input, value) {
+  const str = value != null ? String(value) : '';
   input.focus();
-  input.value = value;
 
-  // Trigger various events for different frameworks
+  try {
+    const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(input, str);
+    } else {
+      input.value = str;
+    }
+  } catch (_) {
+    input.value = str;
+  }
+
+  if (input.tagName === 'TEXTAREA' && str) {
+    try {
+      if (typeof window.CodeMirror !== 'undefined' && window.CodeMirror.findByTextArea) {
+        const cm = window.CodeMirror.findByTextArea(input);
+        if (cm && cm.getDoc()) {
+          cm.getDoc().setValue(str);
+          cm.refresh();
+        }
+      } else if (input.CodeMirror && input.CodeMirror.getDoc) {
+        input.CodeMirror.getDoc().setValue(str);
+        input.CodeMirror.refresh();
+      }
+    } catch (_) {}
+  }
+
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
   input.dispatchEvent(new Event('blur', { bubbles: true }));
-
-  // For React/Vue apps
-  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-  nativeInputValueSetter.call(input, value);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-
   input.blur();
 }
 

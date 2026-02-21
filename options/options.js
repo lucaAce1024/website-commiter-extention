@@ -14,6 +14,74 @@ let pendingLogoDataUrl = null;
 /** 当前编辑中待保存的界面截图（data URL），对应 App Image 等上传框 */
 let pendingScreenshotDataUrl = null;
 
+const MAX_IMAGE_BYTES = 1024 * 1024; // 1MB
+
+/**
+ * 将图片文件压缩到 < 1MB，返回 data URL（使用 Canvas 缩放 + JPEG 质量）
+ */
+function compressImageToUnder1MB(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxSide = 1920;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxSide || h > maxSide) {
+        if (w > h) {
+          h = Math.round((h * maxSide) / w);
+          w = maxSide;
+        } else {
+          w = Math.round((w * maxSide) / h);
+          h = maxSide;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+
+      function tryQuality(quality) {
+        return new Promise((res) => {
+          canvas.toBlob(
+            (blob) => {
+              if (blob && blob.size <= MAX_IMAGE_BYTES) {
+                const reader = new FileReader();
+                reader.onload = () => res(reader.result);
+                reader.onerror = () => res(null);
+                reader.readAsDataURL(blob);
+              } else {
+                res(null);
+              }
+            },
+            'image/jpeg',
+            quality
+          );
+        });
+      }
+
+      (async () => {
+        for (const q of [0.85, 0.7, 0.55, 0.4, 0.25]) {
+          const dataUrl = await tryQuality(q);
+          if (dataUrl) {
+            resolve(dataUrl);
+            return;
+          }
+        }
+        const dataUrl = await tryQuality(0.15);
+        resolve(dataUrl || canvas.toDataURL('image/jpeg', 0.15));
+      })();
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('图片加载失败'));
+    };
+    img.src = url;
+  });
+}
+
 // DOM elements cache
 const elements = {};
 
@@ -446,6 +514,11 @@ function openSiteModal(siteId = null) {
       </div>
 
       <div class="form-group">
+        <label for="tags" class="form-label">标签 Tags</label>
+        <input type="text" id="tags" class="input" value="${escapeHtml(site?.tags || '')}" placeholder="逗号分隔，如: ai, tools, productivity">
+      </div>
+
+      <div class="form-group">
         <label for="tagline" class="form-label">标语/口号</label>
         <input type="text" id="tagline" class="input" value="${escapeHtml(site?.tagline || '')}">
       </div>
@@ -463,7 +536,7 @@ function openSiteModal(siteId = null) {
       <div class="form-group">
         <label class="form-label">Logo（用于自动填充上传框）</label>
         <input type="url" id="logo" class="input" value="${escapeHtml(site?.logo || '')}" placeholder="Logo 图片 URL（可选）">
-        <div class="form-hint">或上传图片（findly 等站点为文件上传框时使用）</div>
+        <div class="form-hint">或上传图片，&lt; 1MB（findly 等站点为文件上传框时使用）</div>
         <input type="file" id="logoFile" class="input" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp" style="margin-top:4px">
         <div id="logoPreview" class="logo-preview hidden"></div>
       </div>
@@ -471,7 +544,7 @@ function openSiteModal(siteId = null) {
       <div class="form-group">
         <label class="form-label">界面截图（App Image 等上传框）</label>
         <input type="url" id="screenshot" class="input" value="${escapeHtml(site?.screenshot || '')}" placeholder="截图 URL（可选）">
-        <div class="form-hint">或上传一张图片</div>
+        <div class="form-hint">或上传一张图片，&lt; 1MB</div>
         <input type="file" id="screenshotFile" class="input" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp" style="margin-top:4px">
         <div id="screenshotPreview" class="logo-preview hidden"></div>
       </div>
@@ -527,36 +600,62 @@ function openSiteModal(siteId = null) {
   renderScreenshotPreview(site?.screenshotDataUrl || null);
   if (screenshotFileEl) screenshotFileEl.value = '';
 
-  // Logo 文件选择：转为 data URL 供保存与自动填充上传框使用
-  logoFileEl.addEventListener('change', (e) => {
+  // Logo 文件选择：转为 data URL；超过 1MB 时自动压缩到 < 1MB
+  logoFileEl.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) {
       pendingLogoDataUrl = null;
       renderLogoPreview(null);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      pendingLogoDataUrl = reader.result;
-      renderLogoPreview(pendingLogoDataUrl);
-    };
-    reader.readAsDataURL(file);
+    try {
+      if (file.size <= MAX_IMAGE_BYTES) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          pendingLogoDataUrl = reader.result;
+          renderLogoPreview(pendingLogoDataUrl);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        showToast('图片超过 1MB，正在压缩…', 'info');
+        const dataUrl = await compressImageToUnder1MB(file);
+        pendingLogoDataUrl = dataUrl;
+        renderLogoPreview(dataUrl);
+        showToast('已压缩到 < 1MB', 'success');
+      }
+    } catch (err) {
+      showToast('处理失败: ' + (err.message || '未知错误'), 'error');
+      e.target.value = '';
+    }
   });
 
-  // 界面截图文件选择
-  screenshotFileEl.addEventListener('change', (e) => {
+  // 界面截图文件选择：超过 1MB 时自动压缩到 < 1MB
+  screenshotFileEl.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) {
       pendingScreenshotDataUrl = null;
       renderScreenshotPreview(null);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      pendingScreenshotDataUrl = reader.result;
-      renderScreenshotPreview(pendingScreenshotDataUrl);
-    };
-    reader.readAsDataURL(file);
+    try {
+      if (file.size <= MAX_IMAGE_BYTES) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          pendingScreenshotDataUrl = reader.result;
+          renderScreenshotPreview(pendingScreenshotDataUrl);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        showToast('图片超过 1MB，正在压缩…', 'info');
+        const dataUrl = await compressImageToUnder1MB(file);
+        pendingScreenshotDataUrl = dataUrl;
+        renderScreenshotPreview(dataUrl);
+        showToast('已压缩到 < 1MB', 'success');
+      }
+    } catch (err) {
+      showToast('处理失败: ' + (err.message || '未知错误'), 'error');
+      e.target.value = '';
+    }
   });
 
   // Form submission
@@ -577,6 +676,7 @@ async function saveSite(siteId) {
     siteUrl: document.getElementById('siteUrl').value.trim(),
     email: document.getElementById('email').value.trim(),
     category: document.getElementById('category').value.trim(),
+    tags: document.getElementById('tags').value.trim(),
     tagline: document.getElementById('tagline').value.trim(),
     shortDescription: document.getElementById('shortDescription').value.trim(),
     longDescription: document.getElementById('longDescription').value.trim(),
