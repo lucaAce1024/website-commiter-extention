@@ -6,6 +6,9 @@
 // Console tag for debugging
 const TAG = '[NavSubmitter]';
 
+/** 字段填充时间隔离：每填完一个字段后等待的毫秒数，保证同一时间只填充一个字段 */
+const FILL_FIELD_DELAY_MS = 280;
+
 // State for current page
 let pageState = {
   hasForm: false,
@@ -36,6 +39,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'clearMapping') {
     clearMapping().then(() => sendResponse({ success: true }));
     return true; // 异步响应
+  } else if (request.action === 'fillSingleField') {
+    fillSingleField(request.standardField)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -91,6 +99,7 @@ function formatLocator(locator) {
     case 'name': return `name="${locator.value}" (formIndex=${locator.formIndex ?? 0})`;
     case 'data': return `data-name/data-field="${locator.value}"`;
     case 'index': return `index: ${locator.parentTag}[${locator.parentIndex}] > input/textarea/select[${locator.fieldIndex}]`;
+    case 'xpath': return `XPath ${locator.value}`;
     default: return JSON.stringify(locator);
   }
 }
@@ -141,6 +150,61 @@ function getFormMetadata() {
       }
 
       fields.push(fieldInfo);
+    });
+
+    // 收集「Categories」「Tags」等由 label 关联的自定义下拉（非原生 select），如 navfolders 等
+    const labelsInForm = form.querySelectorAll('label');
+    const customSelectLabels = [
+      { re: /categories?/i, label: 'Categories' },
+      { re: /tags?/i, label: 'Tags' }
+    ];
+    const hasNativeSelectFor = (labelText) => {
+      const lower = (labelText || '').toLowerCase();
+      if (lower.includes('categor')) return fields.some(f => f.type === 'select-one' && (f.label || '').toLowerCase().includes('categor'));
+      if (lower.includes('tag') && !lower.includes('tagline')) return fields.some(f => f.type === 'select-one' && (f.label || '').toLowerCase().includes('tag'));
+      return false;
+    };
+    const addedCustomLabels = new Set();
+    labelsInForm.forEach((labelEl) => {
+      const labelText = labelEl.textContent.trim();
+      const pair = customSelectLabels.find(p => p.re.test(labelText));
+      if (!pair || hasNativeSelectFor(labelText)) return;
+      if (pair.label === 'Tags' && /tagline/i.test(labelText)) return;
+      const labelKey = (pair.label || labelText).toLowerCase();
+      if (addedCustomLabels.has(labelKey)) return;
+      let control = null;
+      if (labelEl.htmlFor) control = form.querySelector(`#${CSS.escape(labelEl.htmlFor)}`) || document.getElementById(labelEl.htmlFor);
+      if (!control) control = labelEl.nextElementSibling;
+      if (!control && labelEl.parentElement) {
+        const sibling = labelEl.parentElement.querySelector(':scope > [role="combobox"], :scope > [role="listbox"], :scope > button, :scope > [data-headlessui-state], :scope > div');
+        if (sibling && sibling !== labelEl) control = sibling;
+      }
+      if (!control && labelEl.parentElement) {
+        const children = Array.from(labelEl.parentElement.children);
+        const idx = children.indexOf(labelEl);
+        if (idx >= 0 && idx < children.length - 1) control = children[idx + 1];
+      }
+      if (!control && labelEl.parentElement && (labelEl.parentElement.getAttribute('role') === 'combobox' || labelEl.parentElement.getAttribute('role') === 'listbox'))
+        control = labelEl.parentElement;
+      if (control && control.tagName !== 'SELECT' && control.tagName !== 'TEXTAREA' &&
+          (control.tagName !== 'INPUT' || control.type === 'hidden')) {
+        const xpath = getXPath(control);
+        if (!xpath) return;
+        addedCustomLabels.add(labelKey);
+        fields.push({
+          locator: { type: 'xpath', value: xpath },
+          xpath,
+          locatorDesc: formatLocator({ type: 'xpath', value: xpath }),
+          type: 'custom-select',
+          name: '',
+          id: control.id || '',
+          placeholder: '',
+          label: pair.label,
+          ariaLabel: control.getAttribute('aria-label') || '',
+          required: false,
+          isCustomSelect: true
+        });
+      }
     });
   });
 
@@ -305,6 +369,15 @@ function findElementByLocator(locator) {
       return null;
     }
 
+    case 'xpath': {
+      try {
+        const result = document.evaluate(locator.value, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        return result.singleNodeValue;
+      } catch (_) {
+        return null;
+      }
+    }
+
     default:
       return null;
   }
@@ -349,7 +422,7 @@ function recognizeByKeywords(formMetadata) {
       weights: { name: 2, placeholder: 1, label: 2 }
     },
     longDescription: {
-      keywords: ['long', 'detail', 'description', 'content', 'about', 'info', '详细', '介绍', '描述', '详情'],
+      keywords: ['long', 'detail', 'description', 'content', 'about', 'info', 'introduction', '详细', '介绍', '描述', '详情'],
       isTextarea: true,
       weights: { name: 2, placeholder: 1, label: 2 }
     },
@@ -386,7 +459,7 @@ function recognizeByKeywords(formMetadata) {
       if (config.isTextarea && field.isTextarea) {
         score += 3;
       }
-      if (config.isSelect && field.type === 'select-one') {
+      if (config.isSelect && (field.type === 'select-one' || field.type === 'custom-select')) {
         score += 3;
       }
       if (config.isFileInput && field.type === 'file') {
@@ -407,9 +480,13 @@ function recognizeByKeywords(formMetadata) {
         const hint = (placeholderLower + ' ' + labelLower + ' ' + ariaLabelLower).trim();
         if (/^https?:\/\//.test(hint) || hint.includes('://')) score += 4;
       }
-      // navfolders 等：Introduction 用简短描述填充
-      if (standardField === 'shortDescription' && labelLower.includes('introduction')) {
-        score += 5;
+      // navfolders 等：Introduction 作为 markdown/长文案框时映射到 longDescription，否则才用 shortDescription
+      if (labelLower.includes('introduction')) {
+        if (field.isTextarea) {
+          if (standardField === 'longDescription') score += 6;
+        } else {
+          if (standardField === 'shortDescription') score += 5;
+        }
       }
 
       if (score > 0) {
@@ -618,7 +695,15 @@ async function fillForm(siteId) {
 
   for (const mapping of pageState.fieldMappings) {
     try {
-      const element = findElementByLocator(mapping.locator);
+      // Tags 前多等一会，确保上一个下拉（Categories）已完全关闭、页面稳定
+      if (mapping.standardField === 'tags') {
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      let element = findElementByLocator(mapping.locator);
+      if (!element && mapping.standardField === 'tags') {
+        element = findTagsTriggerByLabel();
+      }
       if (!element) {
         errors.push(`Could not find element for ${mapping.standardField}`);
         continue;
@@ -665,10 +750,22 @@ async function fillForm(siteId) {
         value = getUrlValueForInput(element, value);
       }
 
-      // Set value based on element type
+      // longDescription/Introduction：只填真正的 textarea；若当前是 wrapper 或未找到，用 label 备用查找
+      if (mapping.standardField === 'longDescription') {
+        if (element.tagName !== 'TEXTAREA' && element.tagName !== 'INPUT') {
+          const fallbackTa = findIntroductionTextarea();
+          if (fallbackTa) element = fallbackTa;
+          else { continue; }
+        }
+      }
+
+      // Set value based on element type（含自定义下拉 Categories/Tags）
       if (element.tagName === 'SELECT') {
         fillSelectElement(element, value, siteData);
         filledCount++;
+      } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags') && element.tagName !== 'SELECT') {
+        const filled = await fillCustomSelect(element, value, siteData, mapping.standardField);
+        if (filled) filledCount++;
       } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
         fillInputElement(element, value);
         filledCount++;
@@ -684,6 +781,8 @@ async function fillForm(siteId) {
     } catch (error) {
       errors.push(`Failed to fill ${mapping.standardField}: ${error.message}`);
     }
+    // 时间隔离：同一时间只填充一个字段，避免下拉/编辑器等未就绪导致错乱
+    await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
   }
 
   // Check for CAPTCHA
@@ -698,6 +797,82 @@ async function fillForm(siteId) {
     errors,
     hasCaptcha
   };
+}
+
+/**
+ * 右键菜单「填充单个字段」：只填充指定标准字段（需已识别表单）
+ */
+async function fillSingleField(standardField) {
+  const siteData = await getSiteData(null);
+  if (!siteData) {
+    throw new Error('请先在选项中配置并选择当前站点');
+  }
+  if (!pageState.fieldMappings) {
+    const result = await recognizeForm(false);
+    if (result.status !== 'success') {
+      throw new Error('无法识别当前页面表单，请先打开提交页面再试');
+    }
+  }
+  const mappings = pageState.fieldMappings.filter(m => m.standardField === standardField);
+  if (mappings.length === 0) {
+    throw new Error(`当前页面未识别到「${standardField}」字段`);
+  }
+  let filledCount = 0;
+  const errors = [];
+  for (const mapping of mappings) {
+    try {
+      let element = findElementByLocator(mapping.locator);
+      if (!element && standardField === 'tags') element = findTagsTriggerByLabel();
+      if (!element) {
+        errors.push(`找不到元素: ${standardField}`);
+        continue;
+      }
+      let value = siteData[mapping.standardField];
+      if (mapping.standardField === 'logo' && element.type === 'file') {
+        const dataUrl = siteData.logoDataUrl || value;
+        if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+          fillFileInputWithDataUrl(element, dataUrl);
+          filledCount++;
+          console.log(`${TAG} [右键] 已填充 ${standardField}`);
+        }
+        continue;
+      }
+      if (mapping.standardField === 'screenshot' && element.type === 'file') {
+        const dataUrl = siteData.screenshotDataUrl || value;
+        if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+          fillFileInputWithDataUrl(element, dataUrl);
+          filledCount++;
+          console.log(`${TAG} [右键] 已填充 ${standardField}`);
+        }
+        continue;
+      }
+      if (!value) continue;
+      if (mapping.standardField === 'siteUrl') value = getUrlValueForInput(element, value);
+      if (mapping.standardField === 'longDescription' && element.tagName !== 'TEXTAREA' && element.tagName !== 'INPUT') {
+        const fallbackTa = findIntroductionTextarea();
+        if (fallbackTa) element = fallbackTa; else continue;
+      }
+      if (element.tagName === 'SELECT') {
+        fillSelectElement(element, value, siteData);
+        filledCount++;
+      } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags') && element.tagName !== 'SELECT') {
+        const filled = await fillCustomSelect(element, value, siteData, mapping.standardField);
+        if (filled) filledCount++;
+      } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
+        fillInputElement(element, value);
+        filledCount++;
+      } else {
+        element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        filledCount++;
+      }
+      console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
+    } catch (err) {
+      errors.push(`${standardField}: ${err.message}`);
+    }
+  }
+  return { filledCount, errors };
 }
 
 /**
@@ -903,6 +1078,326 @@ function fillSelectElement(select, value, siteData) {
 }
 
 /**
+ * 从选项数组 [{ value, text }] 中找与用户输入最匹配的项（复用分类同义词逻辑）
+ */
+function findBestCategoryMatchFromOptions(options, userCategory) {
+  if (!options || options.length === 0) return null;
+  const userCategoryLower = (userCategory || '').toLowerCase().trim();
+  const availableOptions = options.map(opt => ({
+    value: opt.value,
+    text: (opt.text || '').trim(),
+    textLower: (opt.text || '').toLowerCase().trim()
+  })).filter(opt => opt.text);
+
+  const exactMatch = availableOptions.find(opt =>
+    opt.value === userCategory || opt.text === userCategory || opt.textLower === userCategoryLower
+  );
+  if (exactMatch) return exactMatch;
+
+  const partialMatch = availableOptions.find(opt =>
+    opt.textLower.includes(userCategoryLower) || userCategoryLower.includes(opt.textLower)
+  );
+  if (partialMatch) return partialMatch;
+
+  const synonyms = CATEGORY_SYNONYMS[userCategoryLower] || [];
+  for (const synonym of synonyms) {
+    const synonymLower = synonym.toLowerCase();
+    const synonymExact = availableOptions.find(opt => opt.textLower === synonymLower);
+    if (synonymExact) return synonymExact;
+    const synonymPartial = availableOptions.find(opt =>
+      opt.textLower.includes(synonymLower) || synonymLower.includes(opt.textLower)
+    );
+    if (synonymPartial) return synonymPartial;
+  }
+
+  for (const option of availableOptions) {
+    const optionSynonyms = CATEGORY_SYNONYMS[option.textLower];
+    if (optionSynonyms && optionSynonyms.some(s => s.toLowerCase() === userCategoryLower)) return option;
+    if (optionSynonyms && optionSynonyms.some(s =>
+      s.toLowerCase().includes(userCategoryLower) || userCategoryLower.includes(s.toLowerCase())
+    )) return option;
+  }
+
+  const userWords = userCategoryLower.split(/[\s_-]+/);
+  for (const option of availableOptions) {
+    const optionWords = option.textLower.split(/[\s_-]+/);
+    if (userWords.some(uw => optionWords.some(ow => uw === ow || ow.includes(uw) || uw.includes(ow)))) return option;
+  }
+  return null;
+}
+
+/**
+ * 通过 label「Introduction」或「详细」等查找关联的 markdown 文本框（textarea），用于 longDescription 备用定位
+ */
+function findIntroductionTextarea() {
+  const form = document.querySelector('form');
+  if (!form) return null;
+  const labels = form.querySelectorAll('label');
+  for (const label of labels) {
+    const text = (label.textContent || '').trim().toLowerCase();
+    if (!text.includes('introduction') && !text.includes('详细') && !text.includes('介绍') && !text.includes('markdown')) continue;
+    if (label.htmlFor) {
+      const byFor = form.querySelector(`#${CSS.escape(label.htmlFor)}`) || document.getElementById(label.htmlFor);
+      if (byFor && byFor.tagName === 'TEXTAREA') return byFor;
+    }
+    let container = label.parentElement;
+    if (container) {
+      let ta = container.querySelector('textarea');
+      if (ta) return ta;
+      if (container.nextElementSibling) {
+        ta = container.nextElementSibling.querySelector('textarea');
+        if (ta) return ta;
+      }
+      container = container.parentElement;
+      if (container) ta = container.querySelector('textarea');
+      if (ta) return ta;
+    }
+  }
+  const simplemdeWrapper = form.querySelector('[id*="simplemde-editor"], [id*="simplemde"], [id*="easymde"]');
+  if (simplemdeWrapper) {
+    const ta = simplemdeWrapper.querySelector('textarea');
+    if (ta) return ta;
+  }
+  return null;
+}
+
+/**
+ * 通过表单内 label 文本 "Tags" 查找关联的触发器（按钮/div），用作 Tags 下拉的备用定位
+ */
+function findTagsTriggerByLabel() {
+  const form = document.querySelector('form');
+  if (!form) return null;
+  const labels = form.querySelectorAll('label');
+  for (const label of labels) {
+    const text = (label.textContent || '').trim().toLowerCase();
+    if (!text.includes('tag') || text.includes('tagline')) continue;
+    let control = null;
+    if (label.htmlFor) control = form.querySelector(`#${CSS.escape(label.htmlFor)}`) || document.getElementById(label.htmlFor);
+    if (!control) control = label.nextElementSibling;
+    if (!control && label.parentElement) {
+      const siblings = Array.from(label.parentElement.children);
+      const idx = siblings.indexOf(label);
+      if (idx >= 0 && idx < siblings.length - 1) control = siblings[idx + 1];
+    }
+    if (control && control.tagName !== 'SELECT' && control.tagName !== 'TEXTAREA') return control;
+  }
+  return null;
+}
+
+/**
+ * 查找 Tags 多选下拉的面板（含 "Tags"/"Search" 和 checkbox 列表）
+ */
+function findTagsCheckboxPanel() {
+  const candidates = document.querySelectorAll('[role="listbox"], [role="menu"], [role="dialog"], [class*="dropdown"], [class*="menu"], [class*="popover"], [class*="content"]');
+  for (const el of candidates) {
+    const text = (el.textContent || '').toLowerCase();
+    if (!text.includes('tag') || text.includes('tagline')) continue;
+    const checkboxes = el.querySelectorAll('input[type="checkbox"]');
+    if (checkboxes.length > 0 && isElementVisible(el)) return el;
+  }
+  const withSearch = document.evaluate(
+    "//*[contains(translate(.,'SEARCH','search'),'search') and .//input[@type='checkbox']]",
+    document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null
+  );
+  for (let i = 0; i < withSearch.snapshotLength; i++) {
+    const el = withSearch.snapshotItem(i);
+    if (el && (el.textContent || '').toLowerCase().includes('tag') && isElementVisible(el)) return el;
+  }
+  return null;
+}
+
+/**
+ * 从带 checkbox 的面板中收集选项行与选项文案（排除 Select All）
+ */
+function collectCheckboxOptions(panel) {
+  const optionEls = [];
+  const options = [];
+  const checkboxes = panel.querySelectorAll('input[type="checkbox"]');
+  for (const cb of checkboxes) {
+    const row = cb.closest('label') || cb.closest('li') || cb.closest('[role="option"]') || cb.parentElement;
+    if (!row || row === panel) continue;
+    const text = (row.textContent || '').trim();
+    if (!text || /^\s*$/.test(text)) continue;
+    if (/select\s*all/i.test(text)) continue;
+    optionEls.push(row);
+    options.push({ value: text, text });
+  }
+  return { optionEls, options };
+}
+
+/**
+ * 是否可见（未被隐藏、在视口内或可渲染）
+ */
+function isElementVisible(el) {
+  if (!el || !el.getBoundingClientRect) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  const style = window.getComputedStyle(el);
+  return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+}
+
+/**
+ * 模拟真实用户点击（mousedown -> mouseup -> click），提高被框架识别的概率
+ */
+function simulateClick(el) {
+  if (!el) return;
+  el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  const opts = { bubbles: true, cancelable: true, view: window };
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('click', opts));
+}
+
+/**
+ * 填充自定义下拉（非原生 select）：先关闭已有下拉，再点击触发器，等待选项出现后选择匹配项
+ */
+function fillCustomSelect(triggerElement, value, siteData, standardField) {
+  const toTry = [value];
+  if (typeof value === 'string' && value.includes(',')) {
+    toTry.length = 0;
+    toTry.push(value.trim(), ...value.split(',').map(s => s.trim()).filter(Boolean));
+  }
+  const valueToUse = standardField === 'category' && siteData.category
+    ? siteData.category
+    : (standardField === 'tags' && siteData.tags ? (siteData.tags.split(',')[0]?.trim() || siteData.tags) : (toTry[0] || value));
+  if (!valueToUse) return Promise.resolve(false);
+
+  const isTags = standardField === 'tags';
+  const closeDelay = isTags ? 400 : 220;
+  const openWaitMs = isTags ? 750 : 600;
+  console.log(`${TAG} Custom select: opening ${standardField} for "${valueToUse}"`);
+
+  return new Promise((resolve) => {
+    // 先关闭可能已打开的下拉（Tags 前多等一会，确保 Categories 已关）
+    function closeOpenDropdown(done) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      triggerElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      document.body.focus();
+      setTimeout(done, closeDelay);
+    }
+
+    closeOpenDropdown(() => {
+      triggerElement.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      simulateClick(triggerElement);
+      if (isTags) {
+        setTimeout(() => { simulateClick(triggerElement); }, 120);
+      }
+      // 等待下拉渲染后再查找选项（Tags 多等一会）
+      setTimeout(() => {
+        const optionSelectors = [
+          '[role="listbox"] [role="option"]',
+          '[role="option"]',
+          '[data-headlessui-state] [role="option"]',
+          'ul[role="listbox"] li',
+          '[role="listbox"] li',
+          '.option',
+          '[data-value]',
+          '[id*="option"]',
+          'li'
+        ];
+        let optionEls = [];
+        const form = triggerElement.closest('form');
+        const scope = form || document.body;
+        let container = scope.querySelector('[role="listbox"], [data-headlessui-state], [class*="dropdown"], [class*="menu"]');
+        if (!container) container = scope;
+        for (const sel of optionSelectors) {
+          optionEls = Array.from(container.querySelectorAll(sel));
+          if (optionEls.length > 0) break;
+        }
+        if (optionEls.length === 0) {
+          optionEls = Array.from(scope.querySelectorAll('[role="option"], [data-value], li'));
+        }
+        // 若表单内没找到，再在 body 找（portal 渲染的下拉）
+        if (optionEls.length === 0 && scope !== document.body) {
+          for (const sel of optionSelectors) {
+            optionEls = Array.from(document.body.querySelectorAll(sel));
+            if (optionEls.length > 0) break;
+          }
+        }
+        // Tags 多选优先：下拉内是带 checkbox 的选项（如 navfolders），先按 checkbox 面板处理
+        if (isTags) {
+          const tagPanel = findTagsCheckboxPanel();
+          if (tagPanel) {
+            const { optionEls: checkboxRows, options: checkboxOptions } = collectCheckboxOptions(tagPanel);
+            if (checkboxRows.length > 0) {
+              const visible = checkboxRows.filter(isElementVisible);
+              const rows = visible.length > 0 ? visible : checkboxRows;
+              const best = findBestCategoryMatchFromOptions(checkboxOptions, valueToUse) || findBestCategoryMatchFromOptions(checkboxOptions, siteData.category);
+              if (best && !/select\s*all/i.test(best.text)) {
+                const optionEl = rows.find(el => {
+                  const t = (el.textContent || '').trim();
+                  return t === best.text || t === best.value;
+                });
+                if (optionEl) {
+                  simulateClick(optionEl);
+                  triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+                  console.log(`${TAG} Custom select: matched tag "${valueToUse}" to "${best.text}"`);
+                  closeThenResolve();
+                  return;
+                }
+              }
+            }
+          }
+        }
+        const visible = optionEls.filter(isElementVisible);
+        if (visible.length > 0) optionEls = visible;
+        const options = optionEls.map(el => ({
+          value: el.getAttribute('data-value') || el.getAttribute('value') || el.textContent.trim(),
+          text: el.textContent.trim()
+        })).filter(o => o.text);
+        const best = findBestCategoryMatchFromOptions(options, valueToUse) || findBestCategoryMatchFromOptions(options, siteData.category);
+        if (best) {
+          const optionEl = optionEls.find(el =>
+            (el.getAttribute('data-value') || el.textContent.trim()) === best.value ||
+            el.textContent.trim() === best.text
+          );
+          if (optionEl) {
+            simulateClick(optionEl);
+            triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log(`${TAG} Custom select: matched "${valueToUse}" to "${best.text}"`);
+            closeThenResolve();
+            return;
+          }
+        }
+        // Tags 多选：有 optionEls 但可能是 checkbox 行（无 role=option），再试一次按文本匹配
+        if (isTags && optionEls.length > 0) {
+          const optionsFromText = optionEls.map(el => ({
+            value: el.textContent.trim(),
+            text: el.textContent.trim()
+          })).filter(o => o.text && !/select\s*all/i.test(o.text));
+          const bestTag = findBestCategoryMatchFromOptions(optionsFromText, valueToUse);
+          if (bestTag) {
+            const optionEl = optionEls.find(el => (el.textContent || '').trim() === bestTag.text);
+            if (optionEl) {
+              simulateClick(optionEl);
+              triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+              console.log(`${TAG} Custom select: matched tag "${valueToUse}" to "${bestTag.text}"`);
+              closeThenResolve();
+              return;
+            }
+          }
+        }
+        console.warn(`${TAG} Custom select: no matching option for "${valueToUse}"`);
+        resolve(false);
+
+        function closeThenResolve() {
+          setTimeout(() => {
+            try {
+              const closeBtn = document.evaluate("//button[contains(translate(.,'CLOSE','close'),'close')]", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+              if (closeBtn && isElementVisible(closeBtn)) simulateClick(closeBtn);
+            } catch (_) {}
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            triggerElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            document.body.focus();
+            setTimeout(() => resolve(true), 380);
+          }, 220);
+        }
+      }, openWaitMs);
+    });
+  });
+}
+
+/**
  * 根据输入框是否已有 https:// 前缀，决定填入完整 URL 还是仅域名+路径
  * 若 placeholder 或前置兄弟节点为 "https://"，则只填协议后的部分，避免重复
  */
@@ -991,15 +1486,35 @@ function fillInputElement(input, value) {
 
   if (input.tagName === 'TEXTAREA' && str) {
     try {
-      if (typeof window.CodeMirror !== 'undefined' && window.CodeMirror.findByTextArea) {
-        const cm = window.CodeMirror.findByTextArea(input);
-        if (cm && cm.getDoc()) {
-          cm.getDoc().setValue(str);
-          cm.refresh();
+      let synced = false;
+      if (typeof window.CodeMirror !== 'undefined') {
+        if (window.CodeMirror.findByTextArea) {
+          const cm = window.CodeMirror.findByTextArea(input);
+          if (cm && cm.getDoc()) {
+            cm.getDoc().setValue(str);
+            cm.refresh();
+            synced = true;
+          }
         }
-      } else if (input.CodeMirror && input.CodeMirror.getDoc) {
-        input.CodeMirror.getDoc().setValue(str);
-        input.CodeMirror.refresh();
+        if (!synced && input.CodeMirror && input.CodeMirror.getDoc) {
+          input.CodeMirror.getDoc().setValue(str);
+          input.CodeMirror.refresh();
+          synced = true;
+        }
+        if (!synced) {
+          const wrapper = input.closest('[id*="simplemde"], [id*="easymde"]') || input.parentElement;
+          if (wrapper) {
+            const cmDiv = wrapper.querySelector('.CodeMirror') || input.nextElementSibling;
+            if (cmDiv && cmDiv.classList && cmDiv.classList.contains('CodeMirror') && cmDiv.CodeMirror && cmDiv.CodeMirror.getDoc) {
+              cmDiv.CodeMirror.getDoc().setValue(str);
+              cmDiv.CodeMirror.refresh();
+              synced = true;
+            }
+          }
+        }
+      }
+      if (!synced && typeof window.InputEvent !== 'undefined') {
+        input.dispatchEvent(new InputEvent('input', { data: str, inputType: 'insertText', bubbles: true }));
       }
     } catch (_) {}
   }

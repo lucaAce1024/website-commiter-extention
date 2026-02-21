@@ -2,6 +2,20 @@
  * Popup Script - Main logic for the extension popup
  */
 
+// 标准字段 → 展示名称（按字段填充列表用）
+const FIELD_LABELS = {
+  siteUrl: '网站 URL',
+  siteName: '网站名称',
+  email: '联系邮箱',
+  category: '分类',
+  tags: '标签',
+  tagline: '标语',
+  shortDescription: '简短描述',
+  longDescription: '详细描述',
+  logo: 'Logo',
+  screenshot: '界面截图'
+};
+
 // DOM elements
 const elements = {
   siteSelect: document.getElementById('siteSelect'),
@@ -13,6 +27,9 @@ const elements = {
   fieldCount: document.getElementById('fieldCount'),
   formStatus: document.getElementById('formStatus'),
   noFormHint: document.getElementById('noFormHint'),
+  fieldFillSection: document.getElementById('fieldFillSection'),
+  fieldFillList: document.getElementById('fieldFillList'),
+  fieldFillNoData: document.getElementById('fieldFillNoData'),
   fillFormBtn: document.getElementById('fillFormBtn'),
   clearCacheBtn: document.getElementById('clearCacheBtn'),
   openNavSitesBtn: document.getElementById('openNavSitesBtn'),
@@ -174,6 +191,81 @@ function updateFormStatus() {
   if (pageState.hasForm && !pageState.fieldMappings) {
     elements.recognitionStatus.textContent = '待识别';
   }
+
+  updateFieldFillList();
+}
+
+/**
+ * 更新「按字段填充」列表：展示已识别字段 + 当前站点预览，点击可只填该字段
+ */
+function updateFieldFillList() {
+  const list = elements.fieldFillList;
+  const section = elements.fieldFillSection;
+  const noData = elements.fieldFillNoData;
+  if (!list || !section || !noData) return;
+
+  const mappings = pageState?.fieldMappings;
+  const hasMappings = mappings && mappings.length > 0 && currentSiteId;
+  const currentSite = sites.find(s => s.id === currentSiteId);
+
+  if (!hasMappings || !currentSite) {
+    section.classList.add('hidden');
+    noData.classList.remove('hidden');
+    list.innerHTML = '';
+    return;
+  }
+
+  noData.classList.add('hidden');
+  section.classList.remove('hidden');
+
+  const seen = new Set();
+  const rows = [];
+  for (const m of mappings) {
+    if (seen.has(m.standardField)) continue;
+    seen.add(m.standardField);
+    const label = FIELD_LABELS[m.standardField] || m.standardField;
+    let preview = currentSite[m.standardField];
+    if (preview == null) preview = '';
+    if (m.standardField === 'logo' && (currentSite.logoDataUrl || preview)) preview = '(图片)';
+    else if (m.standardField === 'screenshot' && (currentSite.screenshotDataUrl || preview)) preview = '(图片)';
+    else preview = String(preview).trim();
+    if (preview.length > 22) preview = preview.slice(0, 20) + '…';
+    rows.push({ standardField: m.standardField, label, preview });
+  }
+
+  list.innerHTML = rows.map(({ standardField, label, preview }) => {
+    const previewEsc = escapeHtml(preview || '—');
+    return `<li data-field="${escapeHtml(standardField)}" title="点击填充：${escapeHtml(label)}">
+      <span class="field-name">${escapeHtml(label)}</span>
+      <span class="field-preview">${previewEsc}</span>
+      <span class="field-action">填充</span>
+    </li>`;
+  }).join('');
+
+  list.querySelectorAll('li').forEach(li => {
+    li.addEventListener('click', () => onFieldFillClick(li.dataset.field));
+  });
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function onFieldFillClick(standardField) {
+  if (!currentTab?.id || !standardField) return;
+  try {
+    const response = await chrome.tabs.sendMessage(currentTab.id, { action: 'fillSingleField', standardField });
+    if (response?.success) {
+      const n = response.result?.filledCount ?? 0;
+      showSuccess(n > 0 ? `已填充「${FIELD_LABELS[standardField] || standardField}」` : '该字段无内容或未找到对应控件');
+    } else {
+      showError(response?.error || '填充失败');
+    }
+  } catch (e) {
+    showError(e?.message?.includes('Receiving end') ? '请刷新页面后再试' : (e?.message || '填充失败'));
+  }
 }
 
 /**
@@ -198,6 +290,7 @@ function showNoForm() {
   elements.formStatus.classList.add('hidden');
   elements.noFormHint.classList.remove('hidden');
   elements.fillFormBtn.disabled = true;
+  updateFieldFillList();
 }
 
 /**

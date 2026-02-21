@@ -290,6 +290,70 @@ body {
   opacity: 1;
 }
 
+/* 按字段填充列表：紧凑、可点击 */
+.field-fill-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.field-fill-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.field-fill-list {
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.field-fill-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.field-fill-list li:hover {
+  background: var(--bg-color);
+}
+
+.field-fill-list li:active {
+  background: var(--border-color);
+}
+
+.field-fill-list .field-name {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font-weight: 500;
+  min-width: 72px;
+}
+
+.field-fill-list .field-preview {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+
+.field-fill-list .field-action {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--primary-color);
+}
+
 /* Utility Classes */
 .hidden {
   display: none !important;
