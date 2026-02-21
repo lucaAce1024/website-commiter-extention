@@ -14,7 +14,6 @@ const elements = {
   formStatus: document.getElementById('formStatus'),
   noFormHint: document.getElementById('noFormHint'),
   fillFormBtn: document.getElementById('fillFormBtn'),
-  recognizeBtn: document.getElementById('recognizeBtn'),
   openNavSitesBtn: document.getElementById('openNavSitesBtn'),
   openOptionsBtn: document.getElementById('openOptionsBtn'),
   statusMessage: document.getElementById('statusMessage'),
@@ -164,16 +163,15 @@ function updateFormStatus() {
   // Field count
   if (pageState.fieldMappings) {
     elements.fieldCount.textContent = pageState.fieldMappings.length + ' 个字段';
-    elements.fillFormBtn.disabled = !currentSiteId || pageState.fieldMappings.length === 0;
   } else {
     elements.fieldCount.textContent = '-';
-    elements.fillFormBtn.disabled = true;
   }
+  // 主按钮「自动识别并填充」：有选中站点即可用，点击后会先识别再填充
+  elements.fillFormBtn.disabled = !currentSiteId;
 
   // If has form but not recognized
   if (pageState.hasForm && !pageState.fieldMappings) {
     elements.recognitionStatus.textContent = '待识别';
-    elements.fillFormBtn.disabled = true;
   }
 }
 
@@ -186,7 +184,7 @@ function updateFormStatusFromDetect(detectResult) {
     elements.noFormHint.classList.add('hidden');
     elements.recognitionStatus.textContent = '待识别';
     elements.fieldCount.textContent = detectResult.inputCount + ' 个输入项';
-    elements.fillFormBtn.disabled = true;
+    elements.fillFormBtn.disabled = !currentSiteId;
   } else {
     showNoForm();
   }
@@ -230,7 +228,7 @@ function setupEventListeners() {
     window.close();
   });
 
-  // Fill form button
+  // 主按钮：自动识别并填充（先识别再填充）
   elements.fillFormBtn.addEventListener('click', async () => {
     if (!currentSiteId) {
       showWarning('请先选择一个站点');
@@ -238,78 +236,69 @@ function setupEventListeners() {
     }
 
     elements.fillFormBtn.disabled = true;
-    elements.fillFormBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
 
     try {
-      const response = await chrome.tabs.sendMessage(currentTab.id, {
-        action: 'fillForm',
-        siteId: currentSiteId
-      });
-
-      if (response.success) {
-        const result = response.result;
-        let message = `已填充 ${result.filledCount} 个字段`;
-
-        if (result.hasCaptcha) {
-          message += '\n\n检测到验证码，请手动完成验证后提交。';
-        }
-
-        if (result.errors && result.errors.length > 0) {
-          message += `\n\n部分字段填充失败:\n${result.errors.join('\n')}`;
-        }
-
-        showSuccess(message);
-      } else {
-        showError(response.error || '填充失败');
-      }
-    } catch (error) {
-      console.error('[Popup] Fill form error:', error);
-      showError('填充失败: ' + error.message);
-    } finally {
-      elements.fillFormBtn.disabled = false;
-      elements.fillFormBtn.innerHTML = '<span class="btn-icon">✏️</span> 自动填充当前页面';
-    }
-  });
-
-  // Recognize button
-  elements.recognizeBtn.addEventListener('click', async () => {
-    elements.recognizeBtn.disabled = true;
-    elements.recognizeBtn.innerHTML = '<span class="btn-icon">⏳</span> 识别中...';
-
-    try {
-      const response = await chrome.tabs.sendMessage(currentTab.id, {
+      // 1. 先识别表单（无缓存或需刷新时）
+      elements.fillFormBtn.innerHTML = '<span class="btn-icon">⏳</span> 识别中...';
+      const recognizeResponse = await chrome.tabs.sendMessage(currentTab.id, {
         action: 'recognizeForm',
         useLlm: false
       });
 
-      const result = response.result || {};
-      if (response.success && result.status === 'success') {
-        const count = result.fieldCount ?? (Array.isArray(result.mappings) ? result.mappings.length : 0);
-        let domain = pageState?.domain;
-        try {
-          if (currentTab.url && (currentTab.url.startsWith('http://') || currentTab.url.startsWith('https://'))) {
-            domain = domain || new URL(currentTab.url).hostname;
-          }
-        } catch (_) {}
-        pageState = {
-          hasForm: true,
-          fieldMappings: result.mappings || [],
-          recognitionStatus: 'done',
-          recognitionMethod: result.method,
-          domain
-        };
-        updateFormStatus();
-        showSuccess(`识别成功，找到 ${count} 个可填字段`);
-      } else {
-        const errMsg = result.status === 'no_form' ? (result.message || '当前页面未检测到可填表单') : (response.error || result.error || '识别失败');
+      const result = recognizeResponse.result || {};
+      if (!recognizeResponse.success || result.status !== 'success') {
+        const errMsg = result.status === 'no_form' ? (result.message || '当前页面未检测到可填表单') : (recognizeResponse.error || result.error || '识别失败');
         showError(errMsg);
+        return;
+      }
+
+      const count = result.fieldCount ?? (Array.isArray(result.mappings) ? result.mappings.length : 0);
+      let domain = pageState?.domain;
+      try {
+        if (currentTab.url && (currentTab.url.startsWith('http://') || currentTab.url.startsWith('https://'))) {
+          domain = domain || new URL(currentTab.url).hostname;
+        }
+      } catch (_) {}
+      pageState = {
+        hasForm: true,
+        fieldMappings: result.mappings || [],
+        recognitionStatus: 'done',
+        recognitionMethod: result.method,
+        domain
+      };
+      updateFormStatus();
+
+      if (count === 0) {
+        showWarning('未匹配到可填字段，请检查页面或尝试在其它提交页使用');
+        return;
+      }
+
+      // 2. 再填充
+      elements.fillFormBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
+      const fillResponse = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'fillForm',
+        siteId: currentSiteId
+      });
+
+      if (fillResponse.success) {
+        const fillResult = fillResponse.result;
+        let message = `已填充 ${fillResult.filledCount} 个字段`;
+        if (fillResult.hasCaptcha) {
+          message += '\n\n检测到验证码，请手动完成验证后提交。';
+        }
+        if (fillResult.errors && fillResult.errors.length > 0) {
+          message += `\n\n部分字段填充失败:\n${fillResult.errors.join('\n')}`;
+        }
+        showSuccess(message);
+      } else {
+        showError(fillResponse.error || '填充失败');
       }
     } catch (error) {
-      console.error('[Popup] Recognize error:', error);
-      showError('识别失败: ' + error.message);
+      console.error('[Popup] Recognize or fill error:', error);
+      showError(error?.message?.includes('Receiving end') ? '无法在此页面使用（请打开普通网页）' : '操作失败: ' + error.message);
     } finally {
-      elements.recognizeBtn.disabled = false;
-      elements.recognizeBtn.innerHTML = '<span class="btn-icon">🔍</span> 重新识别';
+      elements.fillFormBtn.disabled = false;
+      elements.fillFormBtn.innerHTML = '<span class="btn-icon">✏️</span> 自动识别并填充';
     }
   });
 

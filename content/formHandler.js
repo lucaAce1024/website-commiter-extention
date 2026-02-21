@@ -168,6 +168,14 @@ function getFieldLabel(input) {
     }
   }
 
+  // Some forms put label text in the next sibling (e.g. <input /><span>Website URL</span>)
+  let next = input.nextElementSibling;
+  while (next) {
+    const t = next.textContent && next.textContent.trim();
+    if (t && t.length > 0 && t.length < 100) return t;
+    next = next.nextElementSibling;
+  }
+
   const ariaLabel = input.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel;
 
@@ -264,9 +272,10 @@ function recognizeByKeywords(formMetadata) {
       weights: { type: 3, name: 2, placeholder: 1 }
     },
     siteUrl: {
-      keywords: ['url', 'website', 'link', 'href', 'site', '网址', '网站地址', '链接', 'siteurl', 'websiteurl'],
+      // Include "website url" / "web url" phrases so "Website URL" label matches clearly over siteName
+      keywords: ['website url', 'web url', 'site url', 'url', 'website', 'link', 'href', 'site', '网址', '网站地址', '链接', 'siteurl', 'websiteurl', 'homepage', 'home page'],
       type: 'url',
-      weights: { type: 2, name: 2, placeholder: 1 }
+      weights: { type: 2, name: 2, placeholder: 1, label: 2 }
     },
     category: {
       keywords: ['category', 'cat', 'type', 'class', '分类', '类别', '类型'],
