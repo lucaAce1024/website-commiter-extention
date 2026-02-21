@@ -41,9 +41,18 @@ async function init() {
     return;
   }
 
-  // Display page domain
-  const url = new URL(currentTab.url);
-  elements.pageDomain.textContent = url.hostname;
+  // Display page domain (only http(s) pages have content script; avoid Invalid URL on chrome:// etc.)
+  let hostname = '';
+  try {
+    if (currentTab.url && (currentTab.url.startsWith('http://') || currentTab.url.startsWith('https://'))) {
+      hostname = new URL(currentTab.url).hostname;
+    } else {
+      hostname = currentTab.url || '—';
+    }
+  } catch (_) {
+    hostname = currentTab.url || '—';
+  }
+  elements.pageDomain.textContent = hostname;
 
   // Load sites
   await loadSites();
@@ -122,7 +131,12 @@ async function getPageState() {
     }
   } catch (error) {
     console.error('[Popup] Failed to get page state:', error);
-    showNoForm();
+    // Receiving end does not exist = content script not loaded (e.g. chrome://, new tab, extension page)
+    if (error?.message?.includes('Receiving end does not exist') || error?.message?.includes('Could not establish connection')) {
+      showError('无法在此页面使用（请打开普通网页，如 https://... 的提交页）');
+    } else {
+      showNoForm();
+    }
   }
 }
 
@@ -268,18 +282,27 @@ function setupEventListeners() {
         useLlm: false
       });
 
-      if (response.success) {
+      const result = response.result || {};
+      if (response.success && result.status === 'success') {
+        const count = result.fieldCount ?? (Array.isArray(result.mappings) ? result.mappings.length : 0);
+        let domain = pageState?.domain;
+        try {
+          if (currentTab.url && (currentTab.url.startsWith('http://') || currentTab.url.startsWith('https://'))) {
+            domain = domain || new URL(currentTab.url).hostname;
+          }
+        } catch (_) {}
         pageState = {
           hasForm: true,
-          fieldMappings: response.result.mappings,
+          fieldMappings: result.mappings || [],
           recognitionStatus: 'done',
-          recognitionMethod: response.result.method,
-          domain: pageState?.domain || new URL(currentTab.url).hostname
+          recognitionMethod: result.method,
+          domain
         };
         updateFormStatus();
-        showSuccess(`识别成功，找到 ${response.result.fieldCount} 个可填字段`);
+        showSuccess(`识别成功，找到 ${count} 个可填字段`);
       } else {
-        showError(response.error || '识别失败');
+        const errMsg = result.status === 'no_form' ? (result.message || '当前页面未检测到可填表单') : (response.error || result.error || '识别失败');
+        showError(errMsg);
       }
     } catch (error) {
       console.error('[Popup] Recognize error:', error);

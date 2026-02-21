@@ -381,9 +381,10 @@ async function recognizeForm(useLlm = false) {
 
     if (!formMetadata.hasForm) {
       pageState.recognitionStatus = 'failed';
+      console.info(`${TAG} No form: fields=${formMetadata.fields?.length ?? 0}, url=${formMetadata.url}`);
       return {
         status: 'no_form',
-        message: 'No form detected on this page'
+        message: '当前页面未检测到可填表单（若确有表单，可能是动态加载或非标准结构）'
       };
     }
 
@@ -391,7 +392,7 @@ async function recognizeForm(useLlm = false) {
 
     // Check for cached mapping
     const cached = await getCachedMapping(domain);
-    if (cached) {
+    if (cached && cached.length > 0) {
       pageState.fieldMappings = cached;
       pageState.recognitionStatus = 'done';
       pageState.recognitionMethod = 'cache';
@@ -405,6 +406,10 @@ async function recognizeForm(useLlm = false) {
 
     // Do keyword matching (always available)
     const mappings = recognizeByKeywords(formMetadata);
+    if (mappings.length === 0 && formMetadata.fields?.length > 0) {
+      const names = formMetadata.fields.map(f => f.name || f.label || f.placeholder || f.id || '(empty)').join(', ');
+      console.info(`${TAG} Keyword match 0 fields. Page fields (name/label/placeholder): ${names}`);
+    }
     pageState.fieldMappings = mappings;
     pageState.recognitionStatus = 'done';
     pageState.recognitionMethod = 'keyword';
@@ -431,12 +436,18 @@ async function recognizeForm(useLlm = false) {
 
 /**
  * Get cached field mapping for domain
+ * Returns the mappings array (stored value may be { mappings, cachedAt } or legacy array)
  */
 async function getCachedMapping(domain) {
   return new Promise((resolve) => {
     chrome.storage.local.get(['fieldMappings'], (result) => {
-      const mappings = result.fieldMappings || {};
-      resolve(mappings[domain] || null);
+      const data = result.fieldMappings?.[domain];
+      if (!data) {
+        resolve(null);
+        return;
+      }
+      const array = Array.isArray(data) ? data : (data.mappings || null);
+      resolve(array);
     });
   });
 }
@@ -548,41 +559,202 @@ async function fillForm(siteId) {
 }
 
 /**
- * Fill select element with category
+ * Category synonym mappings for intelligent matching
+ * Maps user categories to common navigation site category names
  */
-function fillSelectElement(select, value, siteData) {
-  // Try exact match
-  for (const option of select.options) {
-    if (option.value === value || option.text === value) {
-      select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
+const CATEGORY_SYNONYMS = {
+  // Video/Media related
+  '视频': ['video', 'media', 'multimedia', 'entertainment', 'film', 'movies', 'streaming', 'audio visual', 'av', '影视', '影音', '短视频', '长视频', '娱乐'],
+  '影视': ['视频', 'video', 'media', 'film', 'movies', 'entertainment'],
+  '影音': ['视频', 'video', 'audio', 'media', 'multimedia'],
+  '娱乐': ['视频', 'entertainment', 'video', 'media', 'fun', 'leisure'],
+  'video': ['视频', '影视', '影音', 'media', 'multimedia', 'entertainment', 'film', 'streaming'],
+  'media': ['视频', '影视', 'video', 'multimedia', 'entertainment', 'streaming'],
+
+  // AI related
+  'ai': ['artificial intelligence', 'machine learning', 'ml', '人工智能', '智能', 'ai tools'],
+  '人工智能': ['ai', 'artificial intelligence', 'machine learning', 'smart', '智能'],
+  '智能': ['ai', 'artificial intelligence', 'smart', 'intelligence'],
+
+  // Development related
+  '开发': ['development', 'developer', 'dev', 'programming', 'coding', 'code', '开发工具'],
+  'developer': ['开发', 'development', 'dev', 'programming', 'coding', 'engineer'],
+  'programming': ['开发', 'programming', 'coding', 'developer', 'code'],
+  'code': ['开发', 'programming', 'coding', 'developer'],
+
+  // Design related
+  '设计': ['design', 'designer', 'ui', 'ux', 'graphic', 'creative', 'visual'],
+  'design': ['设计', 'designer', 'ui', 'ux', 'graphic', 'creative', 'visual'],
+  'ui': ['设计', 'design', 'user interface', 'interface', 'ux'],
+  'ux': ['设计', 'design', 'user experience', 'experience', 'ui'],
+
+  // Productivity related
+  '效率': ['productivity', 'efficiency', 'tools', 'utility', '效率工具'],
+  'productivity': ['效率', 'efficiency', 'tools', 'utility', 'work'],
+  'tools': ['工具', 'productivity', 'utility', 'resources'],
+
+  // Business/Marketing related
+  '商业': ['business', 'marketing', 'sales', 'enterprise', 'b2b', '商务'],
+  'business': ['商业', 'marketing', 'sales', 'enterprise', 'b2b'],
+  'marketing': ['商业', 'marketing', 'promotion', 'advertising', 'growth', '营销'],
+  '营销': ['marketing', 'promotion', 'advertising', 'growth', '商业'],
+
+  // Writing/Content related
+  '写作': ['writing', 'content', 'copywriting', 'text', 'editor', '写作工具'],
+  'writing': ['写作', 'content', 'copywriting', 'text', 'editor', 'authoring'],
+  'content': ['写作', 'writing', 'content creation', 'copywriting', '文章'],
+
+  // Image/Graphics related
+  '图片': ['image', 'photo', 'picture', 'graphics', 'visual', 'imaging', '图像'],
+  'image': ['图片', 'photo', 'picture', 'graphics', 'visual', 'imaging'],
+  'graphics': ['图片', 'image', 'design', 'visual', 'graphic design'],
+
+  // Audio/Music related
+  '音频': ['audio', 'music', 'sound', 'voice', 'podcast', '语音'],
+  'audio': ['音频', 'music', 'sound', 'voice', 'podcast'],
+  'music': ['音频', 'audio', 'sound', '歌曲', '音乐'],
+
+  // Education related
+  '教育': ['education', 'learning', 'training', 'course', 'tutorial', 'teaching', '学习'],
+  'education': ['教育', 'learning', 'training', 'course', 'tutorial'],
+  'learning': ['教育', 'education', 'training', 'course', '学习'],
+
+  // E-commerce related
+  '电商': ['ecommerce', 'e-commerce', 'shopping', 'store', 'retail', 'online store'],
+  'ecommerce': ['电商', 'e-commerce', 'shopping', 'store', 'retail'],
+
+  // Social related
+  '社交': ['social', 'social media', 'community', 'networking', 'communication'],
+  'social': ['社交', 'social media', 'community', 'networking'],
+
+  // Finance related
+  '金融': ['finance', 'financial', 'money', 'banking', 'investment', 'payment', '财务'],
+  'finance': ['金融', 'financial', 'money', 'banking', 'investment'],
+
+  // Health related
+  '健康': ['health', 'healthcare', 'medical', 'wellness', 'fitness', '健康医疗'],
+  'health': ['健康', 'healthcare', 'medical', 'wellness', 'fitness'],
+
+  // Other common categories
+  '工具': ['tools', 'utility', 'resources', 'helpers'],
+  '其他': ['other', 'misc', 'miscellaneous', 'general'],
+  '免费': ['free', 'freemium', 'open source', 'gratis'],
+  '开源': ['open source', 'opensource', 'free', 'github'],
+  'startup': ['startup', 'startups', 'new', 'launch', '新创', '创业'],
+  '创业': ['startup', 'entrepreneurship', 'business', '新创'],
+  'saas': ['saas', 'software as a service', 'cloud', 'web app'],
+  'api': ['api', 'apis', 'developer tools', 'integration'],
+};
+
+/**
+ * Find the best matching option in a select element
+ * Uses synonym mapping for intelligent category matching
+ */
+function findBestCategoryMatch(select, userCategory) {
+  const userCategoryLower = userCategory.toLowerCase().trim();
+  const options = Array.from(select.options);
+
+  // Collect all available option texts
+  const availableOptions = options.map(opt => ({
+    value: opt.value,
+    text: opt.text.trim(),
+    textLower: opt.text.toLowerCase().trim()
+  })).filter(opt => opt.text); // Filter out empty options
+
+  // 1. Try exact match
+  const exactMatch = availableOptions.find(opt =>
+    opt.value === userCategory ||
+    opt.text === userCategory ||
+    opt.textLower === userCategoryLower
+  );
+  if (exactMatch) return exactMatch;
+
+  // 2. Try direct partial match
+  const partialMatch = availableOptions.find(opt =>
+    opt.textLower.includes(userCategoryLower) ||
+    userCategoryLower.includes(opt.textLower)
+  );
+  if (partialMatch) return partialMatch;
+
+  // 3. Use synonym mapping
+  const synonyms = CATEGORY_SYNONYMS[userCategoryLower] || [];
+
+  // Check if any synonym matches an option
+  for (const synonym of synonyms) {
+    const synonymLower = synonym.toLowerCase();
+
+    // Exact match with synonym
+    const synonymExactMatch = availableOptions.find(opt => opt.textLower === synonymLower);
+    if (synonymExactMatch) return synonymExactMatch;
+
+    // Partial match with synonym
+    const synonymPartialMatch = availableOptions.find(opt =>
+      opt.textLower.includes(synonymLower) ||
+      synonymLower.includes(opt.textLower)
+    );
+    if (synonymPartialMatch) return synonymPartialMatch;
   }
 
-  // Try partial match
-  const valueLower = value.toLowerCase();
-  for (const option of select.options) {
-    if (option.text.toLowerCase().includes(valueLower) || valueLower.includes(option.text.toLowerCase())) {
-      select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-  }
-
-  // Try with site category
-  if (siteData.category) {
-    const categoryLower = siteData.category.toLowerCase();
-    for (const option of select.options) {
-      if (option.text.toLowerCase().includes(categoryLower)) {
-        select.value = option.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
+  // 4. Try reverse mapping - check if any option has synonyms that include user category
+  for (const option of availableOptions) {
+    const optionSynonyms = CATEGORY_SYNONYMS[option.textLower];
+    if (optionSynonyms) {
+      // Check if user category matches any synonym of this option
+      if (optionSynonyms.some(s => s.toLowerCase() === userCategoryLower)) {
+        return option;
+      }
+      // Check partial match
+      if (optionSynonyms.some(s =>
+        s.toLowerCase().includes(userCategoryLower) ||
+        userCategoryLower.includes(s.toLowerCase())
+      )) {
+        return option;
       }
     }
   }
 
-  console.warn(`${TAG} Could not find matching option for:`, value);
+  // 5. Try fuzzy matching with word boundaries
+  const userWords = userCategoryLower.split(/[\s_-]+/);
+  for (const option of availableOptions) {
+    const optionWords = option.textLower.split(/[\s_-]+/);
+    // Check if any word matches
+    if (userWords.some(uw => optionWords.some(ow => uw === ow || ow.includes(uw) || uw.includes(ow)))) {
+      return option;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fill select element with category
+ */
+function fillSelectElement(select, value, siteData) {
+  // Try to find the best matching option
+  const bestMatch = findBestCategoryMatch(select, value);
+
+  if (bestMatch) {
+    select.value = bestMatch.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    console.log(`${TAG} Matched category "${value}" to option "${bestMatch.text}"`);
+    return true;
+  }
+
+  // Try with site category as fallback
+  if (siteData.category && siteData.category !== value) {
+    const categoryMatch = findBestCategoryMatch(select, siteData.category);
+    if (categoryMatch) {
+      select.value = categoryMatch.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log(`${TAG} Matched site category "${siteData.category}" to option "${categoryMatch.text}"`);
+      return true;
+    }
+  }
+
+  // Log available options for debugging
+  const availableOptions = Array.from(select.options).map(opt => opt.text).join(', ');
+  console.warn(`${TAG} Could not find matching option for: "${value}"`);
+  console.warn(`${TAG} Available options: ${availableOptions}`);
   return false;
 }
 

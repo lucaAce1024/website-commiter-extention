@@ -1,10 +1,8 @@
 {
   "manifest_version": 3,
   "name": "外链提交助手",
-  "name__en": "Backlink Submitter",
   "version": "1.0.0",
   "description": "自动识别并填充导航站收录表单，提升网站提交效率",
-  "description__en": "Automatically identify and fill navigation site submission forms",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
