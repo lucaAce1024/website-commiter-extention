@@ -9,6 +9,10 @@ let sites = [];
 let navSites = [];
 let fieldMappings = {};
 let settings = {};
+/** 当前编辑中待保存的 Logo 图片（data URL），用于文件上传类表单项 */
+let pendingLogoDataUrl = null;
+/** 当前编辑中待保存的界面截图（data URL），对应 App Image 等上传框 */
+let pendingScreenshotDataUrl = null;
 
 // DOM elements cache
 const elements = {};
@@ -221,26 +225,45 @@ function renderSitesTab() {
   elements.noSitesHint.classList.add('hidden');
 
   elements.sitesList.innerHTML = sites.map(site => `
-    <div class="item-card">
-      <div class="item-header">
-        <h3 class="item-title">${escapeHtml(site.siteName || 'Unnamed')}</h3>
-        <div class="item-actions">
-          <button class="btn-icon" data-action="edit" data-id="${site.id}" title="编辑">✏️</button>
-          <button class="btn-icon" data-action="delete" data-id="${site.id}" title="删除">🗑️</button>
-        </div>
+    <div class="item-card" data-site-id="${site.id}">
+      <div class="item-card-logo-wrap" data-site-id="${site.id}" title="${site.logoDataUrl ? '已上传 Logo' : '未上传 Logo'}">
+        ${site.logoDataUrl ? '' : '<span class="item-card-logo-placeholder">无</span>'}
       </div>
-      <div class="item-details">
-        <div class="detail-row">
-          <span class="detail-label">URL:</span>
-          <span class="detail-value">${escapeHtml(site.siteUrl || '-')}</span>
+      <div class="item-card-body">
+        <div class="item-header">
+          <h3 class="item-title">${escapeHtml(site.siteName || 'Unnamed')}</h3>
+          <div class="item-actions">
+            <button class="btn-icon" data-action="edit" data-id="${site.id}" title="编辑">✏️</button>
+            <button class="btn-icon" data-action="delete" data-id="${site.id}" title="删除">🗑️</button>
+          </div>
         </div>
-        <div class="detail-row">
-          <span class="detail-label">分类:</span>
-          <span class="detail-value">${escapeHtml(site.category || '-')}</span>
+        <div class="item-details">
+          <div class="detail-row">
+            <span class="detail-label">URL:</span>
+            <span class="detail-value">${escapeHtml(site.siteUrl || '-')}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">分类:</span>
+            <span class="detail-value">${escapeHtml(site.category || '-')}</span>
+          </div>
         </div>
       </div>
     </div>
   `).join('');
+
+  // 为有 logoDataUrl 的站点填入 Logo 预览图（避免在 HTML 中嵌入超长 data URL）
+  sites.forEach(site => {
+    if (!site.logoDataUrl) return;
+    const wrap = elements.sitesList.querySelector(`.item-card-logo-wrap[data-site-id="${site.id}"]`);
+    if (wrap) {
+      const img = document.createElement('img');
+      img.src = site.logoDataUrl;
+      img.alt = site.siteName || 'Logo';
+      img.className = 'item-card-logo';
+      wrap.innerHTML = '';
+      wrap.appendChild(img);
+    }
+  });
 
   // Add event listeners to item actions
   elements.sitesList.querySelectorAll('.btn-icon').forEach(btn => {
@@ -438,13 +461,19 @@ function openSiteModal(siteId = null) {
       </div>
 
       <div class="form-group">
-        <label for="logo" class="form-label">Logo URL</label>
-        <input type="url" id="logo" class="input" value="${escapeHtml(site?.logo || '')}">
+        <label class="form-label">Logo（用于自动填充上传框）</label>
+        <input type="url" id="logo" class="input" value="${escapeHtml(site?.logo || '')}" placeholder="Logo 图片 URL（可选）">
+        <div class="form-hint">或上传图片（findly 等站点为文件上传框时使用）</div>
+        <input type="file" id="logoFile" class="input" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp" style="margin-top:4px">
+        <div id="logoPreview" class="logo-preview hidden"></div>
       </div>
 
       <div class="form-group">
-        <label for="screenshot" class="form-label">界面截图 URL</label>
-        <input type="url" id="screenshot" class="input" value="${escapeHtml(site?.screenshot || '')}">
+        <label class="form-label">界面截图（App Image 等上传框）</label>
+        <input type="url" id="screenshot" class="input" value="${escapeHtml(site?.screenshot || '')}" placeholder="截图 URL（可选）">
+        <div class="form-hint">或上传一张图片</div>
+        <input type="file" id="screenshotFile" class="input" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp" style="margin-top:4px">
+        <div id="screenshotPreview" class="logo-preview hidden"></div>
       </div>
 
       <div class="form-actions">
@@ -455,6 +484,80 @@ function openSiteModal(siteId = null) {
   `;
 
   openModal();
+
+  // 编辑时保留已有 Logo / 界面截图 数据；新建时清空
+  pendingLogoDataUrl = site?.logoDataUrl || null;
+  pendingScreenshotDataUrl = site?.screenshotDataUrl || null;
+  const logoPreviewEl = document.getElementById('logoPreview');
+  const logoFileEl = document.getElementById('logoFile');
+  const screenshotPreviewEl = document.getElementById('screenshotPreview');
+  const screenshotFileEl = document.getElementById('screenshotFile');
+
+  function renderLogoPreview(dataUrl) {
+    if (!dataUrl) {
+      logoPreviewEl.classList.add('hidden');
+      logoPreviewEl.innerHTML = '';
+      return;
+    }
+    logoPreviewEl.classList.remove('hidden');
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'Logo 预览';
+    img.className = 'logo-preview-img';
+    logoPreviewEl.innerHTML = '';
+    logoPreviewEl.appendChild(img);
+  }
+  renderLogoPreview(site?.logoDataUrl || null);
+  if (logoFileEl) logoFileEl.value = '';
+
+  function renderScreenshotPreview(dataUrl) {
+    if (!dataUrl) {
+      screenshotPreviewEl.classList.add('hidden');
+      screenshotPreviewEl.innerHTML = '';
+      return;
+    }
+    screenshotPreviewEl.classList.remove('hidden');
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = '界面截图预览';
+    img.className = 'logo-preview-img';
+    screenshotPreviewEl.innerHTML = '';
+    screenshotPreviewEl.appendChild(img);
+  }
+  renderScreenshotPreview(site?.screenshotDataUrl || null);
+  if (screenshotFileEl) screenshotFileEl.value = '';
+
+  // Logo 文件选择：转为 data URL 供保存与自动填充上传框使用
+  logoFileEl.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) {
+      pendingLogoDataUrl = null;
+      renderLogoPreview(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingLogoDataUrl = reader.result;
+      renderLogoPreview(pendingLogoDataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // 界面截图文件选择
+  screenshotFileEl.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) {
+      pendingScreenshotDataUrl = null;
+      renderScreenshotPreview(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingScreenshotDataUrl = reader.result;
+      renderScreenshotPreview(pendingScreenshotDataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
 
   // Form submission
   document.getElementById('siteForm').addEventListener('submit', (e) => {
@@ -478,8 +581,12 @@ async function saveSite(siteId) {
     shortDescription: document.getElementById('shortDescription').value.trim(),
     longDescription: document.getElementById('longDescription').value.trim(),
     logo: document.getElementById('logo').value.trim(),
-    screenshot: document.getElementById('screenshot').value.trim()
+    logoDataUrl: pendingLogoDataUrl ?? (siteId ? (sites.find(s => s.id === siteId)?.logoDataUrl) : null) ?? '',
+    screenshot: document.getElementById('screenshot').value.trim(),
+    screenshotDataUrl: pendingScreenshotDataUrl ?? (siteId ? (sites.find(s => s.id === siteId)?.screenshotDataUrl) : null) ?? ''
   };
+  pendingLogoDataUrl = null;
+  pendingScreenshotDataUrl = null;
 
   try {
     if (siteId) {

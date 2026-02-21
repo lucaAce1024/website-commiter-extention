@@ -108,9 +108,10 @@ function getFormMetadata() {
     const inputs = form.querySelectorAll('input, textarea, select');
 
     inputs.forEach((input, index) => {
-      if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(input.type)) {
+      if (['hidden', 'submit', 'button', 'reset', 'image'].includes(input.type)) {
         return;
       }
+      // 包含 type="file"（Logo/截图上传框），便于识别并自动填入
 
       const label = getFieldLabel(input);
       const locator = getFieldLocator(input);
@@ -147,7 +148,7 @@ function getFormMetadata() {
   if (fields.length === 0) {
     const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select');
     allInputs.forEach((input, index) => {
-      if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(input.type)) {
+      if (['hidden', 'submit', 'button', 'reset', 'image'].includes(input.type)) {
         return;
       }
 
@@ -216,6 +217,16 @@ function getFieldLabel(input) {
     const t = next.textContent && next.textContent.trim();
     if (t && t.length > 0 && t.length < 100) return t;
     next = next.nextElementSibling;
+  }
+
+  // 同一父节点内的 label（如 findly：<div><label>Logo</label><div>拖拽区</div><input type="file"></div>）
+  const parentEl = input.parentElement;
+  if (parentEl) {
+    const labelInParent = parentEl.querySelector('label');
+    if (labelInParent) {
+      const t = labelInParent.textContent.trim();
+      if (t.length > 0 && t.length < 100) return t;
+    }
   }
 
   const ariaLabel = input.getAttribute('aria-label');
@@ -338,14 +349,16 @@ function recognizeByKeywords(formMetadata) {
       weights: { name: 2, placeholder: 1 }
     },
     logo: {
-      keywords: ['logo', 'icon', 'image', 'logo', '图标', '标志'],
+      keywords: ['logo', 'icon', 'image', 'favicon', '图标', '标志'],
       type: 'url',
-      weights: { name: 2, placeholder: 1 }
+      isFileInput: true, // type="file" 的上传框也参与匹配
+      weights: { name: 2, placeholder: 1, label: 2 }
     },
     screenshot: {
-      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', '截图', '预览图'],
+      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', '截图', '预览图', 'app image', 'appimage', 'app-image', '界面截图', '应用截图'],
       type: 'url',
-      weights: { name: 2, placeholder: 1 }
+      isFileInput: true,
+      weights: { name: 2, placeholder: 1, label: 2 }
     }
   };
 
@@ -353,6 +366,11 @@ function recognizeByKeywords(formMetadata) {
 
   for (const field of formMetadata.fields) {
     const scores = {};
+    const nameLower = (field.name || '').toLowerCase();
+    const labelLower = (field.label || '').toLowerCase();
+    const placeholderLower = (field.placeholder || '').toLowerCase();
+    const ariaLabelLower = (field.ariaLabel || '').toLowerCase();
+    const idLower = (field.id || '').toLowerCase();
 
     for (const [standardField, config] of Object.entries(FIELD_KEYWORDS)) {
       let score = 0;
@@ -366,12 +384,9 @@ function recognizeByKeywords(formMetadata) {
       if (config.isSelect && field.type === 'select-one') {
         score += 3;
       }
-
-      const nameLower = (field.name || '').toLowerCase();
-      const labelLower = (field.label || '').toLowerCase();
-      const placeholderLower = (field.placeholder || '').toLowerCase();
-      const ariaLabelLower = (field.ariaLabel || '').toLowerCase();
-      const idLower = (field.id || '').toLowerCase();
+      if (config.isFileInput && field.type === 'file') {
+        score += 4; // 文件上传框可匹配 logo / screenshot
+      }
 
       for (const kw of config.keywords) {
         const k = kw.toLowerCase();
@@ -391,6 +406,12 @@ function recognizeByKeywords(formMetadata) {
       if (score > 0) {
         scores[standardField] = score;
       }
+    }
+
+    // 「App Image」只匹配界面截图，不匹配 Logo：label/name 含 app image 时排除 logo
+    const hintForExclude = (labelLower + ' ' + nameLower + ' ' + ariaLabelLower).trim();
+    if (hintForExclude.includes('app image') || hintForExclude.includes('appimage')) {
+      delete scores.logo;
     }
 
     let bestField = null;
@@ -587,6 +608,36 @@ async function fillForm(siteId) {
       }
 
       let value = siteData[mapping.standardField];
+      // Logo 文件上传框：使用站点管理里上传的 logoDataUrl
+      if (mapping.standardField === 'logo' && element.type === 'file') {
+        const logoDataUrl = siteData.logoDataUrl || value;
+        if (logoDataUrl && typeof logoDataUrl === 'string' && logoDataUrl.startsWith('data:')) {
+          try {
+            fillFileInputWithDataUrl(element, logoDataUrl);
+            filledCount++;
+            console.log(`${TAG} Filled ${mapping.standardField}: (file from stored image)`);
+          } catch (err) {
+            errors.push(`Failed to fill logo file: ${err.message}`);
+          }
+        }
+        continue;
+      }
+
+      // 界面截图 / App Image 文件上传框：使用站点管理里上传的 screenshotDataUrl
+      if (mapping.standardField === 'screenshot' && element.type === 'file') {
+        const screenshotDataUrl = siteData.screenshotDataUrl || value;
+        if (screenshotDataUrl && typeof screenshotDataUrl === 'string' && screenshotDataUrl.startsWith('data:')) {
+          try {
+            fillFileInputWithDataUrl(element, screenshotDataUrl);
+            filledCount++;
+            console.log(`${TAG} Filled ${mapping.standardField}: (file from stored image)`);
+          } catch (err) {
+            errors.push(`Failed to fill screenshot file: ${err.message}`);
+          }
+        }
+        continue;
+      }
+
       if (!value) {
         // Field not in site data, skip
         continue;
@@ -872,6 +923,31 @@ function getUrlValueForInput(input, fullUrl) {
   }
   if (!/^https?:\/\//i.test(trimmed)) return 'https://' + trimmed;
   return trimmed;
+}
+
+/**
+ * 将 data URL 转为 File，用于填入 <input type="file">
+ */
+function dataURLtoFile(dataUrl, filename = 'logo.png') {
+  const arr = dataUrl.split(',');
+  const mime = (arr[0].match(/:(.*?);/) || [])[1] || 'image/png';
+  const bstr = atob(arr[1]);
+  const n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  for (let i = 0; i < n; i++) u8arr[i] = bstr.charCodeAt(i);
+  return new File([u8arr], filename, { type: mime });
+}
+
+/**
+ * 用存储的 Logo data URL 自动填入文件上传框
+ */
+function fillFileInputWithDataUrl(fileInput, dataUrl) {
+  const file = dataURLtoFile(dataUrl, 'logo.png');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 /**
