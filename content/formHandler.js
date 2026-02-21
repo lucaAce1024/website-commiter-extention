@@ -35,6 +35,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'clearMapping') {
     clearMapping().then(() => sendResponse({ success: true }));
+    return true; // 异步响应
   }
 });
 
@@ -55,6 +56,43 @@ function detectForm() {
     url: window.location.href,
     domain: pageState.domain
   };
+}
+
+/**
+ * 生成元素的 XPath（用于日志与调试）
+ */
+function getXPath(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+  const parts = [];
+  let current = el;
+  while (current && current.nodeType === Node.ELEMENT_NODE) {
+    let index = 1;
+    const tag = current.tagName.toLowerCase();
+    let sibling = current.previousElementSibling;
+    while (sibling) {
+      if (sibling.tagName && sibling.tagName.toLowerCase() === tag) index++;
+      sibling = sibling.previousElementSibling;
+    }
+    const id = current.id && /^[a-zA-Z][\w-]*$/.test(current.id) ? current.id : null;
+    const part = id ? `*[@id="${id}"]` : `${tag}[${index}]`;
+    parts.unshift(part);
+    current = current.parentElement;
+  }
+  return parts.length ? '//' + parts.join('/') : '';
+}
+
+/**
+ * 将 locator 对象格式化为可读的定位描述（用于日志）
+ */
+function formatLocator(locator) {
+  if (!locator) return '';
+  switch (locator.type) {
+    case 'id': return `id="${locator.value}"`;
+    case 'name': return `name="${locator.value}" (formIndex=${locator.formIndex ?? 0})`;
+    case 'data': return `data-name/data-field="${locator.value}"`;
+    case 'index': return `index: ${locator.parentTag}[${locator.parentIndex}] > input/textarea/select[${locator.fieldIndex}]`;
+    default: return JSON.stringify(locator);
+  }
 }
 
 /**
@@ -79,8 +117,10 @@ function getFormMetadata() {
 
       const fieldInfo = {
         locator,
+        xpath: getXPath(input),
+        locatorDesc: formatLocator(locator),
         type: input.type || (input.tagName === 'TEXTAREA' ? 'textarea' : input.tagName.toLowerCase()),
-        name: input.name || '',
+        name: input.name || input.dataset?.name || input.dataset?.field || '',
         id: input.id || '',
         placeholder: input.placeholder || '',
         label: label || '',
@@ -116,8 +156,10 @@ function getFormMetadata() {
 
       fields.push({
         locator,
+        xpath: getXPath(input),
+        locatorDesc: formatLocator(locator),
         type: input.type || (input.tagName === 'TEXTAREA' ? 'textarea' : input.tagName.toLowerCase()),
-        name: input.name || '',
+        name: input.name || input.dataset?.name || input.dataset?.field || '',
         id: input.id || '',
         placeholder: input.placeholder || '',
         label: label || '',
@@ -325,25 +367,25 @@ function recognizeByKeywords(formMetadata) {
         score += 3;
       }
 
-      const nameLower = field.name.toLowerCase();
-      for (const kw of config.keywords) {
-        if (nameLower.includes(kw.toLowerCase())) {
-          score += config.weights.name || 1;
-        }
-      }
+      const nameLower = (field.name || '').toLowerCase();
+      const labelLower = (field.label || '').toLowerCase();
+      const placeholderLower = (field.placeholder || '').toLowerCase();
+      const ariaLabelLower = (field.ariaLabel || '').toLowerCase();
+      const idLower = (field.id || '').toLowerCase();
 
-      const labelLower = field.label.toLowerCase();
       for (const kw of config.keywords) {
-        if (labelLower.includes(kw.toLowerCase())) {
-          score += config.weights.label || 1;
-        }
+        const k = kw.toLowerCase();
+        if (nameLower.includes(k)) score += config.weights.name || 1;
+        if (labelLower.includes(k)) score += config.weights.label || 1;
+        if (placeholderLower.includes(k)) score += config.weights.placeholder || 1;
+        // shadcn/Radix 等常用 aria-label 作为可访问标签，findly 等站点可能只有此处有 "Website URL"
+        if (ariaLabelLower.includes(k)) score += (config.weights.label || 1) * 1.2;
+        if (idLower.includes(k)) score += config.weights.name || 1;
       }
-
-      const placeholderLower = field.placeholder.toLowerCase();
-      for (const kw of config.keywords) {
-        if (placeholderLower.includes(kw.toLowerCase())) {
-          score += config.weights.placeholder || 1;
-        }
+      // 若 placeholder/label 已带 https:// 前缀，说明是 URL 输入框，优先识别为 siteUrl
+      if (standardField === 'siteUrl') {
+        const hint = (placeholderLower + ' ' + labelLower + ' ' + ariaLabelLower).trim();
+        if (/^https?:\/\//.test(hint) || hint.includes('://')) score += 4;
       }
 
       if (score > 0) {
@@ -366,12 +408,27 @@ function recognizeByKeywords(formMetadata) {
         locator: field.locator,
         standardField: bestField,
         confidence: Math.min(bestScore / 8, 1),
-        method: 'keyword'
+        method: 'keyword',
+        xpath: field.xpath,
+        locatorDesc: field.locatorDesc
       });
     }
   }
 
   return matches;
+}
+
+/**
+ * 将识别结果按「定位 + 标准化字段」打印到控制台，便于调试
+ */
+function logRecognitionResult(mappings, method) {
+  if (!mappings || mappings.length === 0) return;
+  console.group(`${TAG} 字段识别结果 (${method})`);
+  mappings.forEach((m, i) => {
+    const loc = m.xpath ? 'XPath ' + m.xpath : (m.locatorDesc || formatLocator(m.locator));
+    console.log(`  ${i + 1}. 定位: ${loc} | 标准化字段: ${m.standardField}`);
+  });
+  console.groupEnd();
 }
 
 /**
@@ -405,6 +462,7 @@ async function recognizeForm(useLlm = false) {
       pageState.fieldMappings = cached;
       pageState.recognitionStatus = 'done';
       pageState.recognitionMethod = 'cache';
+      logRecognitionResult(cached, 'cache');
       return {
         status: 'success',
         method: 'cache',
@@ -422,6 +480,8 @@ async function recognizeForm(useLlm = false) {
     pageState.fieldMappings = mappings;
     pageState.recognitionStatus = 'done';
     pageState.recognitionMethod = 'keyword';
+
+    logRecognitionResult(mappings, 'keyword');
 
     // Cache the result
     await cacheMapping(domain, mappings);
@@ -526,10 +586,15 @@ async function fillForm(siteId) {
         continue;
       }
 
-      const value = siteData[mapping.standardField];
+      let value = siteData[mapping.standardField];
       if (!value) {
         // Field not in site data, skip
         continue;
+      }
+
+      // Website URL：根据输入框是否已有 https:// 前缀动态决定填完整 URL 还是仅填域名+路径
+      if (mapping.standardField === 'siteUrl') {
+        value = getUrlValueForInput(element, value);
       }
 
       // Set value based on element type
@@ -765,6 +830,48 @@ function fillSelectElement(select, value, siteData) {
   console.warn(`${TAG} Could not find matching option for: "${value}"`);
   console.warn(`${TAG} Available options: ${availableOptions}`);
   return false;
+}
+
+/**
+ * 根据输入框是否已有 https:// 前缀，决定填入完整 URL 还是仅域名+路径
+ * 若 placeholder 或前置兄弟节点为 "https://"，则只填协议后的部分，避免重复
+ */
+function getUrlValueForInput(input, fullUrl) {
+  if (!fullUrl || typeof fullUrl !== 'string') return fullUrl;
+  const trimmed = fullUrl.trim();
+  let hasPrefix = false;
+  const placeholder = (input.placeholder || '').trim().toLowerCase();
+  const currentValue = (input.value || '').trim().toLowerCase();
+  if (placeholder.startsWith('http://') || placeholder.startsWith('https://')) hasPrefix = true;
+  if (!hasPrefix && (currentValue === 'https://' || currentValue === 'http://')) hasPrefix = true;
+  if (!hasPrefix) {
+    let prev = input.previousElementSibling;
+    while (prev) {
+      const t = (prev.textContent || '').trim().toLowerCase();
+      if (t.startsWith('https://') || t.startsWith('http://')) { hasPrefix = true; break; }
+      if (t.length > 60) break;
+      prev = prev.previousElementSibling;
+    }
+  }
+  if (!hasPrefix && input.parentElement) {
+    const p = input.parentElement;
+    const first = p.firstChild;
+    if (first && first.nodeType === Node.TEXT_NODE) {
+      const t = (first.textContent || '').trim().toLowerCase();
+      if (t.startsWith('https://') || t.startsWith('http://')) hasPrefix = true;
+    }
+  }
+  if (hasPrefix) {
+    try {
+      const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
+      const u = new URL(withProtocol);
+      return u.hostname + (u.pathname !== '/' ? u.pathname : '') + u.search;
+    } catch (_) {
+      return trimmed.replace(/^https?:\/\//i, '');
+    }
+  }
+  if (!/^https?:\/\//i.test(trimmed)) return 'https://' + trimmed;
+  return trimmed;
 }
 
 /**

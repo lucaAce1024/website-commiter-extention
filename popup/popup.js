@@ -14,6 +14,7 @@ const elements = {
   formStatus: document.getElementById('formStatus'),
   noFormHint: document.getElementById('noFormHint'),
   fillFormBtn: document.getElementById('fillFormBtn'),
+  clearCacheBtn: document.getElementById('clearCacheBtn'),
   openNavSitesBtn: document.getElementById('openNavSitesBtn'),
   openOptionsBtn: document.getElementById('openOptionsBtn'),
   statusMessage: document.getElementById('statusMessage'),
@@ -299,6 +300,25 @@ function setupEventListeners() {
     } finally {
       elements.fillFormBtn.disabled = false;
       elements.fillFormBtn.innerHTML = '<span class="btn-icon">✏️</span> 自动识别并填充';
+    }
+  });
+
+  // 清除当前页识别缓存（识别不准或漏填时使用，下次「自动识别并填充」会重新识别）
+  elements.clearCacheBtn.addEventListener('click', async () => {
+    try {
+      const response = await chrome.tabs.sendMessage(currentTab.id, { action: 'clearMapping' });
+      if (response?.success) {
+        showSuccess('已清除本页缓存，请再次点击「自动识别并填充」');
+        await getPageState();
+      } else {
+        showError('清除失败');
+      }
+    } catch (error) {
+      if (error?.message?.includes('Receiving end')) {
+        showError('无法在此页面使用（请打开普通网页）');
+      } else {
+        showError('清除失败: ' + error.message);
+      }
     }
   });
 
