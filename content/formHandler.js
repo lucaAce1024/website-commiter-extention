@@ -19,6 +19,12 @@ let pageState = {
   recognitionMethod: null
 };
 
+/** 右键菜单打开时记录的目标元素，用于「剪切板填充」：在哪个输入框右键就填哪个 */
+let lastContextMenuTarget = null;
+document.addEventListener('contextmenu', (e) => {
+  lastContextMenuTarget = getEditableElementFromTarget(e.target);
+}, true);
+
 // Listen for messages from popup/background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'detectForm') {
@@ -150,6 +156,35 @@ function getFormMetadata() {
       }
 
       fields.push(fieldInfo);
+    });
+
+    // 收集「Short Description」等由 label 关联的 contenteditable/ProseMirror（如 auraplusplus）
+    const shortDescLabelPatterns = [/short\s*description/i, /brief\s*description/i, /short\s*desc/i, /简介/i, /简述/i];
+    form.querySelectorAll('label').forEach((labelEl) => {
+      const labelText = labelEl.textContent.trim();
+      if (!shortDescLabelPatterns.some(re => re.test(labelText))) return;
+      if (fields.some(f => f.standardFieldHint === 'shortDescription')) return;
+      let control = labelEl.htmlFor ? document.getElementById(labelEl.htmlFor) : null;
+      if (!control) control = labelEl.parentElement?.querySelector(`[id="${labelEl.htmlFor}"]`);
+      if (!control) control = labelEl.nextElementSibling;
+      if (!control) return;
+      const editable = control.getAttribute?.('contenteditable') === 'true' ? control : control.querySelector?.('[contenteditable="true"], .ProseMirror');
+      if (!editable) return;
+      const xpath = getXPath(editable);
+      if (!xpath) return;
+      fields.push({
+        locator: { type: 'xpath', value: xpath },
+        xpath,
+        locatorDesc: `contenteditable(Short Description): ${xpath}`,
+        type: 'contenteditable',
+        name: labelEl.htmlFor || '',
+        id: editable.id || '',
+        placeholder: '',
+        label: labelText,
+        ariaLabel: '',
+        required: /required|\*/.test(labelText) || !!labelEl.querySelector('.text-red-500'),
+        standardFieldHint: 'shortDescription'
+      });
     });
 
     // 收集「Categories」「Tags」等由 label 关联的自定义下拉（非原生 select），如 navfolders 等
@@ -433,7 +468,7 @@ function recognizeByKeywords(formMetadata) {
       weights: { name: 2, placeholder: 1, label: 2 }
     },
     screenshot: {
-      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', 'image', '截图', '预览图', 'app image', 'appimage', 'app-image', '界面截图', '应用截图'],
+      keywords: ['screenshot', 'shot', 'capture', 'screen', 'preview', 'image', '截图', '预览图', 'app image', 'appimage', 'app-image', '界面截图', '应用截图', 'product image', 'productimage', 'product-image'],
       type: 'url',
       isFileInput: true,
       weights: { name: 2, placeholder: 1, label: 2 }
@@ -465,6 +500,9 @@ function recognizeByKeywords(formMetadata) {
       if (config.isFileInput && field.type === 'file') {
         score += 4; // 文件上传框可匹配 logo / screenshot
       }
+      if (field.type === 'contenteditable' && standardField === 'shortDescription') {
+        score += 5; // contenteditable 常为 Short Description（如 auraplusplus）
+      }
 
       for (const kw of config.keywords) {
         const k = kw.toLowerCase();
@@ -494,9 +532,10 @@ function recognizeByKeywords(formMetadata) {
       }
     }
 
-    // 「App Image」只匹配界面截图，不匹配 Logo：label/name 含 app image 时排除 logo
+    // 「App Image」「Product Image」只匹配界面截图，不匹配 Logo
     const hintForExclude = (labelLower + ' ' + nameLower + ' ' + ariaLabelLower).trim();
-    if (hintForExclude.includes('app image') || hintForExclude.includes('appimage')) {
+    if (hintForExclude.includes('app image') || hintForExclude.includes('appimage') ||
+        hintForExclude.includes('product image') || hintForExclude.includes('productimage')) {
       delete scores.logo;
     }
     // 仅「Image」无 logo/icon 时归为界面截图（如 navfolders Image 字段）
@@ -759,6 +798,15 @@ async function fillForm(siteId) {
         }
       }
 
+      // contenteditable / ProseMirror（如 auraplusplus Short Description）
+      if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
+        fillContentEditable(element, value);
+        filledCount++;
+        console.log(`${TAG} Filled ${mapping.standardField}:`, value);
+        await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
+        continue;
+      }
+
       // Set value based on element type（含自定义下拉 Categories/Tags）
       if (element.tagName === 'SELECT') {
         fillSelectElement(element, value, siteData);
@@ -800,9 +848,33 @@ async function fillForm(siteId) {
 }
 
 /**
- * 右键菜单「填充单个字段」：只填充指定标准字段（需已识别表单）
+ * 从右键事件目标解析出「可填充」的输入元素（input/textarea/contenteditable 或其内部）
+ */
+function getEditableElementFromTarget(target) {
+  if (!target || !target.nodeType || target.nodeType !== Node.ELEMENT_NODE) return null;
+  const el = target;
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return el;
+  if (el.getAttribute?.('contenteditable') === 'true' || el.classList?.contains?.('ProseMirror')) return el;
+  const editable = el.closest?.('[contenteditable="true"], .ProseMirror');
+  return editable || null;
+}
+
+/**
+ * 右键菜单「填充单个字段」：
+ * 1) 若在某个输入框上右键：用剪切板内容填充该输入框（像复制粘贴），并可选写回当前站点配置；
+ * 2) 否则：按原逻辑用「已识别表单映射 + 当前站点数据」填充对应字段。
  */
 async function fillSingleField(standardField) {
+  const el = lastContextMenuTarget;
+  lastContextMenuTarget = null;
+
+  // 优先：在可编辑元素上右键 → 用剪切板填充该元素（文字：复制粘贴式）
+  if (el && document.contains(el)) {
+    const clipboardFilled = await tryFillFromClipboard(el, standardField);
+    if (clipboardFilled) return clipboardFilled;
+  }
+
+  // 回退：按「识别映射 + 站点数据」填充
   const siteData = await getSiteData(null);
   if (!siteData) {
     throw new Error('请先在选项中配置并选择当前站点');
@@ -852,6 +924,12 @@ async function fillSingleField(standardField) {
         const fallbackTa = findIntroductionTextarea();
         if (fallbackTa) element = fallbackTa; else continue;
       }
+      if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
+        fillContentEditable(element, value);
+        filledCount++;
+        console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
+        continue;
+      }
       if (element.tagName === 'SELECT') {
         fillSelectElement(element, value, siteData);
         filledCount++;
@@ -873,6 +951,72 @@ async function fillSingleField(standardField) {
     }
   }
   return { filledCount, errors };
+}
+
+/**
+ * 用剪切板内容填充指定元素（文字）。若为 file 输入则暂不处理图片（后续可扩展）。
+ * @returns {Promise<{ filledCount: number, errors: string[] }|null>} 成功填充时返回结果，未填充时返回 null
+ */
+async function tryFillFromClipboard(element, standardField) {
+  // 文件输入：图片剪切板暂不实现，交给后续「按映射+站点数据」逻辑
+  if (element.tagName === 'INPUT' && element.type === 'file') {
+    return null;
+  }
+
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (_) {
+    return null;
+  }
+  if (text == null || (typeof text === 'string' && !text.trim())) return null;
+
+  try {
+    if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
+      fillContentEditable(element, text);
+    } else if (element.tagName === 'SELECT') {
+      const siteData = await getSiteData(null);
+      fillSelectElement(element, text, siteData || {});
+    } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
+      const value = standardField === 'siteUrl' ? getUrlValueForInput(element, text) : text;
+      fillInputElement(element, value);
+    } else {
+      element.value = text;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    console.log(`${TAG} [右键-剪切板] 已填充 ${standardField}`);
+    await updateCurrentSiteField(standardField, text);
+    return { filledCount: 1, errors: [] };
+  } catch (err) {
+    console.warn(`${TAG} [右键-剪切板] 填充失败:`, err);
+    return null;
+  }
+}
+
+/**
+ * 将当前选中站点的某个字段更新为 value（仅文本类字段），用于与「剪切板填充」同步
+ */
+async function updateCurrentSiteField(standardField, value) {
+  const skipFields = ['logo', 'screenshot'];
+  if (skipFields.includes(standardField)) return;
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['sites', 'settings'], (result) => {
+      const currentId = result.settings?.currentSiteId;
+      if (!currentId) {
+        resolve();
+        return;
+      }
+      const sites = result.sites || [];
+      const idx = sites.findIndex(s => s.id === currentId);
+      if (idx === -1) {
+        resolve();
+        return;
+      }
+      sites[idx] = { ...sites[idx], [standardField]: value };
+      chrome.storage.local.set({ sites }, () => resolve());
+    });
+  });
 }
 
 /**
@@ -1399,32 +1543,19 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
 
 /**
  * 根据输入框是否已有 https:// 前缀，决定填入完整 URL 还是仅域名+路径
- * 若 placeholder 或前置兄弟节点为 "https://"，则只填协议后的部分，避免重复
+ * 仅当页面上「明确」有协议 addon（如 findly 左侧固定 "https://"）时才去掉协议；否则一律填完整 URL（如 auraplusplus）
  */
 function getUrlValueForInput(input, fullUrl) {
   if (!fullUrl || typeof fullUrl !== 'string') return fullUrl;
   const trimmed = fullUrl.trim();
   let hasPrefix = false;
-  const placeholder = (input.placeholder || '').trim().toLowerCase();
   const currentValue = (input.value || '').trim().toLowerCase();
-  if (placeholder.startsWith('http://') || placeholder.startsWith('https://')) hasPrefix = true;
-  if (!hasPrefix && (currentValue === 'https://' || currentValue === 'http://')) hasPrefix = true;
-  if (!hasPrefix) {
-    let prev = input.previousElementSibling;
-    while (prev) {
-      const t = (prev.textContent || '').trim().toLowerCase();
-      if (t.startsWith('https://') || t.startsWith('http://')) { hasPrefix = true; break; }
-      if (t.length > 60) break;
-      prev = prev.previousElementSibling;
-    }
-  }
-  if (!hasPrefix && input.parentElement) {
-    const p = input.parentElement;
-    const first = p.firstChild;
-    if (first && first.nodeType === Node.TEXT_NODE) {
-      const t = (first.textContent || '').trim().toLowerCase();
-      if (t.startsWith('https://') || t.startsWith('http://')) hasPrefix = true;
-    }
+  // 仅当输入框当前值就是 "https://" 或 "http://"（说明 UI 已固定前缀、用户只填后面）时才去掉
+  if (currentValue === 'https://' || currentValue === 'http://') hasPrefix = true;
+  // 仅当紧邻前一个兄弟的文案「恰好」是 "https://" 或 "http://"（findly 式 addon）时才去掉；不用 placeholder，避免 auraplusplus 等站点误判
+  if (!hasPrefix && input.previousElementSibling) {
+    const t = (input.previousElementSibling.textContent || '').trim().toLowerCase();
+    if (t === 'https://' || t === 'http://') hasPrefix = true;
   }
   if (hasPrefix) {
     try {
@@ -1462,6 +1593,24 @@ function fillFileInputWithDataUrl(fileInput, dataUrl) {
   fileInput.files = dt.files;
   fileInput.dispatchEvent(new Event('input', { bubbles: true }));
   fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/**
+ * 填充 contenteditable / ProseMirror 富文本区（如 auraplusplus Short Description）
+ */
+function fillContentEditable(editableEl, value) {
+  const str = value != null ? String(value).trim() : '';
+  editableEl.focus();
+  try {
+    // 清空后写入纯文本，兼容 ProseMirror/TipTap
+    editableEl.innerText = str;
+    editableEl.dispatchEvent(new InputEvent('input', { data: str, inputType: 'insertText', bubbles: true }));
+    editableEl.dispatchEvent(new Event('change', { bubbles: true }));
+  } catch (_) {
+    editableEl.textContent = str;
+  }
+  editableEl.dispatchEvent(new Event('blur', { bubbles: true }));
+  editableEl.blur();
 }
 
 /**
