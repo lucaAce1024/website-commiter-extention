@@ -21,7 +21,7 @@
     "activeTab",
     "storage",
     "scripting",
-    "contextMenus"
+    "contextMenus","clipboardRead"
   ],
   "host_permissions": [],
   "background": {
