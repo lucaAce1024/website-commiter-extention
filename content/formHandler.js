@@ -126,6 +126,11 @@ function getFormMetadata() {
       if (['hidden', 'submit', 'button', 'reset', 'image'].includes(input.type)) {
         return;
       }
+      // 跳过 SimpleMDE 的隐藏 textarea（style="display: none;" 且 id 包含 "simplemde" 或 "easymde"）
+      if (input.tagName === 'TEXTAREA' && input.style.display === 'none' &&
+          /simplemde|easymde/i.test(input.id)) {
+        return;
+      }
       // 包含 type="file"（Logo/截图上传框），便于识别并自动填入
 
       const label = getFieldLabel(input);
@@ -798,6 +803,14 @@ async function fillForm(siteId) {
         }
       }
 
+      // CodeMirror 编辑器（SimpleMDE 等）
+      if (element.classList && element.classList.contains('CodeMirror')) {
+        fillCodeMirror(element, value);
+        filledCount++;
+        console.log(`${TAG} Filled ${mapping.standardField}:`, value);
+        await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
+        continue;
+      }
       // contenteditable / ProseMirror（如 auraplusplus Short Description）
       if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
         fillContentEditable(element, value);
@@ -853,10 +866,27 @@ async function fillForm(siteId) {
 function getEditableElementFromTarget(target) {
   if (!target || !target.nodeType || target.nodeType !== Node.ELEMENT_NODE) return null;
   const el = target;
-  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return el;
-  if (el.getAttribute?.('contenteditable') === 'true' || el.classList?.contains?.('ProseMirror')) return el;
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
+    console.log(`${TAG} getEditableElementFromTarget: INPUT/TEXTAREA/SELECT`, el);
+    return el;
+  }
+  if (el.getAttribute?.('contenteditable') === 'true' || el.classList?.contains?.('ProseMirror')) {
+    console.log(`${TAG} getEditableElementFromTarget: contenteditable/ProseMirror`, el);
+    return el;
+  }
   const editable = el.closest?.('[contenteditable="true"], .ProseMirror');
-  return editable || null;
+  if (editable) {
+    console.log(`${TAG} getEditableElementFromTarget: closest contenteditable/ProseMirror`, editable);
+    return editable;
+  }
+  // 检测 CodeMirror 编辑器（SimpleMDE 等使用）
+  const codeMirror = el.closest?.('.CodeMirror');
+  if (codeMirror) {
+    console.log(`${TAG} getEditableElementFromTarget: closest CodeMirror`, codeMirror);
+    return codeMirror;
+  }
+  console.log(`${TAG} getEditableElementFromTarget: no editable element found, target:`, target);
+  return null;
 }
 
 /**
@@ -924,6 +954,13 @@ async function fillSingleField(standardField) {
         const fallbackTa = findIntroductionTextarea();
         if (fallbackTa) element = fallbackTa; else continue;
       }
+      // CodeMirror 编辑器（SimpleMDE 等）
+      if (element.classList && element.classList.contains('CodeMirror')) {
+        fillCodeMirror(element, value);
+        filledCount++;
+        console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
+        continue;
+      }
       if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
         fillContentEditable(element, value);
         filledCount++;
@@ -972,7 +1009,10 @@ async function tryFillFromClipboard(element, standardField) {
   if (text == null || (typeof text === 'string' && !text.trim())) return null;
 
   try {
-    if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
+    // CodeMirror 编辑器（SimpleMDE 等）
+    if (element.classList && element.classList.contains('CodeMirror')) {
+      fillCodeMirror(element, text);
+    } else if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
       fillContentEditable(element, text);
     } else if (element.tagName === 'SELECT') {
       const siteData = await getSiteData(null);
@@ -1614,6 +1654,69 @@ function fillContentEditable(editableEl, value) {
 }
 
 /**
+ * 填充 CodeMirror 编辑器（SimpleMDE 等使用）
+ */
+function fillCodeMirror(cmDiv, value) {
+  const str = value != null ? String(value) : '';
+  console.log(`${TAG} fillCodeMirror called with value:`, str, `cmDiv:`, cmDiv);
+  try {
+    // 尝试多种方式获取 CodeMirror 实例
+    let cmInstance = cmDiv.CodeMirror;
+    console.log(`${TAG} fillCodeMirror: checking cmDiv.CodeMirror:`, cmInstance);
+    if (!cmInstance && cmDiv.cm) {
+      cmInstance = cmDiv.cm;
+      console.log(`${TAG} fillCodeMirror: using cmDiv.cm:`, cmInstance);
+    }
+    if (!cmInstance && cmDiv.editor) {
+      cmInstance = cmDiv.editor;
+      console.log(`${TAG} fillCodeMirror: using cmDiv.editor:`, cmInstance);
+    }
+
+    // 尝试从 wrapper 获取 SimpleMDE 实例
+    if (!cmInstance) {
+      const wrapper = cmDiv.closest('[id*="simplemde"], [id*="easymde"]') || cmDiv.parentElement;
+      console.log(`${TAG} fillCodeMirror: looking in wrapper:`, wrapper);
+      if (wrapper) {
+        console.log(`${TAG} fillCodeMirror: wrapper.simpleMDE:`, wrapper.simpleMDE);
+        if (wrapper.simpleMDE && wrapper.simpleMDE.codemirror) {
+          cmInstance = wrapper.simpleMDE.codemirror;
+          console.log(`${TAG} fillCodeMirror: using wrapper.simpleMDE.codemirror:`, cmInstance);
+        }
+        const easyMdeContainer = wrapper.querySelector('.EasyMDEContainer');
+        console.log(`${TAG} fillCodeMirror: easyMdeContainer:`, easyMdeContainer);
+        if (easyMdeContainer && easyMdeContainer.easyMDE) {
+          cmInstance = easyMdeContainer.easyMDE.codemirror;
+          console.log(`${TAG} fillCodeMirror: using easyMdeContainer.easyMDE.codemirror:`, cmInstance);
+        }
+      }
+    }
+
+    console.log(`${TAG} fillCodeMirror: final cmInstance:`, cmInstance);
+    if (cmInstance && cmInstance.getDoc) {
+      console.log(`${TAG} fillCodeMirror: calling setValue on CodeMirror`);
+      cmInstance.getDoc().setValue(str);
+      cmInstance.focus();
+      cmInstance.refresh();
+      console.log(`${TAG} fillCodeMirror: done`);
+      return;
+    }
+
+    // 回退：通过隐藏的 textarea 填充
+    const wrapper = cmDiv.closest('[id*="simplemde"], [id*="easymde"]') || cmDiv.parentElement;
+    if (wrapper) {
+      const hiddenTextarea = wrapper.querySelector('textarea');
+      console.log(`${TAG} fillCodeMirror: fallback to hidden textarea:`, hiddenTextarea);
+      if (hiddenTextarea) {
+        fillInputElement(hiddenTextarea, str);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn(`${TAG} fillCodeMirror 失败:`, err);
+  }
+}
+
+/**
  * Fill input or textarea element（避免 Illegal invocation：textarea 用 HTMLTextAreaElement，且 setter 失败时回退直接赋值）
  * 若为 Markdown 编辑器（SimpleMDE/CodeMirror）包裹的 textarea，会同步到编辑器实例使界面显示更新
  */
@@ -1637,6 +1740,7 @@ function fillInputElement(input, value) {
     try {
       let synced = false;
       if (typeof window.CodeMirror !== 'undefined') {
+        // 方式1: 通过全局 findByTextArea 查找
         if (window.CodeMirror.findByTextArea) {
           const cm = window.CodeMirror.findByTextArea(input);
           if (cm && cm.getDoc()) {
@@ -1645,19 +1749,49 @@ function fillInputElement(input, value) {
             synced = true;
           }
         }
+        // 方式2: 通过 textarea 的 CodeMirror 属性
         if (!synced && input.CodeMirror && input.CodeMirror.getDoc) {
           input.CodeMirror.getDoc().setValue(str);
           input.CodeMirror.refresh();
           synced = true;
         }
+        // 方式3: 通过 wrapper 查找 CodeMirror div
         if (!synced) {
           const wrapper = input.closest('[id*="simplemde"], [id*="easymde"]') || input.parentElement;
           if (wrapper) {
             const cmDiv = wrapper.querySelector('.CodeMirror') || input.nextElementSibling;
-            if (cmDiv && cmDiv.classList && cmDiv.classList.contains('CodeMirror') && cmDiv.CodeMirror && cmDiv.CodeMirror.getDoc) {
-              cmDiv.CodeMirror.getDoc().setValue(str);
-              cmDiv.CodeMirror.refresh();
+            if (cmDiv && cmDiv.classList && cmDiv.classList.contains('CodeMirror')) {
+              // 尝试多种方式获取 CodeMirror 实例
+              let cmInstance = cmDiv.CodeMirror;
+              if (!cmInstance && cmDiv.cm) cmInstance = cmDiv.cm;
+              if (!cmInstance && cmDiv.editor) cmInstance = cmDiv.editor;
+              if (!cmInstance && wrapper.simpleMDE && wrapper.simpleMDE.codemirror) {
+                cmInstance = wrapper.simpleMDE.codemirror;
+              }
+              // 尝试从 EasyMDEContainer 获取
+              if (!cmInstance) {
+                const easyMdeContainer = wrapper.querySelector('.EasyMDEContainer');
+                if (easyMdeContainer && easyMdeContainer.easyMDE) {
+                  cmInstance = easyMdeContainer.easyMDE.codemirror;
+                }
+              }
+              if (cmInstance && cmInstance.getDoc) {
+                cmInstance.getDoc().setValue(str);
+                cmInstance.refresh();
+                synced = true;
+              }
+            }
+          }
+        }
+        // 方式4: 全局查找 CodeMirror 实例
+        if (!synced) {
+          const allCm = document.querySelectorAll('.CodeMirror');
+          for (const el of allCm) {
+            if (el.CodeMirror && el.CodeMirror.getDoc) {
+              el.CodeMirror.getDoc().setValue(str);
+              el.CodeMirror.refresh();
               synced = true;
+              break;
             }
           }
         }
