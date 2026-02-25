@@ -50,6 +50,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => sendResponse({ success: true, result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
+  } else if (request.action === 'aiLog') {
+    // 把 Background 的 AI 过程日志打到当前页 Console，方便在页面 DevTools 查看
+    const level = request.level || 'log';
+    const args = request.args || [];
+    if (level === 'error') {
+      console.error(`${TAG} [AI]`, ...args);
+    } else if (level === 'warn') {
+      console.warn(`${TAG} [AI]`, ...args);
+    } else {
+      console.log(`${TAG} [AI]`, ...args);
+    }
+    return false;
   }
 });
 
@@ -274,11 +286,16 @@ function getFormMetadata() {
     });
   }
 
+  // 可选：供 AI 识别的表单 HTML 片段（截断以控制 token），便于模型直接理解结构
+  const firstForm = document.querySelector('form');
+  const formHtml = firstForm ? firstForm.outerHTML.slice(0, 12000) : '';
+
   return {
     hasForm: fields.length > 0,
     fields,
     url: window.location.href,
-    domain: window.location.hostname
+    domain: window.location.hostname,
+    formHtml: formHtml || undefined
   };
 }
 
