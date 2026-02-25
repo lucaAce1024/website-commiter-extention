@@ -19,7 +19,7 @@ let pageState = {
   recognitionMethod: null
 };
 
-/** 右键菜单打开时记录的目标元素，用于「剪切板填充」：在哪个输入框右键就填哪个 */
+/** 右键菜单打开时记录的目标元素：在哪个输入框右键就填哪个（用当前站点的该字段值） */
 let lastContextMenuTarget = null;
 document.addEventListener('contextmenu', (e) => {
   lastContextMenuTarget = getEditableElementFromTarget(e.target);
@@ -945,177 +945,132 @@ async function fillForm(siteId) {
 }
 
 /**
- * 从右键事件目标解析出「可填充」的输入元素（input/textarea/contenteditable 或其内部）
+ * 从右键事件目标解析出「可填充」的输入元素（input/textarea/contenteditable 或常见富文本编辑器）
+ * 兼容 TipTap、Quill、ProseMirror、CodeMirror 等，确保「Description」等字段能被识别
  */
 function getEditableElementFromTarget(target) {
   if (!target || !target.nodeType || target.nodeType !== Node.ELEMENT_NODE) return null;
   const el = target;
   if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
-    console.log(`${TAG} getEditableElementFromTarget: INPUT/TEXTAREA/SELECT`, el);
     return el;
   }
-  if (el.getAttribute?.('contenteditable') === 'true' || el.classList?.contains?.('ProseMirror')) {
-    console.log(`${TAG} getEditableElementFromTarget: contenteditable/ProseMirror`, el);
+  if (el.getAttribute?.('contenteditable') === 'true' || el.getAttribute?.('contenteditable') === '') {
     return el;
   }
-  const editable = el.closest?.('[contenteditable="true"], .ProseMirror');
+  if (el.classList?.contains?.('ProseMirror') || el.classList?.contains?.('tiptap') || el.classList?.contains?.('ql-editor')) {
+    return el;
+  }
+  const editable = el.closest?.('[contenteditable="true"], [contenteditable=""], .ProseMirror, .tiptap, .ql-editor, .CodeMirror');
   if (editable) {
-    console.log(`${TAG} getEditableElementFromTarget: closest contenteditable/ProseMirror`, editable);
     return editable;
   }
-  // 检测 CodeMirror 编辑器（SimpleMDE 等使用）
   const codeMirror = el.closest?.('.CodeMirror');
-  if (codeMirror) {
-    console.log(`${TAG} getEditableElementFromTarget: closest CodeMirror`, codeMirror);
-    return codeMirror;
-  }
-  console.log(`${TAG} getEditableElementFromTarget: no editable element found, target:`, target);
+  if (codeMirror) return codeMirror;
+  if (el.getAttribute?.('role') === 'textbox') return el;
+  const roleTextbox = el.closest?.('[role="textbox"]');
+  if (roleTextbox) return roleTextbox;
   return null;
 }
 
 /**
- * 右键菜单「填充单个字段」：
- * 1) 若在某个输入框上右键：用剪切板内容填充该输入框（像复制粘贴），并可选写回当前站点配置；
- * 2) 否则：按原逻辑用「已识别表单映射 + 当前站点数据」填充对应字段。
+ * 右键菜单「填充单个字段」：只做一件事 —— 用当前站点（popup 已选）的该字段值，填到右键所在的输入框。
+ * 点哪个字段就填哪个字段的 value，无其它逻辑。
  */
 async function fillSingleField(standardField) {
   const el = lastContextMenuTarget;
   lastContextMenuTarget = null;
 
-  // 优先：在可编辑元素上右键 → 用剪切板填充该元素（文字：复制粘贴式）
-  if (el && document.contains(el)) {
-    const clipboardFilled = await tryFillFromClipboard(el, standardField);
-    if (clipboardFilled) return clipboardFilled;
+  if (!el || !document.contains(el)) {
+    throw new Error('请在要填充的输入框内右键，再选择字段');
   }
 
-  // 回退：按「识别映射 + 站点数据」填充
   const siteData = await getSiteData(null);
   if (!siteData) {
-    throw new Error('请先在选项中配置并选择当前站点');
+    throw new Error('请先在 popup 中选择当前站点');
   }
-  if (!pageState.fieldMappings) {
-    const result = await recognizeForm(false);
-    if (result.status !== 'success') {
-      throw new Error('无法识别当前页面表单，请先打开提交页面再试');
-    }
+
+  const value = getSiteFieldValueForFill(el, standardField, siteData);
+  if (value === undefined) {
+    throw new Error(`当前站点的「${standardField}」无内容可填`);
   }
-  const mappings = pageState.fieldMappings.filter(m => m.standardField === standardField);
-  if (mappings.length === 0) {
-    throw new Error(`当前页面未识别到「${standardField}」字段`);
-  }
-  let filledCount = 0;
-  const errors = [];
-  for (const mapping of mappings) {
-    try {
-      let element = findElementByLocator(mapping.locator);
-      if (!element && standardField === 'tags') element = findTagsTriggerByLabel();
-      if (!element) {
-        errors.push(`找不到元素: ${standardField}`);
-        continue;
-      }
-      let value = siteData[mapping.standardField];
-      if (mapping.standardField === 'logo' && element.type === 'file') {
-        const dataUrl = siteData.logoDataUrl || value;
-        if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
-          fillFileInputWithDataUrl(element, dataUrl);
-          filledCount++;
-          console.log(`${TAG} [右键] 已填充 ${standardField}`);
-        }
-        continue;
-      }
-      if (mapping.standardField === 'screenshot' && element.type === 'file') {
-        const dataUrl = siteData.screenshotDataUrl || value;
-        if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
-          fillFileInputWithDataUrl(element, dataUrl);
-          filledCount++;
-          console.log(`${TAG} [右键] 已填充 ${standardField}`);
-        }
-        continue;
-      }
-      if (!value) continue;
-      if (mapping.standardField === 'siteUrl') value = getUrlValueForInput(element, value);
-      if (mapping.standardField === 'longDescription' && element.tagName !== 'TEXTAREA' && element.tagName !== 'INPUT') {
-        const fallbackTa = findIntroductionTextarea();
-        if (fallbackTa) element = fallbackTa; else continue;
-      }
-      // CodeMirror 编辑器（SimpleMDE 等）
-      if (element.classList && element.classList.contains('CodeMirror')) {
-        fillCodeMirror(element, value);
-        filledCount++;
-        console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
-        continue;
-      }
-      if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
-        fillContentEditable(element, value);
-        filledCount++;
-        console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
-        continue;
-      }
-      if (element.tagName === 'SELECT') {
-        fillSelectElement(element, value, siteData);
-        filledCount++;
-      } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags') && element.tagName !== 'SELECT') {
-        const filled = await fillCustomSelect(element, value, siteData, mapping.standardField);
-        if (filled) filledCount++;
-      } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
-        fillInputElement(element, value);
-        filledCount++;
-      } else {
-        element.value = value;
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        filledCount++;
-      }
-      console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
-    } catch (err) {
-      errors.push(`${standardField}: ${err.message}`);
-    }
-  }
-  return { filledCount, errors };
+
+  fillOneElement(el, standardField, value, siteData);
+  const preview = typeof value === 'string' ? value.slice(0, 60) + (value.length > 60 ? '…' : '') : value;
+  console.log(`${TAG} [右键] 已填充 ${standardField}，取值:`, preview);
+  return { filledCount: 1, errors: [] };
 }
 
-/**
- * 用剪切板内容填充指定元素（文字）。若为 file 输入则暂不处理图片（后续可扩展）。
- * @returns {Promise<{ filledCount: number, errors: string[] }|null>} 成功填充时返回结果，未填充时返回 null
- */
-async function tryFillFromClipboard(element, standardField) {
-  // 文件输入：图片剪切板暂不实现，交给后续「按映射+站点数据」逻辑
-  if (element.tagName === 'INPUT' && element.type === 'file') {
-    return null;
+/** 从当前站点取该字段的填充值（仅此一处决定填什么内容） */
+function getSiteFieldValueForFill(element, standardField, siteData) {
+  if (standardField === 'logo' && element.type === 'file') {
+    const v = siteData.logoDataUrl || siteData[standardField];
+    return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
   }
+  if (standardField === 'screenshot' && element.type === 'file') {
+    const v = siteData.screenshotDataUrl || siteData[standardField];
+    return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
+  }
+  let v = siteData[standardField];
+  if (v == null || (typeof v === 'string' && !v.trim())) return undefined;
+  if (standardField === 'siteUrl') v = getUrlValueForInput(element, v);
+  return v;
+}
 
-  let text = '';
-  try {
-    text = await navigator.clipboard.readText();
-  } catch (_) {
-    return null;
+/** 把 value 写入一个元素（仅负责写入，不负责取值） */
+function fillOneElement(element, standardField, value, siteData) {
+  if (standardField === 'logo' && element.type === 'file') {
+    fillFileInputWithDataUrl(element, value);
+    return;
   }
-  if (text == null || (typeof text === 'string' && !text.trim())) return null;
+  if (standardField === 'screenshot' && element.type === 'file') {
+    fillFileInputWithDataUrl(element, value);
+    return;
+  }
+  const str = value != null ? String(value) : '';
+  if (element.classList && element.classList.contains('CodeMirror')) {
+    fillCodeMirror(element, str);
+    return;
+  }
+  if (element.classList?.contains?.('ql-editor') || element.closest?.('.ql-editor')) {
+    const editorEl = element.classList?.contains?.('ql-editor') ? element : element.closest('.ql-editor');
+    fillQuillEditor(editorEl, str);
+    return;
+  }
+  if (element.getAttribute?.('contenteditable') != null || element.classList?.contains?.('ProseMirror') || element.classList?.contains?.('tiptap')) {
+    fillContentEditable(element, str);
+    return;
+  }
+  if (element.tagName === 'SELECT') {
+    fillSelectElement(element, str, siteData);
+    return;
+  }
+  if (element.tagName === 'TEXTAREA' || (element.tagName === 'INPUT' && ['text', 'url', 'email'].includes(element.type))) {
+    fillInputElement(element, str);
+    return;
+  }
+  element.value = str;
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+}
 
-  try {
-    // CodeMirror 编辑器（SimpleMDE 等）
-    if (element.classList && element.classList.contains('CodeMirror')) {
-      fillCodeMirror(element, text);
-    } else if (element.getAttribute?.('contenteditable') === 'true' || element.classList?.contains?.('ProseMirror')) {
-      fillContentEditable(element, text);
-    } else if (element.tagName === 'SELECT') {
-      const siteData = await getSiteData(null);
-      fillSelectElement(element, text, siteData || {});
-    } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
-      const value = standardField === 'siteUrl' ? getUrlValueForInput(element, text) : text;
-      fillInputElement(element, value);
-    } else {
-      element.value = text;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    console.log(`${TAG} [右键-剪切板] 已填充 ${standardField}`);
-    await updateCurrentSiteField(standardField, text);
-    return { filledCount: 1, errors: [] };
-  } catch (err) {
-    console.warn(`${TAG} [右键-剪切板] 填充失败:`, err);
-    return null;
+/** Quill 编辑器：通过 Quill 实例写入，否则 DOM 改了也可能被覆盖 */
+function fillQuillEditor(qlEditorEl, text) {
+  if (!qlEditorEl) return;
+  const container = qlEditorEl.closest?.('.ql-container') || qlEditorEl.parentElement;
+  const ql = qlEditorEl.__quill || container?.__quill || (container && container.querySelector?.('.ql-editor')?.__quill);
+  if (ql && typeof ql.setText === 'function') {
+    ql.setText(text);
+    qlEditorEl.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
   }
+  if (ql && ql.root) {
+    ql.root.innerText = text;
+    qlEditorEl.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  qlEditorEl.focus();
+  qlEditorEl.innerText = text;
+  qlEditorEl.dispatchEvent(new InputEvent('input', { data: text, inputType: 'insertText', bubbles: true }));
 }
 
 /**
