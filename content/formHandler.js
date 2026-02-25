@@ -453,6 +453,10 @@ function recognizeByKeywords(formMetadata) {
       isSelect: true,
       weights: { name: 2, label: 2 }
     },
+    pricing: {
+      keywords: ['pricing', 'price', 'plan', '定价', '价格', '付费', 'free', 'paid', 'freemium', 'trial'],
+      weights: { name: 2, label: 2 }
+    },
     tagline: {
       keywords: ['tagline', 'slogan', 'motto', 'tag', '标语', '口号'],
       weights: { name: 2, placeholder: 1 }
