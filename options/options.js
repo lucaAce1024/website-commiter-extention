@@ -523,7 +523,7 @@ function openSiteModal(siteId = null) {
         <select id="pricing" class="select">
           <option value="">-- 请选择 --</option>
           <option value="Free" ${(site?.pricing || '') === 'Free' ? 'selected' : ''}>Free</option>
-          <option value="Free Trial" ${(site?.pricing || '') === 'Free Trial' ? 'selected' : ''}>Free Trial</option>
+          <option value="Free Trial" ${(site?.pricing || 'Free Trial') === 'Free Trial' ? 'selected' : ''}>Free Trial</option>
           <option value="Freemium" ${(site?.pricing || '') === 'Freemium' ? 'selected' : ''}>Freemium</option>
           <option value="Paid" ${(site?.pricing || '') === 'Paid' ? 'selected' : ''}>Paid</option>
         </select>

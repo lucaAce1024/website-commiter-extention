@@ -764,6 +764,10 @@ async function fillForm(siteId) {
       }
 
       let value = siteData[mapping.standardField];
+      if (mapping.standardField === 'pricing') {
+        const p = String(value ?? '').trim();
+        if (p === '' || p.toLowerCase() === 'free') value = 'Free Trial';
+      }
       // Logo 文件上传框：使用站点管理里上传的 logoDataUrl
       if (mapping.standardField === 'logo' && element.type === 'file') {
         const logoDataUrl = siteData.logoDataUrl || value;
@@ -1184,12 +1188,15 @@ function findBestCategoryMatch(select, userCategory) {
   );
   if (exactMatch) return exactMatch;
 
-  // 2. Try direct partial match
-  const partialMatch = availableOptions.find(opt =>
+  // 2. Try direct partial match（多个命中时取文本最长者，如 "Free Trial" 优先于 "Free"）
+  const partialMatches = availableOptions.filter(opt =>
     opt.textLower.includes(userCategoryLower) ||
     userCategoryLower.includes(opt.textLower)
   );
-  if (partialMatch) return partialMatch;
+  if (partialMatches.length > 0) {
+    partialMatches.sort((a, b) => (b.text?.length ?? 0) - (a.text?.length ?? 0));
+    return partialMatches[0];
+  }
 
   // 3. Use synonym mapping
   const synonyms = CATEGORY_SYNONYMS[userCategoryLower] || [];
@@ -1328,10 +1335,13 @@ function findBestCategoryMatchFromOptions(options, userCategory) {
   );
   if (exactMatch) return exactMatch;
 
-  const partialMatch = availableOptions.find(opt =>
+  const partialMatches = availableOptions.filter(opt =>
     opt.textLower.includes(userCategoryLower) || userCategoryLower.includes(opt.textLower)
   );
-  if (partialMatch) return partialMatch;
+  if (partialMatches.length > 0) {
+    partialMatches.sort((a, b) => (b.text?.length ?? 0) - (a.text?.length ?? 0));
+    return partialMatches[0];
+  }
 
   const synonyms = CATEGORY_SYNONYMS[userCategoryLower] || [];
   for (const synonym of synonyms) {
@@ -1542,11 +1552,33 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
         let optionEls = [];
         const form = triggerElement.closest('form');
         const scope = form || document.body;
-        let container = scope.querySelector('[role="listbox"], [data-headlessui-state], [class*="dropdown"], [class*="menu"]');
-        if (!container) container = scope;
-        for (const sel of optionSelectors) {
-          optionEls = Array.from(container.querySelectorAll(sel));
-          if (optionEls.length > 0) break;
+        let container = null;
+        if (standardField === 'pricing') {
+          const pricingScope = triggerElement.closest('[id*="pricing"], [id*="Pricing"]') || scope.querySelector('[id*="pricing-listbox"], [id*="pricing-select-container"], [id*="selectedPricing"]');
+          if (pricingScope) {
+            container = pricingScope.querySelector('[role="listbox"], [id*="listbox"]') || pricingScope;
+            for (const sel of optionSelectors) {
+              optionEls = Array.from(container.querySelectorAll(sel));
+              if (optionEls.length > 0) break;
+            }
+          }
+        } else if (standardField === 'category') {
+          const categoryScope = triggerElement.closest('[id*="categor"], [id*="Categor"]') || scope.querySelector('[id*="categories-listbox"], [id*="categories-select"], [id*="selectedCategories"]');
+          if (categoryScope) {
+            container = categoryScope.querySelector('[role="listbox"], [id*="listbox"]') || categoryScope;
+            for (const sel of optionSelectors) {
+              optionEls = Array.from(container.querySelectorAll(sel));
+              if (optionEls.length > 0) break;
+            }
+          }
+        }
+        if (optionEls.length === 0) {
+          container = scope.querySelector('[role="listbox"], [data-headlessui-state], [class*="dropdown"], [class*="menu"]');
+          if (!container) container = scope;
+          for (const sel of optionSelectors) {
+            optionEls = Array.from(container.querySelectorAll(sel));
+            if (optionEls.length > 0) break;
+          }
         }
         if (optionEls.length === 0) {
           optionEls = Array.from(scope.querySelectorAll('[role="option"], [data-value], li'));
