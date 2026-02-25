@@ -465,6 +465,7 @@ function renderSettingsTab() {
   elements.llmEndpoint.value = llmConfig.endpoint || '';
   elements.llmApiKey.value = llmConfig.apiKey || '';
   elements.llmModel.value = llmConfig.model || '';
+  elements.llmModel.placeholder = (getProviderFromEndpoint(llmConfig.endpoint) === 'glm') ? 'glm-4.7 或 glm-5' : 'gpt-3.5-turbo';
 
   // Auto submit
   elements.autoSubmit.checked = settings.autoSubmit || false;
@@ -1004,7 +1005,7 @@ function onLlmProviderChange(e) {
   const provider = e.target.value;
   const endpoints = {
     openai: 'https://api.openai.com/v1/chat/completions',
-    glm: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    glm: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
     groq: 'https://api.groq.com/openai/v1/chat/completions',
     custom: ''
   };
@@ -1012,15 +1013,31 @@ function onLlmProviderChange(e) {
   if (provider !== 'custom' && !elements.llmEndpoint.value) {
     elements.llmEndpoint.value = endpoints[provider];
   }
+
+  // 智谱 GLM 时建议模型为 glm-4.7 或 glm-5
+  if (provider === 'glm') {
+    const model = (elements.llmModel.value || '').trim();
+    if (!model || model === 'gpt-3.5-turbo') {
+      elements.llmModel.value = 'glm-4.7';
+      elements.llmModel.placeholder = 'glm-4.7 或 glm-5';
+    }
+  } else {
+    elements.llmModel.placeholder = 'gpt-3.5-turbo';
+  }
 }
 
 /**
  * Test LLM connection
  */
+function getDefaultModelForEndpoint(endpoint) {
+  if (endpoint && endpoint.includes('bigmodel.cn')) return 'glm-4.7';
+  return 'gpt-3.5-turbo';
+}
+
 async function testLlmConnection() {
   const endpoint = elements.llmEndpoint.value.trim();
   const apiKey = elements.llmApiKey.value.trim();
-  const model = elements.llmModel.value.trim() || 'gpt-3.5-turbo';
+  const model = elements.llmModel.value.trim() || getDefaultModelForEndpoint(endpoint);
 
   if (!endpoint || !apiKey) {
     showToast('请先填写 API 端点和 API Key', 'warning');

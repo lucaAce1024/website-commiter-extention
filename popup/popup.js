@@ -31,6 +31,7 @@ const elements = {
   fieldFillList: document.getElementById('fieldFillList'),
   fieldFillNoData: document.getElementById('fieldFillNoData'),
   fillFormBtn: document.getElementById('fillFormBtn'),
+  aiFillFormBtn: document.getElementById('aiFillFormBtn'),
   clearCacheBtn: document.getElementById('clearCacheBtn'),
   openNavSitesBtn: document.getElementById('openNavSitesBtn'),
   openOptionsBtn: document.getElementById('openOptionsBtn'),
@@ -44,6 +45,7 @@ let currentTab = null;
 let pageState = null;
 let sites = [];
 let currentSiteId = null;
+let llmEnabled = false; // LLM 是否启用
 
 /**
  * Initialize popup
@@ -89,6 +91,10 @@ async function loadSites() {
     const result = await chrome.storage.local.get(['sites', 'settings']);
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
+
+    // 检查 LLM 是否启用
+    const llmConfig = result.settings?.llmConfig;
+    llmEnabled = !!(llmConfig?.enabled && llmConfig?.apiKey);
 
     // Populate site select
     populateSiteSelect();
@@ -178,6 +184,13 @@ function updateFormStatus() {
   };
   elements.recognitionStatus.textContent = statusTexts[pageState.recognitionStatus] || pageState.recognitionStatus;
 
+  // 如果使用了 AI 识别，显示标识
+  if (pageState.recognitionMethod === 'ai') {
+    elements.recognitionStatus.textContent += ' (AI)';
+  } else if (pageState.recognitionMethod === 'cache') {
+    elements.recognitionStatus.textContent += ' (缓存)';
+  }
+
   // Field count
   if (pageState.fieldMappings) {
     elements.fieldCount.textContent = pageState.fieldMappings.length + ' 个字段';
@@ -186,6 +199,12 @@ function updateFormStatus() {
   }
   // 主按钮「自动识别并填充」：有选中站点即可用，点击后会先识别再填充
   elements.fillFormBtn.disabled = !currentSiteId;
+
+  // AI 按钮：需要配置 LLM 且有选中站点
+  elements.aiFillFormBtn.disabled = !currentSiteId || !llmEnabled;
+  if (!llmEnabled) {
+    elements.aiFillFormBtn.title = '请在设置中启用 LLM 并配置 GLM API Key';
+  }
 
   // If has form but not recognized
   if (pageState.hasForm && !pageState.fieldMappings) {
@@ -412,6 +431,85 @@ function setupEventListeners() {
       } else {
         showError('清除失败: ' + error.message);
       }
+    }
+  });
+
+  // AI 智能识别按钮
+  elements.aiFillFormBtn.addEventListener('click', async () => {
+    if (!currentSiteId) {
+      showWarning('请先选择一个站点');
+      return;
+    }
+
+    if (!llmEnabled) {
+      showWarning('请先在设置中启用 LLM 并配置 GLM API Key');
+      return;
+    }
+
+    elements.aiFillFormBtn.disabled = true;
+
+    try {
+      // 1. 先使用 AI 识别表单
+      elements.aiFillFormBtn.innerHTML = '<span class="btn-icon">⏳</span> AI 识别中...';
+      const recognizeResponse = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'recognizeForm',
+        useLlm: true  // 启用 AI 识别
+      });
+
+      const result = recognizeResponse.result || {};
+      if (!recognizeResponse.success || result.status !== 'success') {
+        const errMsg = result.status === 'no_form' ? (result.message || '当前页面未检测到可填表单') : (recognizeResponse.error || result.error || 'AI 识别失败');
+        showError(errMsg);
+        return;
+      }
+
+      const count = result.fieldCount ?? (Array.isArray(result.mappings) ? result.mappings.length : 0);
+      let domain = pageState?.domain;
+      try {
+        if (currentTab.url && (currentTab.url.startsWith('http://') || currentTab.url.startsWith('https://'))) {
+          domain = domain || new URL(currentTab.url).hostname;
+        }
+      } catch (_) {}
+      pageState = {
+        hasForm: true,
+        fieldMappings: result.mappings || [],
+        recognitionStatus: 'done',
+        recognitionMethod: result.method,
+        domain
+      };
+      updateFormStatus();
+
+      if (count === 0) {
+        showWarning('AI 未识别到可填字段，请检查页面或尝试使用「自动识别并填充」');
+        return;
+      }
+
+      // 2. 再填充
+      elements.aiFillFormBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
+      const fillResponse = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'fillForm',
+        siteId: currentSiteId
+      });
+
+      if (fillResponse.success) {
+        const fillResult = fillResponse.result;
+        let message = `AI 识别 + 已填充 ${fillResult.filledCount} 个字段`;
+        if (fillResult.hasCaptcha) {
+          message += '\n\n检测到验证码，请手动完成验证后提交。';
+        }
+        if (fillResult.errors && fillResult.errors.length > 0) {
+          message += `\n\n部分字段填充失败:\n${fillResult.errors.join('\n')}`;
+        }
+        showSuccess(message);
+      } else {
+        showError(fillResponse.error || '填充失败');
+      }
+    } catch (error) {
+      console.error('[Popup] AI recognize or fill error:', error);
+      showError(error?.message?.includes('Receiving end') ? '无法在此页面使用（请打开普通网页）' : '操作失败: ' + error.message);
+    } finally {
+      elements.aiFillFormBtn.disabled = false;
+      elements.aiFillFormBtn.innerHTML = '<span class="btn-icon">🤖</span> AI 智能识别';
     }
   });
 

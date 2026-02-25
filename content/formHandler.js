@@ -592,6 +592,8 @@ function logRecognitionResult(mappings, method) {
 
 /**
  * Recognize form structure
+ * 支持 AI 识别和关键词匹配两种方式
+ * @param {boolean} useLlm - 是否使用 LLM AI 识别（默认 false，使用关键词匹配）
  */
 async function recognizeForm(useLlm = false) {
   if (pageState.recognitionStatus === 'recognizing') {
@@ -613,10 +615,11 @@ async function recognizeForm(useLlm = false) {
       };
     }
 
-    const domain = formMetadata.domain;
+    // 使用 domain + pathname 作为缓存 key（设计文档要求）
+    const cacheKey = getCacheKey();
 
     // Check for cached mapping
-    const cached = await getCachedMapping(domain);
+    const cached = await getCachedMapping(cacheKey);
     if (cached && cached.length > 0) {
       pageState.fieldMappings = cached;
       pageState.recognitionStatus = 'done';
@@ -630,7 +633,36 @@ async function recognizeForm(useLlm = false) {
       };
     }
 
-    // Do keyword matching (always available)
+    // 如果启用 LLM，优先尝试 AI 识别
+    if (useLlm) {
+      try {
+        console.log(`${TAG} 尝试 AI 识别...`);
+        const aiResult = await callAIRecognize(formMetadata);
+
+        if (aiResult && aiResult.length > 0) {
+          pageState.fieldMappings = aiResult;
+          pageState.recognitionStatus = 'done';
+          pageState.recognitionMethod = 'ai';
+
+          logRecognitionResult(aiResult, 'ai');
+
+          // Cache the result
+          await cacheMapping(cacheKey, aiResult);
+
+          return {
+            status: 'success',
+            method: 'ai',
+            mappings: aiResult,
+            fieldCount: aiResult.length
+          };
+        }
+      } catch (aiError) {
+        console.warn(`${TAG} AI 识别失败，回退到关键词匹配:`, aiError.message);
+        // AI 失败，继续使用关键词匹配作为降级方案
+      }
+    }
+
+    // Do keyword matching (always available as fallback)
     const mappings = recognizeByKeywords(formMetadata);
     if (mappings.length === 0 && formMetadata.fields?.length > 0) {
       const names = formMetadata.fields.map(f => f.name || f.label || f.placeholder || f.id || '(empty)').join(', ');
@@ -643,7 +675,7 @@ async function recognizeForm(useLlm = false) {
     logRecognitionResult(mappings, 'keyword');
 
     // Cache the result
-    await cacheMapping(domain, mappings);
+    await cacheMapping(cacheKey, mappings);
 
     return {
       status: 'success',
@@ -660,6 +692,40 @@ async function recognizeForm(useLlm = false) {
       error: error.message
     };
   }
+}
+
+/**
+ * 生成缓存 key（domain + pathname）
+ */
+function getCacheKey() {
+  const url = new URL(window.location.href);
+  return url.hostname + url.pathname;
+}
+
+/**
+ * 调用 background script 进行 AI 识别
+ */
+async function callAIRecognize(formMetadata) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { action: 'aiRecognizeForm', formMetadata },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!response) {
+          reject(new Error('Background 无响应'));
+          return;
+        }
+        if (!response.success) {
+          reject(new Error(response.error || 'AI 识别失败'));
+          return;
+        }
+        resolve(response.result);
+      }
+    );
+  });
 }
 
 /**
@@ -699,16 +765,17 @@ async function cacheMapping(domain, mappings) {
 }
 
 /**
- * Clear mapping for current domain
+ * Clear mapping for current domain + pathname
  */
 async function clearMapping() {
-  const domain = window.location.hostname;
+  const cacheKey = getCacheKey();
   return new Promise((resolve) => {
     chrome.storage.local.get(['fieldMappings'], (result) => {
       const mappings = result.fieldMappings || {};
-      delete mappings[domain];
+      delete mappings[cacheKey];
       chrome.storage.local.set({ fieldMappings: mappings }, () => {
         pageState.fieldMappings = null;
+        console.log(`${TAG} 已清除缓存: ${cacheKey}`);
         resolve();
       });
     });
