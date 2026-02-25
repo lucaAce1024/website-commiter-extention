@@ -740,9 +740,15 @@ async function fillForm(siteId) {
   // Fill each mapped field
   let filledCount = 0;
   const errors = [];
+  /** 同一逻辑控件有多条映射时只填一次（如 aitoolzs 的 categories 有 66 个 checkbox 映射到同一控件） */
+  const filledOnceByField = new Set();
 
   for (const mapping of pageState.fieldMappings) {
     try {
+      if (['category', 'pricing', 'tags'].includes(mapping.standardField) && filledOnceByField.has(mapping.standardField)) {
+        continue;
+      }
+
       // Tags 前多等一会，确保上一个下拉（Categories）已完全关闭、页面稳定
       if (mapping.standardField === 'tags') {
         await new Promise(r => setTimeout(r, 500));
@@ -824,13 +830,17 @@ async function fillForm(siteId) {
         continue;
       }
 
-      // Set value based on element type（含自定义下拉 Categories/Tags）
+      // Set value based on element type（含自定义下拉 Categories/Tags/Pricing；同一逻辑控件只填一次）
       if (element.tagName === 'SELECT') {
-        fillSelectElement(element, value, siteData);
+        fillSelectElement(element, value, siteData, mapping.standardField);
         filledCount++;
-      } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags') && element.tagName !== 'SELECT') {
+        if (['category', 'pricing', 'tags'].includes(mapping.standardField)) filledOnceByField.add(mapping.standardField);
+      } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags' || mapping.standardField === 'pricing') && element.tagName !== 'SELECT') {
         const filled = await fillCustomSelect(element, value, siteData, mapping.standardField);
-        if (filled) filledCount++;
+        if (filled) {
+          filledCount++;
+          filledOnceByField.add(mapping.standardField);
+        }
       } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
         fillInputElement(element, value);
         filledCount++;
@@ -972,7 +982,7 @@ async function fillSingleField(standardField) {
         continue;
       }
       if (element.tagName === 'SELECT') {
-        fillSelectElement(element, value, siteData);
+        fillSelectElement(element, value, siteData, mapping.standardField);
         filledCount++;
       } else if ((mapping.standardField === 'category' || mapping.standardField === 'tags') && element.tagName !== 'SELECT') {
         const filled = await fillCustomSelect(element, value, siteData, mapping.standardField);
@@ -986,7 +996,7 @@ async function fillSingleField(standardField) {
         element.dispatchEvent(new Event('change', { bubbles: true }));
         filledCount++;
       }
-      console.log(`${TAG} [右键] 已填充 ${standardField}:`, value);
+      console.log(`${TAG} [右键] 已填充 ${mapping.standardField}:`, value);
     } catch (err) {
       errors.push(`${standardField}: ${err.message}`);
     }
@@ -1020,7 +1030,7 @@ async function tryFillFromClipboard(element, standardField) {
       fillContentEditable(element, text);
     } else if (element.tagName === 'SELECT') {
       const siteData = await getSiteData(null);
-      fillSelectElement(element, text, siteData || {});
+      fillSelectElement(element, text, siteData || {}, standardField);
     } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
       const value = standardField === 'siteUrl' ? getUrlValueForInput(element, text) : text;
       fillInputElement(element, value);
@@ -1231,31 +1241,67 @@ function findBestCategoryMatch(select, userCategory) {
   return null;
 }
 
+/** Tags 填充时最多使用的个数 */
+const TAGS_FILL_MAX = 3;
+
 /**
- * Fill select element (category / tags 等下拉，支持逗号分隔多值取首个匹配)
+ * Fill select element (category / tags 等下拉).
+ * Category 限定只选一项；Tags 最多选 3 项。支持逗号分隔时取首个匹配（Category 仅用第一个）。
  */
-function fillSelectElement(select, value, siteData) {
-  const toTry = [value];
+function fillSelectElement(select, value, siteData, standardField) {
+  const isCategory = standardField === 'category';
+  const isTags = standardField === 'tags';
+  const toTry = [];
   if (typeof value === 'string' && value.includes(',')) {
-    toTry.length = 0;
-    toTry.push(value.trim(), ...value.split(',').map(s => s.trim()).filter(Boolean));
+    const parts = value.split(',').map(s => s.trim()).filter(Boolean);
+    if (isCategory) {
+      toTry.push(parts[0] || value.trim());
+    } else {
+      toTry.push(value.trim(), ...parts);
+      if (isTags) toTry.splice(TAGS_FILL_MAX);
+    }
+  } else {
+    toTry.push(value);
   }
-  for (const v of toTry) {
-    if (!v) continue;
-    const bestMatch = findBestCategoryMatch(select, v);
-    if (bestMatch) {
-      select.value = bestMatch.value;
+  if (isTags && select.multiple) {
+    const matchedValues = new Set();
+    for (const v of toTry) {
+      if (!v) continue;
+      const bestMatch = findBestCategoryMatch(select, v);
+      if (bestMatch) matchedValues.add(bestMatch.value);
+    }
+    if (matchedValues.size > 0) {
+      Array.from(select.options).forEach(opt => { opt.selected = matchedValues.has(opt.value); });
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log(`${TAG} Matched "${v}" to option "${bestMatch.text}"`);
+      console.log(`${TAG} Tags 已选 ${matchedValues.size} 项（最多 ${TAGS_FILL_MAX} 项）`);
       return true;
     }
+  } else {
+    for (const v of toTry) {
+      if (!v) continue;
+      const bestMatch = findBestCategoryMatch(select, v);
+      if (bestMatch) {
+        if (select.multiple) {
+          Array.from(select.options).forEach(opt => { opt.selected = opt.value === bestMatch.value; });
+        } else {
+          select.value = bestMatch.value;
+        }
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log(`${TAG} Matched "${v}" to option "${bestMatch.text}"${isCategory ? ' (Categories 仅选一项)' : ''}`);
+        return true;
+      }
+    }
   }
-  if (siteData.category && value !== siteData.category) {
+  if (siteData.category && value !== siteData.category && !isTags) {
     const categoryMatch = findBestCategoryMatch(select, siteData.category);
     if (categoryMatch) {
-      select.value = categoryMatch.value;
+      if (select.multiple) {
+        Array.from(select.options).forEach(opt => { opt.selected = opt.value === categoryMatch.value; });
+      } else {
+        select.value = categoryMatch.value;
+      }
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log(`${TAG} Matched site category "${siteData.category}" to option "${categoryMatch.text}"`);
+      console.log(`${TAG} Matched site category "${siteData.category}" to option "${categoryMatch.text}" (Categories 仅选一项)`);
       return true;
     }
   }
@@ -1437,23 +1483,33 @@ function simulateClick(el) {
 }
 
 /**
- * 填充自定义下拉（非原生 select）：先关闭已有下拉，再点击触发器，等待选项出现后选择匹配项
+ * 填充自定义下拉（非原生 select）：先关闭已有下拉，再点击触发器，等待选项出现后选择匹配项。
+ * Categories 限定只选一项；Tags 最多选 3 项。
  */
 function fillCustomSelect(triggerElement, value, siteData, standardField) {
-  const toTry = [value];
-  if (typeof value === 'string' && value.includes(',')) {
-    toTry.length = 0;
-    toTry.push(value.trim(), ...value.split(',').map(s => s.trim()).filter(Boolean));
-  }
-  const valueToUse = standardField === 'category' && siteData.category
-    ? siteData.category
-    : (standardField === 'tags' && siteData.tags ? (siteData.tags.split(',')[0]?.trim() || siteData.tags) : (toTry[0] || value));
-  if (!valueToUse) return Promise.resolve(false);
-
+  const isCategory = standardField === 'category';
   const isTags = standardField === 'tags';
+  const toTry = [];
+  if (typeof value === 'string' && value.includes(',')) {
+    const parts = value.split(',').map(s => s.trim()).filter(Boolean);
+    if (isCategory) {
+      toTry.push(parts[0] || value.trim());
+    } else {
+      toTry.push(value.trim(), ...parts);
+      if (isTags) toTry.splice(TAGS_FILL_MAX);
+    }
+  } else {
+    toTry.push(value);
+  }
+  const valueToUse = isCategory && siteData.category
+    ? siteData.category
+    : (isTags && siteData.tags ? (siteData.tags.split(',').map(s => s.trim()).filter(Boolean).slice(0, TAGS_FILL_MAX)[0] || toTry[0]) : (toTry[0] || value));
+  const tagsToFill = isTags ? toTry.slice(0, TAGS_FILL_MAX).filter(Boolean) : [toTry[0] || value];
+  if (!valueToUse && tagsToFill.length === 0) return Promise.resolve(false);
+
   const closeDelay = isTags ? 400 : 220;
   const openWaitMs = isTags ? 750 : 600;
-  console.log(`${TAG} Custom select: opening ${standardField} for "${valueToUse}"`);
+  console.log(`${TAG} Custom select: opening ${standardField} for "${valueToUse}"${isTags && tagsToFill.length > 1 ? ` (最多 ${TAGS_FILL_MAX} 项)` : ''}`);
 
   return new Promise((resolve) => {
     // 先关闭可能已打开的下拉（Tags 前多等一会，确保 Categories 已关）
@@ -1502,7 +1558,7 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
             if (optionEls.length > 0) break;
           }
         }
-        // Tags 多选优先：下拉内是带 checkbox 的选项（如 navfolders），先按 checkbox 面板处理
+        // Tags 多选优先：下拉内是带 checkbox 的选项（如 navfolders），最多选 TAGS_FILL_MAX 项
         if (isTags) {
           const tagPanel = findTagsCheckboxPanel();
           if (tagPanel) {
@@ -1510,19 +1566,26 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
             if (checkboxRows.length > 0) {
               const visible = checkboxRows.filter(isElementVisible);
               const rows = visible.length > 0 ? visible : checkboxRows;
-              const best = findBestCategoryMatchFromOptions(checkboxOptions, valueToUse) || findBestCategoryMatchFromOptions(checkboxOptions, siteData.category);
-              if (best && !/select\s*all/i.test(best.text)) {
-                const optionEl = rows.find(el => {
-                  const t = (el.textContent || '').trim();
-                  return t === best.text || t === best.value;
-                });
-                if (optionEl) {
-                  simulateClick(optionEl);
-                  triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
-                  console.log(`${TAG} Custom select: matched tag "${valueToUse}" to "${best.text}"`);
-                  closeThenResolve();
-                  return;
+              let clicked = 0;
+              for (const tagValue of tagsToFill) {
+                if (clicked >= TAGS_FILL_MAX) break;
+                const best = findBestCategoryMatchFromOptions(checkboxOptions, tagValue) || findBestCategoryMatchFromOptions(checkboxOptions, siteData.category);
+                if (best && !/select\s*all/i.test(best.text)) {
+                  const optionEl = rows.find(el => {
+                    const t = (el.textContent || '').trim();
+                    return t === best.text || t === best.value;
+                  });
+                  if (optionEl) {
+                    simulateClick(optionEl);
+                    clicked++;
+                  }
                 }
+              }
+              if (clicked > 0) {
+                triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+                console.log(`${TAG} Custom select: Tags 已选 ${clicked} 项（最多 ${TAGS_FILL_MAX} 项）`);
+                closeThenResolve();
+                return;
               }
             }
           }
@@ -1533,6 +1596,30 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
           value: el.getAttribute('data-value') || el.getAttribute('value') || el.textContent.trim(),
           text: el.textContent.trim()
         })).filter(o => o.text);
+        // Tags 且多选：尝试对 tagsToFill 逐项点击（最多 TAGS_FILL_MAX 项）
+        if (isTags && tagsToFill.length > 1) {
+          let clicked = 0;
+          for (const tagValue of tagsToFill) {
+            if (clicked >= TAGS_FILL_MAX) break;
+            const best = findBestCategoryMatchFromOptions(options, tagValue) || findBestCategoryMatchFromOptions(options, siteData.category);
+            if (best) {
+              const optionEl = optionEls.find(el =>
+                (el.getAttribute('data-value') || el.textContent.trim()) === best.value ||
+                el.textContent.trim() === best.text
+              );
+              if (optionEl) {
+                simulateClick(optionEl);
+                clicked++;
+              }
+            }
+          }
+          if (clicked > 0) {
+            triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log(`${TAG} Custom select: Tags 已选 ${clicked} 项（最多 ${TAGS_FILL_MAX} 项）`);
+            closeThenResolve();
+            return;
+          }
+        }
         const best = findBestCategoryMatchFromOptions(options, valueToUse) || findBestCategoryMatchFromOptions(options, siteData.category);
         if (best) {
           const optionEl = optionEls.find(el =>
@@ -1547,22 +1634,29 @@ function fillCustomSelect(triggerElement, value, siteData, standardField) {
             return;
           }
         }
-        // Tags 多选：有 optionEls 但可能是 checkbox 行（无 role=option），再试一次按文本匹配
+        // Tags 多选：有 optionEls 但可能是 checkbox 行（无 role=option），再试一次按文本匹配，最多 TAGS_FILL_MAX 项
         if (isTags && optionEls.length > 0) {
           const optionsFromText = optionEls.map(el => ({
             value: el.textContent.trim(),
             text: el.textContent.trim()
           })).filter(o => o.text && !/select\s*all/i.test(o.text));
-          const bestTag = findBestCategoryMatchFromOptions(optionsFromText, valueToUse);
-          if (bestTag) {
-            const optionEl = optionEls.find(el => (el.textContent || '').trim() === bestTag.text);
-            if (optionEl) {
-              simulateClick(optionEl);
-              triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
-              console.log(`${TAG} Custom select: matched tag "${valueToUse}" to "${bestTag.text}"`);
-              closeThenResolve();
-              return;
+          let clicked = 0;
+          for (const tagValue of tagsToFill) {
+            if (clicked >= TAGS_FILL_MAX) break;
+            const bestTag = findBestCategoryMatchFromOptions(optionsFromText, tagValue);
+            if (bestTag) {
+              const optionEl = optionEls.find(el => (el.textContent || '').trim() === bestTag.text);
+              if (optionEl) {
+                simulateClick(optionEl);
+                clicked++;
+              }
             }
+          }
+          if (clicked > 0) {
+            triggerElement.dispatchEvent(new Event('change', { bubbles: true }));
+            console.log(`${TAG} Custom select: Tags 已选 ${clicked} 项（最多 ${TAGS_FILL_MAX} 项）`);
+            closeThenResolve();
+            return;
           }
         }
         console.warn(`${TAG} Custom select: no matching option for "${valueToUse}"`);
