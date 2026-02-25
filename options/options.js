@@ -520,6 +520,17 @@ function openSiteModal(siteId = null) {
       </div>
 
       <div class="form-group">
+        <label for="pricing" class="form-label">定价 (Pricing)</label>
+        <select id="pricing" class="select">
+          <option value="">-- 请选择 --</option>
+          <option value="Free" ${(site?.pricing || '') === 'Free' ? 'selected' : ''}>Free</option>
+          <option value="Free Trial" ${(site?.pricing || 'Free Trial') === 'Free Trial' ? 'selected' : ''}>Free Trial</option>
+          <option value="Freemium" ${(site?.pricing || '') === 'Freemium' ? 'selected' : ''}>Freemium</option>
+          <option value="Paid" ${(site?.pricing || '') === 'Paid' ? 'selected' : ''}>Paid</option>
+        </select>
+      </div>
+
+      <div class="form-group">
         <label for="tagline" class="form-label">标语/口号</label>
         <input type="text" id="tagline" class="input" value="${escapeHtml(site?.tagline || '')}">
       </div>
@@ -678,6 +689,7 @@ async function saveSite(siteId) {
     email: document.getElementById('email').value.trim(),
     category: document.getElementById('category').value.trim(),
     tags: document.getElementById('tags').value.trim(),
+    pricing: (document.getElementById('pricing')?.value || '').trim(),
     tagline: document.getElementById('tagline').value.trim(),
     shortDescription: document.getElementById('shortDescription').value.trim(),
     longDescription: document.getElementById('longDescription').value.trim(),

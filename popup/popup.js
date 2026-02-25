@@ -9,6 +9,7 @@ const FIELD_LABELS = {
   email: '联系邮箱',
   category: '分类',
   tags: '标签',
+  pricing: '定价 (Pricing)',
   tagline: '标语',
   shortDescription: '简短描述',
   longDescription: '详细描述',

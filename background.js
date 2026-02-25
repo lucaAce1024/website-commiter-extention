@@ -8,6 +8,7 @@ const FILL_FIELD_ITEMS = [
   { id: 'email', title: '联系邮箱' },
   { id: 'category', title: '分类 (Categories)' },
   { id: 'tags', title: '标签 (Tags)' },
+  { id: 'pricing', title: '定价 (Pricing)' },
   { id: 'tagline', title: '标语/口号' },
   { id: 'shortDescription', title: '简短描述' },
   { id: 'longDescription', title: '详细描述 / Introduction' },
