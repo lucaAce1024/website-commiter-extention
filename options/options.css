@@ -337,6 +337,37 @@ body {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 
+.input-with-eye {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.input-with-eye .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.input-eye-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.input-eye-btn:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  background: var(--bg-color);
+}
+
 .textarea {
   resize: vertical;
   min-height: 80px;

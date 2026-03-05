@@ -37,8 +37,51 @@ body {
   padding: 16px;
 }
 
+/* Mode Tabs */
+.mode-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mode-tab {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: var(--bg-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.mode-tab:hover {
+  background: var(--border-color);
+  color: var(--text-primary);
+}
+
+.mode-tab.active {
+  background: var(--primary-color);
+  color: white;
+}
+
+.mode-panel {
+  display: block;
+}
+
+.mode-panel.hidden {
+  display: none !important;
+}
+
 /* Header */
 .header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 16px;
 }
 
@@ -49,6 +92,25 @@ body {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.btn-icon-header {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-color);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.btn-icon-header:hover {
+  background: var(--border-color);
+  color: var(--primary-color);
 }
 
 .icon {
@@ -202,6 +264,16 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   font-family: monospace;
+}
+
+/* 当前站点 URL 小字展示（下拉框下方） */
+.current-site-url {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  word-break: break-all;
+  line-height: 1.3;
 }
 
 /* Actions */

@@ -27,6 +27,10 @@
         <span class="tab-icon">📚</span>
         导航站列表
       </button>
+      <button class="tab" data-tab="blogSites">
+        <span class="tab-icon">📝</span>
+        Blog 评论列表
+      </button>
       <button class="tab" data-tab="mappings">
         <span class="tab-icon">🔍</span>
         识别与填充
@@ -88,6 +92,30 @@
           <div class="empty-icon">📚</div>
           <p>还没有添加任何导航站</p>
           <button class="btn btn-secondary" id="addFirstNavSiteBtn">添加第一个导航站</button>
+        </div>
+      </section>
+
+      <!-- Blog Comment Sites Tab -->
+      <section id="tab-blogSites" class="tab-content">
+        <div class="content-header">
+          <h2>Blog 评论站点列表</h2>
+          <div class="header-actions">
+            <button class="btn btn-secondary" id="importBlogSitesBtn">
+              <span class="btn-icon">📥</span>
+              导入
+            </button>
+            <button class="btn btn-primary" id="addBlogSiteBtn">
+              <span class="btn-icon">➕</span>
+              添加评论页
+            </button>
+          </div>
+        </div>
+        <p class="section-desc">维护待提交评论的博客文章 URL，用于批量评论。每条记录：名称 + 目标评论页 URL。</p>
+        <div id="blogSitesList" class="items-list"></div>
+        <div id="noBlogSitesHint" class="empty-state hidden">
+          <div class="empty-icon">📝</div>
+          <p>还没有添加任何 Blog 评论页</p>
+          <button class="btn btn-secondary" id="addFirstBlogSiteBtn">添加第一条</button>
         </div>
       </section>
 
@@ -214,19 +242,34 @@
 
             <div class="form-group">
               <label for="llmApiKey">API Key</label>
-              <input type="password" id="llmApiKey" class="input" placeholder="sk-...">
+              <div class="input-with-eye">
+                <input type="password" id="llmApiKey" class="input" placeholder="sk-...">
+                <button type="button" id="toggleApiKeyBtn" class="input-eye-btn" title="显示 API Key" aria-label="显示 API Key">👁</button>
+              </div>
             </div>
 
             <div class="form-group">
               <label for="llmModel">模型</label>
-              <input type="text" id="llmModel" class="input" placeholder="gpt-3.5-turbo" list="llmModelList">
-              <datalist id="llmModelList">
-                <option value="glm-4.7">
-                <option value="glm-5">
-                <option value="gpt-3.5-turbo">
-                <option value="gpt-4">
-              </datalist>
-              <p class="hint">智谱 GLM 可选: glm-4.7、glm-5</p>
+              <select id="llmModel" class="select">
+                <option value="glm-4.7-flash" selected>glm-4.7-flash</option>
+                <option value="glm-4.7">glm-4.7</option>
+                <option value="glm-5">glm-5</option>
+                <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                <option value="gpt-4">gpt-4</option>
+                <option value="__custom__">其他（手动输入）</option>
+              </select>
+              <div id="llmModelCustomWrap" class="form-group hidden" style="margin-top: 8px;">
+                <label for="llmModelCustom" class="form-label">自定义模型名</label>
+                <input type="text" id="llmModelCustom" class="input" placeholder="如 gpt-4o">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="llmDisableThinking" class="checkbox-label">
+                <input type="checkbox" id="llmDisableThinking">
+                关闭 Thinking
+              </label>
+              <p class="hint">勾选后请求将携带 thinking: { type: "disabled" }，回复直接返回在 content 中。支持该参数的接口（如智谱 GLM 等）会生效，不支持的会忽略。</p>
             </div>
 
             <button class="btn btn-secondary" id="testLlmBtn">

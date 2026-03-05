@@ -40,19 +40,22 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     // Initialize default storage structure
     await chrome.storage.local.set({
-      sites: [],              // Site profiles
-      navSites: [],           // Navigation sites list
-      fieldMappings: {},      // Cached field mappings by domain
-      submissionRecords: {},  // Submission records: { siteId_navSiteId: { ... } }
+      sites: [],
+      navSites: [],
+      fieldMappings: {},
+      submissionRecords: {},
+      blogCommentSites: [],         // Blog 评论站点列表（目标 URL）
+      blogCommentFieldMappings: {}, // 评论表单字段映射缓存
+      blogCommentRecords: {},       // 评论提交记录（可选）
       settings: {
-        currentSiteId: null,  // Currently selected site
+        currentSiteId: null,
         llmConfig: {
           enabled: false,
           endpoint: '',
           apiKey: '',
           model: 'gpt-3.5-turbo'
         },
-        autoSubmit: false     // Global auto-submit toggle
+        autoSubmit: false
       }
     });
     console.log('[Background] Extension installed, default storage initialized');
@@ -86,7 +89,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true; // Keep message channel open for async response
   } else if (request.action === 'aiRecognizeForm') {
-    // AI 识别表单字段 - 由 background 调用 LLM API，sender.tab.id 用于把日志打到页面 Console
     const tabId = sender.tab?.id;
     let responded = false;
     const safeSend = (payload) => {
@@ -101,7 +103,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleAIRecognizeForm(request.formMetadata, tabId)
       .then(result => safeSend({ success: true, result }))
       .catch(error => safeSend({ success: false, error: error.message }));
-    return true; // Keep message channel open for async response
+    return true;
+  } else if (request.action === 'generateBlogComment') {
+    // 根据页面 title/description 生成约 200 字英文评论
+    let responded = false;
+    const safeSend = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (e) {
+        console.warn('[Background] sendResponse 已关闭:', e.message);
+      }
+    };
+    handleGenerateBlogComment(request.title, request.description)
+      .then(text => safeSend({ success: true, comment: text }))
+      .catch(error => safeSend({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'aiRecognizeCommentForm') {
+    // 评论表单 AI 识别：4 个标准字段 + 提交按钮
+    const tabId = sender.tab?.id;
+    let responded = false;
+    const safeSend = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (e) {
+        console.warn('[Background] sendResponse 已关闭:', e.message);
+      }
+    };
+    handleAIRecognizeCommentForm(request.formMetadata, tabId)
+      .then(result => safeSend({ success: true, result }))
+      .catch(error => safeSend({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -160,6 +195,9 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
     temperature: 1.0,
     max_tokens: 4096
   };
+  if (llmConfig.disableThinking !== false) {
+    requestBody.thinking = { type: 'disabled' };
+  }
   log('AI 请求 body (发送给接口的完整 JSON):', JSON.stringify(requestBody, null, 2));
   log('AI 请求 user message 全文:', prompt);
 
@@ -373,6 +411,303 @@ function parseAIResponse(content, formMetadata) {
   } catch (e) {
     console.warn('[Background] 解析 AI 响应失败，将回退关键词匹配:', e.message, '原始内容长度:', content.length);
     return [];
+  }
+}
+
+// ---------- Blog Comment: 评论内容生成 ----------
+const BLOG_COMMENT_SYSTEM = 'You write brief, natural blog comments in English. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation.';
+const BLOG_COMMENT_USER_PREFIX = 'Write one short, natural, friendly comment in English (about 200 characters). Only output the single line of comment.\n\nTitle: ';
+const BLOG_COMMENT_USER_SUFFIX = '\n\nDescription: ';
+
+/**
+ * 从 GLM reasoning_content 中提取评论文本（当 content 为空时使用）
+ * 兼容多种格式：带 (N characters) 的引号、纯引号、无引号的末尾结论等
+ */
+function extractCommentFromReasoning(reasoningContent) {
+  if (!reasoningContent || typeof reasoningContent !== 'string') return '';
+  const text = reasoningContent.trim();
+  if (!text) return '';
+
+  // 1. 匹配 "…" (N characters) 形式（允许中间有单引号如 I've）
+  const withLen = text.match(/"\s*([^"]{30,450}?)\s*"\s*\(\d+\s*characters?\)/i);
+  if (withLen && withLen[1]) return withLen[1].trim();
+
+  // 2. 匹配任意双引号内 30~450 字（取最长的一段作为评论）
+  const allQuoted = text.match(/"([^"]{30,450})"/g);
+  if (allQuoted && allQuoted.length > 0) {
+    let best = '';
+    for (const m of allQuoted) {
+      const inner = m.slice(1, -1).trim();
+      if (inner.length > best.length && inner.length >= 30) best = inner;
+    }
+    if (best) return best;
+  }
+
+  // 3. 取末尾连续一段“像评论”的文本（GLM 常把最终结论放在 reasoning 末尾，可能无引号或被截断）
+  const noStructure = text.replace(/\*\*[^*]+\*\*/g, '').replace(/^\s*\d+\.\s+/gm, '');
+  const tail = noStructure.slice(-600).trim();
+  const tailLines = tail.split(/\n/).map(s => s.trim()).filter(Boolean);
+  const lastChunk = tailLines.slice(-3).join(' ').trim();
+  if (lastChunk.length >= 25 && lastChunk.length <= 400 && !/^[\*#\d]/.test(lastChunk)) {
+    return lastChunk;
+  }
+  if (tailLines.length > 0) {
+    for (let i = tailLines.length - 1; i >= 0; i--) {
+      const line = tailLines[i];
+      if (line.length >= 25 && line.length <= 400 && !/^[\*#\d\s]/.test(line) && !/^(Analyze|Topic|Constraints|Drafting|Refining|Idea\s*\d)/i.test(line)) {
+        return line;
+      }
+    }
+  }
+
+  // 4. 任意非空行 50~350 字且不像标题/列表
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.length >= 50 && line.length <= 350 && !/^\s*[\*#\d]/.test(line) && !/^(Analyze|Topic|Constraints|Idea\s*\d)/i.test(line)) {
+      return line;
+    }
+  }
+
+  return '';
+}
+
+/**
+ * 统一从 API 返回中解析出评论文本：优先 content，为空时从 reasoning_content 提取
+ */
+function parseBlogCommentResponse(data) {
+  const msg = data?.choices?.[0]?.message;
+  if (!msg) return '';
+
+  let rawContent = (msg.content && String(msg.content).trim()) || '';
+  const reasoningContent = (msg.reasoning_content && String(msg.reasoning_content)) || '';
+
+  if (rawContent) {
+    return rawContent.replace(/^["']|["']$/g, '').trim();
+  }
+  if (reasoningContent) {
+    const extracted = extractCommentFromReasoning(reasoningContent);
+    if (extracted) return extracted;
+  }
+  return '';
+}
+
+/**
+ * 根据页面 title/description 调用 LLM 生成约 200 字英文评论
+ * 控制台会打印请求/响应日志，便于调试（扩展 Service Worker 控制台）
+ * @param {string} title - document.title
+ * @param {string} description - meta description
+ * @returns {Promise<string>} 评论文本
+ */
+async function handleGenerateBlogComment(title, description) {
+  const log = (...a) => console.log('[Background][BlogComment]', ...a);
+  const logWarn = (...a) => console.warn('[Background][BlogComment]', ...a);
+  const logErr = (...a) => console.error('[Background][BlogComment]', ...a);
+
+  const storage = await chrome.storage.local.get(['settings']);
+  const llmConfig = storage.settings?.llmConfig;
+
+  if (!llmConfig?.enabled || !llmConfig?.apiKey) {
+    throw new Error('LLM 未启用或 API Key 未配置，请在设置中配置后重试');
+  }
+
+  const userContent = BLOG_COMMENT_USER_PREFIX + (title || '(no title)') + BLOG_COMMENT_USER_SUFFIX + (description || '(no description)');
+
+  const endpoint = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
+  const requestBody = {
+    model: llmConfig.model || 'gpt-3.5-turbo',
+    messages: [
+      { role: 'system', content: BLOG_COMMENT_SYSTEM },
+      { role: 'user', content: userContent }
+    ],
+    stream: false,
+    temperature: 0.7,
+    max_tokens: 300
+  };
+  if (llmConfig.disableThinking !== false) {
+    requestBody.thinking = { type: 'disabled' };
+  }
+  log('请求开始:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  log('请求 user 内容:', userContent);
+
+  const controller = new AbortController();
+  const timeoutMs = 30000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${llmConfig.apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    log('响应:', { status: response.status, ok: response.ok });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logErr('API 错误 body:', errorText);
+      throw new Error(`API 错误 ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const contentLen = data?.choices?.[0]?.message?.content?.length ?? 0;
+    const reasoningLen = data?.choices?.[0]?.message?.reasoning_content?.length ?? 0;
+    log('响应结构:', {
+      hasChoices: !!data?.choices,
+      contentLength: contentLen,
+      reasoningContentLength: reasoningLen,
+      usage: data?.usage || null
+    });
+
+    const comment = parseBlogCommentResponse(data);
+    if (!comment) {
+      logErr('解析结果为空. content 长度:', contentLen, 'reasoning_content 长度:', reasoningLen);
+      const rc = data?.choices?.[0]?.message?.reasoning_content || '';
+      logErr('reasoning_content 前 500 字:', rc.slice(0, 500));
+      logErr('reasoning_content 后 300 字:', rc.slice(-300));
+      throw new Error('API 返回内容为空或无法从响应中解析出评论');
+    }
+
+    log('解析得到评论长度:', comment.length, '预览:', comment.slice(0, 80) + (comment.length > 80 ? '…' : ''));
+    return comment;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      logErr('请求超时');
+      throw new Error(`请求超时（${timeoutMs / 1000}秒）`);
+    }
+    logErr('异常:', error.message);
+    throw error;
+  }
+}
+
+// ---------- Blog Comment: 评论表单 AI 识别 ----------
+const BLOG_COMMENT_STANDARD_FIELDS = ['comment', 'commentName', 'commentEmail', 'commentWebsite'];
+
+/**
+ * 构建评论表单 AI Prompt，输出字段映射 + 提交按钮索引
+ */
+function buildCommentFormAIPrompt(formDescription, formMetadata) {
+  const standardList = BLOG_COMMENT_STANDARD_FIELDS.join(', ');
+  const formHtml = formMetadata?.formHtml;
+  const body = formHtml
+    ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nStandard types (use exactly): ${standardList}\n\nHTML:\n${formHtml}`
+    : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button.`;
+
+  return `${body}
+
+Respond with ONLY a JSON object: { "mappings": [ {"fieldIndex": 0, "standardField": "comment"}, ... ], "submitButtonFieldIndex": 3 }
+Use standardField "unknown" for unmapped. submitButtonFieldIndex is the 0-based index of the submit button in the same field list, or -1 if not found.`;
+}
+
+/**
+ * 解析评论表单 AI 返回，得到 mappings + submitButton
+ */
+function parseCommentFormAIResponse(content, formMetadata) {
+  if (content == null || typeof content !== 'string') return { mappings: [], submitButton: null };
+  let jsonStr = content.trim();
+  jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+  try {
+    const obj = typeof jsonStr === 'string' && jsonStr.startsWith('{') ? JSON.parse(jsonStr) : null;
+    if (!obj || !obj.mappings) return { mappings: [], submitButton: null };
+
+    const result = [];
+    for (const m of obj.mappings) {
+      const field = formMetadata.fields[m.fieldIndex];
+      if (!field) continue;
+      if (m.standardField === 'unknown') continue;
+      if (!BLOG_COMMENT_STANDARD_FIELDS.includes(m.standardField)) continue;
+      result.push({
+        locator: field.locator,
+        standardField: m.standardField,
+        confidence: m.confidence || 0.8,
+        method: 'ai',
+        xpath: field.xpath,
+        locatorDesc: field.locatorDesc
+      });
+    }
+
+    let submitButton = null;
+    const submitIndex = obj.submitButtonFieldIndex;
+    if (typeof submitIndex === 'number' && submitIndex >= 0 && formMetadata.fields[submitIndex]) {
+      const btn = formMetadata.fields[submitIndex];
+      submitButton = { locator: btn.locator, xpath: btn.xpath, locatorDesc: btn.locatorDesc };
+    }
+
+    return { mappings: result, submitButton };
+  } catch (e) {
+    console.warn('[Background] 解析评论表单 AI 响应失败:', e.message);
+    return { mappings: [], submitButton: null };
+  }
+}
+
+async function handleAIRecognizeCommentForm(formMetadata, tabId) {
+  const log = (...a) => aiLogToPage(tabId, 'log', ...a);
+  const logErr = (...a) => aiLogToPage(tabId, 'error', ...a);
+
+  const storage = await chrome.storage.local.get(['settings']);
+  const llmConfig = storage.settings?.llmConfig;
+
+  if (!llmConfig?.enabled || !llmConfig?.apiKey) {
+    throw new Error('LLM 未启用或 API Key 未配置');
+  }
+
+  const formDescription = buildCompactFormDescription(formMetadata);
+  const prompt = buildCommentFormAIPrompt(formDescription, formMetadata);
+
+  const requestBody = {
+    model: llmConfig.model || 'gpt-3.5-turbo',
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant. Respond only with valid JSON.' },
+      { role: 'user', content: prompt }
+    ],
+    stream: false,
+    temperature: 0.3,
+    max_tokens: 2048
+  };
+  const endpointComment = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
+  if (llmConfig.disableThinking !== false) {
+    requestBody.thinking = { type: 'disabled' };
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = 45000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(endpointComment, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${llmConfig.apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logErr('Comment form AI API error:', errorText);
+      throw new Error(`API 错误 ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    let content = (data.choices?.[0]?.message?.content || '').trim();
+    if (!content) throw new Error('API 返回内容为空');
+
+    const { mappings, submitButton } = parseCommentFormAIResponse(content, formMetadata);
+    log('Comment form AI mappings:', mappings.length, 'submitButton:', submitButton);
+    return { mappings, submitButton };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') throw new Error(`请求超时（${timeoutMs / 1000}秒）`);
+    throw error;
   }
 }
 

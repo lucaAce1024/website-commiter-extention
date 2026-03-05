@@ -23,6 +23,7 @@ const elements = {
   manageSitesBtn: document.getElementById('manageSitesBtn'),
   addSiteLink: document.getElementById('addSiteLink'),
   noSitesHint: document.getElementById('noSitesHint'),
+  currentSiteUrl: document.getElementById('currentSiteUrl'),
   pageDomain: document.getElementById('pageDomain'),
   recognitionStatus: document.getElementById('recognitionStatus'),
   fieldCount: document.getElementById('fieldCount'),
@@ -38,7 +39,28 @@ const elements = {
   openOptionsBtn: document.getElementById('openOptionsBtn'),
   statusMessage: document.getElementById('statusMessage'),
   statusText: document.getElementById('statusText'),
-  closeStatusBtn: document.getElementById('closeStatusBtn')
+  closeStatusBtn: document.getElementById('closeStatusBtn'),
+  refreshTabBtn: document.getElementById('refreshTabBtn'),
+  // Blog 评论模式
+  panelNav: document.getElementById('panel-nav'),
+  panelBlog: document.getElementById('panel-blog'),
+  modeTabs: document.querySelectorAll('.mode-tab'),
+  blogSiteSelect: document.getElementById('blogSiteSelect'),
+  blogCurrentSiteUrl: document.getElementById('blogCurrentSiteUrl'),
+  blogManageSitesBtn: document.getElementById('blogManageSitesBtn'),
+  blogAddSiteLink: document.getElementById('blogAddSiteLink'),
+  blogNoSitesHint: document.getElementById('blogNoSitesHint'),
+  blogPageDomain: document.getElementById('blogPageDomain'),
+  blogFormStatus: document.getElementById('blogFormStatus'),
+  blogRecognitionStatus: document.getElementById('blogRecognitionStatus'),
+  blogFieldCount: document.getElementById('blogFieldCount'),
+  blogSpamHint: document.getElementById('blogSpamHint'),
+  blogNoFormHint: document.getElementById('blogNoFormHint'),
+  blogClearCacheBtn: document.getElementById('blogClearCacheBtn'),
+  blogGenerateAndFillBtn: document.getElementById('blogGenerateAndFillBtn'),
+  blogVerifySubmitBtn: document.getElementById('blogVerifySubmitBtn'),
+  openBlogSitesBtn: document.getElementById('openBlogSitesBtn'),
+  blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn')
 };
 
 // State
@@ -46,7 +68,9 @@ let currentTab = null;
 let pageState = null;
 let sites = [];
 let currentSiteId = null;
-let llmEnabled = false; // LLM 是否启用
+let llmEnabled = false;
+let currentMode = 'nav'; // 'nav' | 'blog'
+let commentPageState = null;
 
 /**
  * Initialize popup
@@ -73,6 +97,7 @@ async function init() {
     hostname = currentTab.url || '—';
   }
   elements.pageDomain.textContent = hostname;
+  if (elements.blogPageDomain) elements.blogPageDomain.textContent = hostname;
 
   // Load sites
   await loadSites();
@@ -80,8 +105,15 @@ async function init() {
   // Get page state from content script
   await getPageState();
 
+  // Blog 评论模式：获取评论表单状态
+  await getCommentPageState();
+
   // Setup event listeners
   setupEventListeners();
+
+  // 同步 Blog 面板的站点下拉与当前模式显示
+  syncBlogSiteSelect();
+  showModePanel(currentMode);
 }
 
 /**
@@ -89,9 +121,12 @@ async function init() {
  */
 async function loadSites() {
   try {
-    const result = await chrome.storage.local.get(['sites', 'settings']);
+    const result = await chrome.storage.local.get(['sites', 'settings', 'popupMode']);
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
+    if (result.popupMode === 'blog' || result.popupMode === 'nav') {
+      currentMode = result.popupMode;
+    }
 
     // 检查 LLM 是否启用
     const llmConfig = result.settings?.llmConfig;
@@ -108,8 +143,36 @@ async function loadSites() {
       elements.noSitesHint.classList.add('hidden');
       elements.siteSelect.classList.remove('hidden');
     }
+
+    updateCurrentSiteUrlDisplay();
   } catch (error) {
     console.error('[Popup] Failed to load sites:', error);
+  }
+}
+
+/**
+ * 在下拉框下方小字展示当前选中站点的 URL（导航站 / Blog 评论两处都更新）
+ */
+function updateCurrentSiteUrlDisplay() {
+  const site = currentSiteId ? sites.find(s => s.id === currentSiteId) : null;
+  const url = site?.siteUrl?.trim() || '';
+  if (elements.currentSiteUrl) {
+    if (url) {
+      elements.currentSiteUrl.textContent = url;
+      elements.currentSiteUrl.classList.remove('hidden');
+    } else {
+      elements.currentSiteUrl.textContent = '';
+      elements.currentSiteUrl.classList.add('hidden');
+    }
+  }
+  if (elements.blogCurrentSiteUrl) {
+    if (url) {
+      elements.blogCurrentSiteUrl.textContent = url;
+      elements.blogCurrentSiteUrl.classList.remove('hidden');
+    } else {
+      elements.blogCurrentSiteUrl.textContent = '';
+      elements.blogCurrentSiteUrl.classList.add('hidden');
+    }
   }
 }
 
@@ -313,6 +376,88 @@ function showNoForm() {
   updateFieldFillList();
 }
 
+// ---------- Blog 评论模式 ----------
+function showModePanel(mode) {
+  currentMode = mode;
+  chrome.storage.local.set({ popupMode: currentMode });
+  elements.modeTabs?.forEach((t) => t.classList.toggle('active', t.dataset.mode === mode));
+  if (elements.panelNav) elements.panelNav.classList.toggle('hidden', mode !== 'nav');
+  if (elements.panelBlog) elements.panelBlog.classList.toggle('hidden', mode !== 'blog');
+}
+
+function syncBlogSiteSelect() {
+  if (!elements.blogSiteSelect) return;
+  elements.blogSiteSelect.innerHTML = '<option value="">-- 请选择站点 --</option>';
+  sites.forEach((site) => {
+    const opt = document.createElement('option');
+    opt.value = site.id;
+    opt.textContent = site.siteName || site.siteUrl || 'Unnamed';
+    elements.blogSiteSelect.appendChild(opt);
+  });
+  if (currentSiteId) elements.blogSiteSelect.value = currentSiteId;
+}
+
+async function getCommentPageState() {
+  if (!currentTab?.id) return;
+  try {
+    const response = await chrome.tabs.sendMessage(currentTab.id, { action: 'getCommentPageState' });
+    if (response?.success) {
+      commentPageState = response.state;
+      updateBlogFormStatus();
+    } else {
+      const rec = await chrome.tabs.sendMessage(currentTab.id, { action: 'recognizeCommentForm', useLlm: false });
+      if (rec?.success && rec.result?.status === 'success') {
+        commentPageState = { hasForm: true, fieldMappings: rec.result.mappings, recognitionStatus: 'done', hasSpamVerification: rec.result.hasSpamVerification };
+        updateBlogFormStatusFromRec(rec.result);
+      } else {
+        setBlogNoForm();
+      }
+    }
+  } catch (e) {
+    if (e?.message?.includes('Receiving end')) setBlogNoForm();
+    else setBlogNoForm();
+  }
+}
+
+function updateBlogFormStatus() {
+  if (!commentPageState) {
+    setBlogNoForm();
+    return;
+  }
+  if (elements.blogFormStatus) elements.blogFormStatus.classList.remove('hidden');
+  if (elements.blogNoFormHint) elements.blogNoFormHint.classList.add('hidden');
+  if (elements.blogRecognitionStatus) {
+    const s = commentPageState.recognitionStatus;
+    elements.blogRecognitionStatus.textContent = s === 'done' ? '已识别' : s === 'recognizing' ? '识别中...' : s === 'failed' ? '失败' : '未识别';
+    if (commentPageState.recognitionMethod) elements.blogRecognitionStatus.textContent += ` (${commentPageState.recognitionMethod === 'ai' ? 'AI' : commentPageState.recognitionMethod === 'cache' ? '缓存' : '关键词'})`;
+  }
+  const count = commentPageState.fieldMappings?.length ?? 0;
+  if (elements.blogFieldCount) elements.blogFieldCount.textContent = count + ' 个字段';
+  if (elements.blogSpamHint) elements.blogSpamHint.classList.toggle('hidden', !commentPageState.hasSpamVerification);
+  if (elements.blogGenerateAndFillBtn) elements.blogGenerateAndFillBtn.disabled = !currentSiteId;
+  if (elements.blogVerifySubmitBtn) elements.blogVerifySubmitBtn.disabled = !currentSiteId;
+}
+
+function updateBlogFormStatusFromRec(rec) {
+  commentPageState = {
+    hasForm: true,
+    fieldMappings: rec.mappings,
+    recognitionStatus: 'done',
+    hasSpamVerification: false,
+    recognitionMethod: rec.method
+  };
+  updateBlogFormStatus();
+  if (elements.blogSpamHint) elements.blogSpamHint.classList.add('hidden');
+}
+
+function setBlogNoForm() {
+  commentPageState = null;
+  if (elements.blogFormStatus) elements.blogFormStatus.classList.add('hidden');
+  if (elements.blogNoFormHint) elements.blogNoFormHint.classList.remove('hidden');
+  if (elements.blogGenerateAndFillBtn) elements.blogGenerateAndFillBtn.disabled = true;
+  if (elements.blogVerifySubmitBtn) elements.blogVerifySubmitBtn.disabled = true;
+}
+
 /**
  * Setup event listeners
  */
@@ -326,6 +471,7 @@ function setupEventListeners() {
       chrome.storage.local.set({ settings });
     });
     currentSiteId = newSiteId;
+    updateCurrentSiteUrlDisplay();
     updateFormStatus();
   });
 
@@ -529,6 +675,143 @@ function setupEventListeners() {
   // Close status button
   elements.closeStatusBtn.addEventListener('click', () => {
     hideMessage();
+  });
+
+  // 刷新当前活动标签页
+  elements.refreshTabBtn?.addEventListener('click', async () => {
+    if (!currentTab?.id) return;
+    try {
+      await chrome.tabs.reload(currentTab.id);
+      showSuccess('页面刷新中…');
+      window.close();
+    } catch (e) {
+      showError('无法刷新该页面');
+    }
+  });
+
+  // Mode tabs
+  elements.modeTabs?.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      showModePanel(tab.dataset.mode);
+      if (tab.dataset.mode === 'blog') {
+        syncBlogSiteSelect();
+        getCommentPageState();
+      }
+    });
+  });
+
+  // Blog 评论：站点选择（与主站点同步）
+  elements.blogSiteSelect?.addEventListener('change', async () => {
+    const newId = elements.blogSiteSelect?.value || null;
+    const result = await chrome.storage.local.get(['settings']);
+    const settings = result.settings || {};
+    settings.currentSiteId = newId;
+    await chrome.storage.local.set({ settings });
+    currentSiteId = newId;
+    updateCurrentSiteUrlDisplay();
+    updateBlogFormStatus();
+  });
+
+  elements.blogManageSitesBtn?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
+    window.close();
+  });
+  elements.blogAddSiteLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
+    window.close();
+  });
+
+  // 生成评论并填充
+  elements.blogGenerateAndFillBtn?.addEventListener('click', async () => {
+    if (!currentSiteId || !currentTab?.id) {
+      showWarning('请先选择当前站点');
+      return;
+    }
+    elements.blogGenerateAndFillBtn.disabled = true;
+    elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 生成中...';
+    try {
+      const metaRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'getPageMetadata' });
+      const title = metaRes?.title ?? '';
+      const description = metaRes?.description ?? '';
+      const genRes = await chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description });
+      if (!genRes?.success) {
+        showError(genRes?.error || '评论生成失败');
+        return;
+      }
+      elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 识别表单...';
+      const recRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'recognizeCommentForm', useLlm: llmEnabled });
+      if (!recRes?.success || recRes.result?.status !== 'success') {
+        showError(recRes?.result?.message || recRes?.error || '评论表单识别失败');
+        return;
+      }
+      elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
+      const fillRes = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'fillCommentForm',
+        siteId: currentSiteId,
+        commentText: genRes.comment
+      });
+      if (!fillRes?.success) {
+        showError(fillRes?.error || '填充失败');
+        return;
+      }
+      const r = fillRes.result;
+      let msg = `已填充 ${r.filledCount} 个字段。`;
+      if (r.hasSpamVerification) {
+        msg += ' 检测到验证项，请手动完成验证后点击提交。';
+      } else if (r.clickedSubmit) {
+        msg += ' 已自动点击提交。';
+        const site = sites.find((s) => s.id === currentSiteId);
+        if (site?.siteUrl) {
+          setTimeout(async () => {
+            const verifyRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
+            if (verifyRes?.success && verifyRes.result?.success) showSuccess(verifyRes.result.message);
+            else showWarning(verifyRes?.result?.message || '未检测到本站链接');
+          }, 4000);
+        }
+      }
+      showSuccess(msg);
+    } catch (err) {
+      showError(err?.message?.includes('Receiving end') ? '请刷新页面后再试' : (err?.message || '操作失败'));
+    } finally {
+      elements.blogGenerateAndFillBtn.disabled = false;
+      elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">💬</span> 生成评论并填充';
+    }
+  });
+
+  elements.blogVerifySubmitBtn?.addEventListener('click', async () => {
+    if (!currentSiteId || !currentTab?.id) return;
+    const site = sites.find((s) => s.id === currentSiteId);
+    if (!site?.siteUrl) {
+      showWarning('当前站点未设置网站 URL');
+      return;
+    }
+    try {
+      const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
+      if (res?.success && res.result?.success) showSuccess(res.result.message);
+      else showWarning(res?.result?.message || '未在页面中检测到您的站点链接');
+    } catch (e) {
+      showError(e?.message || '验证失败');
+    }
+  });
+
+  elements.blogClearCacheBtn?.addEventListener('click', async () => {
+    try {
+      await chrome.tabs.sendMessage(currentTab.id, { action: 'clearCommentMapping' });
+      showSuccess('已清除本页评论缓存');
+      await getCommentPageState();
+    } catch (e) {
+      showError('清除失败');
+    }
+  });
+
+  elements.openBlogSitesBtn?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html?tab=blogSites') });
+    window.close();
+  });
+  elements.blogOpenOptionsBtn?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
+    window.close();
   });
 }
 

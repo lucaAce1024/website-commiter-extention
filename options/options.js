@@ -7,6 +7,7 @@
 let currentTab = 'sites';
 let sites = [];
 let navSites = [];
+let blogCommentSites = [];
 let fieldMappings = {};
 let settings = {};
 /** 当前编辑中待保存的 Logo 图片（data URL），用于文件上传类表单项 */
@@ -131,6 +132,12 @@ function cacheElements() {
   elements.addFirstNavSiteBtn = document.getElementById('addFirstNavSiteBtn');
   elements.importNavSitesBtn = document.getElementById('importNavSitesBtn');
 
+  elements.blogSitesList = document.getElementById('blogSitesList');
+  elements.noBlogSitesHint = document.getElementById('noBlogSitesHint');
+  elements.addBlogSiteBtn = document.getElementById('addBlogSiteBtn');
+  elements.addFirstBlogSiteBtn = document.getElementById('addFirstBlogSiteBtn');
+  elements.importBlogSitesBtn = document.getElementById('importBlogSitesBtn');
+
   // Mappings
   elements.mappingsList = document.getElementById('mappingsList');
   elements.noMappingsHint = document.getElementById('noMappingsHint');
@@ -154,7 +161,11 @@ function cacheElements() {
   elements.llmProvider = document.getElementById('llmProvider');
   elements.llmEndpoint = document.getElementById('llmEndpoint');
   elements.llmApiKey = document.getElementById('llmApiKey');
+  elements.toggleApiKeyBtn = document.getElementById('toggleApiKeyBtn');
   elements.llmModel = document.getElementById('llmModel');
+  elements.llmModelCustomWrap = document.getElementById('llmModelCustomWrap');
+  elements.llmModelCustom = document.getElementById('llmModelCustom');
+  elements.llmDisableThinking = document.getElementById('llmDisableThinking');
   elements.testLlmBtn = document.getElementById('testLlmBtn');
   elements.autoSubmit = document.getElementById('autoSubmit');
   elements.saveSettingsBtn = document.getElementById('saveSettingsBtn');
@@ -191,6 +202,11 @@ function setupEventListeners() {
   elements.addFirstNavSiteBtn?.addEventListener('click', () => openNavSiteModal());
   elements.importNavSitesBtn?.addEventListener('click', importNavSites);
 
+  // Blog Comment Sites
+  elements.addBlogSiteBtn?.addEventListener('click', () => openBlogSiteModal());
+  elements.addFirstBlogSiteBtn?.addEventListener('click', () => openBlogSiteModal());
+  elements.importBlogSitesBtn?.addEventListener('click', importBlogSites);
+
   // Mappings
   elements.clearAllMappingsBtn?.addEventListener('click', clearAllMappings);
 
@@ -204,8 +220,21 @@ function setupEventListeners() {
     elements.llmConfigFields.classList.toggle('hidden', !e.target.checked);
   });
   elements.llmProvider?.addEventListener('change', onLlmProviderChange);
+  elements.llmModel?.addEventListener('change', () => {
+    elements.llmModelCustomWrap?.classList.toggle('hidden', elements.llmModel?.value !== '__custom__');
+  });
   elements.testLlmBtn?.addEventListener('click', testLlmConnection);
   elements.saveSettingsBtn?.addEventListener('click', saveSettings);
+
+  elements.toggleApiKeyBtn?.addEventListener('click', () => {
+    const input = elements.llmApiKey;
+    if (!input) return;
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    elements.toggleApiKeyBtn.textContent = isPassword ? '🙈' : '👁';
+    elements.toggleApiKeyBtn.title = isPassword ? '隐藏 API Key' : '显示 API Key';
+    elements.toggleApiKeyBtn.setAttribute('aria-label', elements.toggleApiKeyBtn.title);
+  });
 
   // Modal
   elements.modalCloseBtn?.addEventListener('click', closeModal);
@@ -220,6 +249,7 @@ async function loadData() {
 
   sites = result.sites || [];
   navSites = result.navSites || [];
+  blogCommentSites = result.blogCommentSites || [];
   fieldMappings = result.fieldMappings || {};
   settings = result.settings || {
     llmConfig: { enabled: false, endpoint: '', apiKey: '', model: '' },
@@ -266,6 +296,9 @@ function renderCurrentTab() {
       break;
     case 'navSites':
       renderNavSitesTab();
+      break;
+    case 'blogSites':
+      renderBlogSitesTab();
       break;
     case 'mappings':
       renderMappingsTab();
@@ -402,6 +435,48 @@ function renderNavSitesTab() {
 }
 
 /**
+ * Render Blog 评论站点列表
+ */
+function renderBlogSitesTab() {
+  if (blogCommentSites.length === 0) {
+    elements.blogSitesList?.classList.add('hidden');
+    elements.noBlogSitesHint?.classList.remove('hidden');
+    return;
+  }
+  elements.blogSitesList?.classList.remove('hidden');
+  elements.noBlogSitesHint?.classList.add('hidden');
+  elements.blogSitesList.innerHTML = blogCommentSites.map(item => `
+    <div class="item-card">
+      <div class="item-header">
+        <h3 class="item-title">${escapeHtml(item.name || 'Unnamed')}</h3>
+        <div class="item-actions">
+          <button class="btn-icon" data-action="open" data-url="${escapeHtml(item.url || '')}" title="打开">🔗</button>
+          <button class="btn-icon" data-action="edit" data-id="${item.id}" title="编辑">✏️</button>
+          <button class="btn-icon" data-action="delete" data-id="${item.id}" title="删除">🗑️</button>
+        </div>
+      </div>
+      <div class="item-details">
+        <div class="detail-row">
+          <span class="detail-label">评论页 URL:</span>
+          <span class="detail-value text-truncate">${escapeHtml(item.url || '-')}</span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  elements.blogSitesList?.querySelectorAll('.btn-icon').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const action = e.target.dataset.action;
+      const id = e.target.dataset.id;
+      const url = e.target.dataset.url;
+      if (action === 'open' && url) chrome.tabs.create({ url });
+      else if (action === 'edit') openBlogSiteModal(id);
+      else if (action === 'delete') deleteBlogSite(id);
+    });
+  });
+}
+
+/**
  * Render mappings tab
  */
 function renderMappingsTab() {
@@ -464,8 +539,18 @@ function renderSettingsTab() {
   elements.llmProvider.value = getProviderFromEndpoint(llmConfig.endpoint);
   elements.llmEndpoint.value = llmConfig.endpoint || '';
   elements.llmApiKey.value = llmConfig.apiKey || '';
-  elements.llmModel.value = llmConfig.model || '';
-  elements.llmModel.placeholder = (getProviderFromEndpoint(llmConfig.endpoint) === 'glm') ? 'glm-4.7 或 glm-5' : 'gpt-3.5-turbo';
+  const modelVal = (llmConfig.model || 'glm-4.7-flash').trim();
+  const modelOptions = ['glm-4.7-flash', 'glm-4.7', 'glm-5', 'gpt-3.5-turbo', 'gpt-4'];
+  if (modelOptions.includes(modelVal)) {
+    elements.llmModel.value = modelVal;
+    elements.llmModelCustomWrap?.classList.add('hidden');
+    elements.llmModelCustom.value = '';
+  } else {
+    elements.llmModel.value = '__custom__';
+    elements.llmModelCustomWrap?.classList.remove('hidden');
+    elements.llmModelCustom.value = modelVal || '';
+  }
+  elements.llmDisableThinking.checked = llmConfig.disableThinking !== false;
 
   // Auto submit
   elements.autoSubmit.checked = settings.autoSubmit || false;
@@ -877,6 +962,119 @@ async function importNavSites() {
 }
 
 /**
+ * Open Blog 评论站点编辑弹窗
+ */
+function openBlogSiteModal(blogSiteId = null) {
+  const item = blogSiteId ? blogCommentSites.find(b => b.id === blogSiteId) : null;
+  const isEdit = !!item;
+
+  elements.modalTitle.textContent = isEdit ? '编辑评论页' : '添加评论页';
+  elements.modalBody.innerHTML = `
+    <form id="blogSiteForm">
+      <div class="form-group">
+        <label for="blogSiteName" class="form-label required">名称</label>
+        <input type="text" id="blogSiteName" class="input" value="${escapeHtml(item?.name || '')}" placeholder="便于区分的展示名" required>
+      </div>
+      <div class="form-group">
+        <label for="blogSiteUrl" class="form-label required">评论页 URL</label>
+        <input type="url" id="blogSiteUrl" class="input" value="${escapeHtml(item?.url || '')}" placeholder="https://..." required>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="cancelBlogSiteBtn">取消</button>
+        <button type="submit" class="btn btn-primary">${isEdit ? '保存' : '添加'}</button>
+      </div>
+    </form>
+  `;
+
+  openModal();
+  document.getElementById('blogSiteForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveBlogSite(blogSiteId);
+  });
+  document.getElementById('cancelBlogSiteBtn').addEventListener('click', closeModal);
+}
+
+async function saveBlogSite(blogSiteId) {
+  const name = document.getElementById('blogSiteName').value.trim();
+  const url = document.getElementById('blogSiteUrl').value.trim();
+  if (!name || !url) {
+    showToast('请填写名称和 URL', 'error');
+    return;
+  }
+  try {
+    if (blogSiteId) {
+      const index = blogCommentSites.findIndex(b => b.id === blogSiteId);
+      blogCommentSites[index] = { ...blogCommentSites[index], name, url, updatedAt: new Date().toISOString() };
+    } else {
+      blogCommentSites.push({
+        id: 'blog_' + Date.now(),
+        name,
+        url,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    await chrome.storage.local.set({ blogCommentSites });
+    closeModal();
+    await loadData();
+    renderBlogSitesTab();
+    showToast(blogSiteId ? '已更新' : '已添加', 'success');
+  } catch (e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteBlogSite(id) {
+  if (!confirm('确定删除这条评论页？')) return;
+  try {
+    blogCommentSites = blogCommentSites.filter(b => b.id !== id);
+    await chrome.storage.local.set({ blogCommentSites });
+    await loadData();
+    renderBlogSitesTab();
+    showToast('已删除', 'success');
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+async function importBlogSites() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const items = Array.isArray(data) ? data : (data.blogCommentSites || data.items || []);
+      let added = 0;
+      for (const it of items) {
+        const url = (it.url || '').trim();
+        const name = (it.name || '').trim() || url;
+        if (url) {
+          blogCommentSites.push({
+            id: 'blog_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+            name: name || url,
+            url,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          added++;
+        }
+      }
+      await chrome.storage.local.set({ blogCommentSites });
+      await loadData();
+      renderBlogSitesTab();
+      showToast(`已导入 ${added} 条`, 'success');
+    } catch (err) {
+      showToast('导入失败: ' + err.message, 'error');
+    }
+  };
+  input.click();
+}
+
+/**
  * Clear all mappings
  */
 async function clearAllMappings() {
@@ -920,13 +1118,16 @@ async function createBackup() {
       backupDate: new Date().toISOString(),
       sites,
       navSites,
+      blogCommentSites,
       fieldMappings: elements.includeMappings.checked ? fieldMappings : {},
+      blogCommentFieldMappings: elements.includeMappings.checked ? (await chrome.storage.local.get(['blogCommentFieldMappings'])).blogCommentFieldMappings || {} : {},
       settings
     };
 
     if (elements.includeRecords.checked) {
-      const result = await chrome.storage.local.get(['submissionRecords']);
+      const result = await chrome.storage.local.get(['submissionRecords', 'blogCommentRecords']);
       data.submissionRecords = result.submissionRecords || {};
+      data.blogCommentRecords = result.blogCommentRecords || {};
     }
 
     const json = JSON.stringify(data, null, 2);
@@ -972,9 +1173,12 @@ async function restoreBackup() {
       await chrome.storage.local.set({
         sites: data.sites || [],
         navSites: data.navSites || [],
+        blogCommentSites: data.blogCommentSites || [],
         fieldMappings: data.fieldMappings || {},
+        blogCommentFieldMappings: data.blogCommentFieldMappings || {},
         settings: data.settings || {},
-        submissionRecords: data.submissionRecords || {}
+        submissionRecords: data.submissionRecords || {},
+        blogCommentRecords: data.blogCommentRecords || {}
       });
     } else {
       // Merge data
@@ -982,12 +1186,16 @@ async function restoreBackup() {
 
       const mergedSites = mergeById(existing.sites || [], data.sites || []);
       const mergedNavSites = mergeById(existing.navSites || [], data.navSites || []);
+      const mergedBlogSites = mergeById(existing.blogCommentSites || [], data.blogCommentSites || []);
 
       await chrome.storage.local.set({
         sites: mergedSites,
         navSites: mergedNavSites,
+        blogCommentSites: mergedBlogSites,
         fieldMappings: { ...existing.fieldMappings, ...data.fieldMappings },
-        submissionRecords: { ...existing.submissionRecords, ...data.submissionRecords }
+        blogCommentFieldMappings: { ...existing.blogCommentFieldMappings, ...(data.blogCommentFieldMappings || {}) },
+        submissionRecords: { ...existing.submissionRecords, ...(data.submissionRecords || {}) },
+        blogCommentRecords: { ...existing.blogCommentRecords, ...(data.blogCommentRecords || {}) }
       });
     }
 
@@ -1026,15 +1234,14 @@ function onLlmProviderChange(e) {
     elements.llmEndpoint.value = endpoints[provider];
   }
 
-  // 智谱 GLM 时建议模型为 glm-4.7 或 glm-5
+  // 智谱 GLM 时建议模型为 glm-4.7-flash
   if (provider === 'glm') {
-    const model = (elements.llmModel.value || '').trim();
+    const model = elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value;
     if (!model || model === 'gpt-3.5-turbo') {
-      elements.llmModel.value = 'glm-4.7';
-      elements.llmModel.placeholder = 'glm-4.7 或 glm-5';
+      elements.llmModel.value = 'glm-4.7-flash';
+      elements.llmModelCustomWrap?.classList.add('hidden');
+      elements.llmModelCustom.value = '';
     }
-  } else {
-    elements.llmModel.placeholder = 'gpt-3.5-turbo';
   }
 }
 
@@ -1042,14 +1249,14 @@ function onLlmProviderChange(e) {
  * Test LLM connection
  */
 function getDefaultModelForEndpoint(endpoint) {
-  if (endpoint && endpoint.includes('bigmodel.cn')) return 'glm-4.7';
+  if (endpoint && endpoint.includes('bigmodel.cn')) return 'glm-4.7-flash';
   return 'gpt-3.5-turbo';
 }
 
 async function testLlmConnection() {
   const endpoint = elements.llmEndpoint.value.trim();
   const apiKey = elements.llmApiKey.value.trim();
-  const model = elements.llmModel.value.trim() || getDefaultModelForEndpoint(endpoint);
+  const model = (elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || getDefaultModelForEndpoint(endpoint);
 
   if (!endpoint || !apiKey) {
     showToast('请先填写 API 端点和 API Key', 'warning');
@@ -1097,7 +1304,8 @@ async function saveSettings() {
         enabled: elements.llmEnabled.checked,
         endpoint: elements.llmEndpoint.value.trim(),
         apiKey: elements.llmApiKey.value.trim(),
-        model: elements.llmModel.value.trim()
+        model: (elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || 'glm-4.7-flash',
+        disableThinking: elements.llmDisableThinking.checked
       },
       autoSubmit: elements.autoSubmit.checked
     };

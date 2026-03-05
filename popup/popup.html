@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>导航站提交助手</title>
+  <title>外链提交助手</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -12,10 +12,19 @@
     <header class="header">
       <h1 class="title">
         <img src="../icons/icon128.png" class="icon" alt="">
-        导航站提交助手
+        外链提交助手
       </h1>
+      <button type="button" id="refreshTabBtn" class="btn-icon-header" title="刷新当前页面">🔄</button>
     </header>
 
+    <!-- Mode Tabs -->
+    <nav class="mode-tabs">
+      <button type="button" class="mode-tab active" data-mode="nav">导航站</button>
+      <button type="button" class="mode-tab" data-mode="blog">Blog 评论</button>
+    </nav>
+
+    <!-- ========== 导航站模式 ========== -->
+    <div id="panel-nav" class="mode-panel">
     <!-- Site Selector -->
     <section class="section">
       <div class="section-header">
@@ -25,6 +34,7 @@
       <select id="siteSelect" class="select">
         <option value="">-- 请选择站点 --</option>
       </select>
+      <div id="currentSiteUrl" class="current-site-url hidden"></div>
       <div id="noSitesHint" class="hint hidden">
         还没有站点，<a href="#" id="addSiteLink">添加一个</a>
       </div>
@@ -87,6 +97,63 @@
         <button id="openOptionsBtn" class="btn-link">⚙️ 设置</button>
       </div>
     </section>
+    </div>
+    <!-- /panel-nav -->
+
+    <!-- ========== Blog 评论模式 ========== -->
+    <div id="panel-blog" class="mode-panel hidden">
+    <section class="section">
+      <div class="section-header">
+        <label for="blogSiteSelect" class="label">当前站点</label>
+        <button id="blogManageSitesBtn" class="btn-link" title="管理站点">⚙️ 管理</button>
+      </div>
+      <select id="blogSiteSelect" class="select">
+        <option value="">-- 请选择站点 --</option>
+      </select>
+      <div id="blogCurrentSiteUrl" class="current-site-url hidden"></div>
+      <div id="blogNoSitesHint" class="hint hidden">还没有站点，<a href="#" id="blogAddSiteLink">添加一个</a></div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <span class="label">当前页面</span>
+        <span id="blogPageDomain" class="page-domain"></span>
+      </div>
+      <div id="blogFormStatus" class="form-status">
+        <div class="status-row">
+          <span class="status-label">评论表单:</span>
+          <span id="blogRecognitionStatus" class="status-value">检测中...</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">可填字段:</span>
+          <span id="blogFieldCount" class="status-value">-</span>
+        </div>
+        <div id="blogSpamHint" class="hint hidden" style="color: var(--warning-color);">检测到验证项，将暂停自动提交</div>
+      </div>
+      <div id="blogNoFormHint" class="hint hidden">未在当前页面检测到评论表单</div>
+      <button id="blogClearCacheBtn" class="btn-link btn-link-subtle" type="button">清除本页评论识别缓存</button>
+    </section>
+
+    <section class="section actions">
+      <button id="blogGenerateAndFillBtn" class="btn btn-primary" disabled>
+        <span class="btn-icon">💬</span>
+        生成评论并填充
+      </button>
+      <button id="blogVerifySubmitBtn" class="btn btn-secondary" disabled title="提交后点击，验证页面是否出现本站链接">
+        <span class="btn-icon">✓</span>
+        验证本次提交
+      </button>
+    </section>
+
+    <section class="section">
+      <div class="section-header"><span class="label">快捷操作</span></div>
+      <div class="quick-links">
+        <button id="openBlogSitesBtn" class="btn-link">📝 Blog 评论站点列表</button>
+        <button id="blogOpenOptionsBtn" class="btn-link">⚙️ 设置</button>
+      </div>
+    </section>
+    </div>
+    <!-- /panel-blog -->
 
     <!-- Status Messages -->
     <div id="statusMessage" class="status-message hidden">

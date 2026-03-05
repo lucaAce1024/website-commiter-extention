@@ -9,6 +9,16 @@ const TAG = '[NavSubmitter]';
 /** 字段填充时间隔离：每填完一个字段后等待的毫秒数，保证同一时间只填充一个字段 */
 const FILL_FIELD_DELAY_MS = 280;
 
+/** 模拟打字：每字符/块随机延迟范围（毫秒） */
+const TYPING_DELAY_MIN_MS = 50;
+const TYPING_DELAY_MAX_MS = 200;
+/** 超过此长度时按块“打字”（每块 4 字）以控制总时长 */
+const TYPING_CHUNK_THRESHOLD = 200;
+
+/** 每个字段填充后的随机等待（毫秒），模拟人工间隔 */
+const POST_FILL_DELAY_MIN_MS = 500;
+const POST_FILL_DELAY_MAX_MS = 1000;
+
 // State for current page
 let pageState = {
   hasForm: false,
@@ -17,6 +27,17 @@ let pageState = {
   domain: null,
   recognitionStatus: 'idle', // idle, recognizing, done, failed
   recognitionMethod: null
+};
+
+// Blog 评论表单状态（与导航站独立）
+let commentFormState = {
+  hasForm: false,
+  fieldMappings: null,
+  submitButton: null,
+  recognitionStatus: 'idle',
+  recognitionMethod: null,
+  hasSpamVerification: false,
+  domain: null
 };
 
 /** 右键菜单打开时记录的目标元素：在哪个输入框右键就填哪个（用当前站点的该字段值） */
@@ -51,7 +72,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'aiLog') {
-    // 把 Background 的 AI 过程日志打到当前页 Console，方便在页面 DevTools 查看
     const level = request.level || 'log';
     const args = request.args || [];
     if (level === 'error') {
@@ -62,6 +82,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log(`${TAG} [AI]`, ...args);
     }
     return false;
+  } else if (request.action === 'getCommentPageState') {
+    sendResponse({ success: true, state: commentFormState });
+  } else if (request.action === 'recognizeCommentForm') {
+    recognizeCommentForm(request.useLlm)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'fillCommentForm') {
+    fillCommentForm(request.siteId, request.commentText)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'verifyCommentSubmission') {
+    verifyCommentSubmission(request.siteUrl)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'clearCommentMapping') {
+    clearCommentMapping().then(() => sendResponse({ success: true }));
+    return true;
+  } else if (request.action === 'getPageMetadata') {
+    const title = document.title || '';
+    const descEl = document.querySelector('meta[name="description"]');
+    const description = (descEl && descEl.getAttribute('content')) || '';
+    sendResponse({ success: true, title, description });
   }
 });
 
@@ -290,6 +335,45 @@ function getFormMetadata() {
   const firstForm = document.querySelector('form');
   const formHtml = firstForm ? firstForm.outerHTML.slice(0, 12000) : '';
 
+  return {
+    hasForm: fields.length > 0,
+    fields,
+    url: window.location.href,
+    domain: window.location.hostname,
+    formHtml: formHtml || undefined
+  };
+}
+
+/**
+ * 获取评论提交区表单元数据（包含 input/textarea/select 以及 submit/button，便于 AI 返回提交按钮索引）
+ */
+function getCommentFormMetadata() {
+  const base = getFormMetadata();
+  if (!base.hasForm || !base.fields) {
+    return { ...base, fields: [] };
+  }
+  const fields = [...base.fields];
+  const forms = document.querySelectorAll('form');
+  forms.forEach((form) => {
+    form.querySelectorAll('input[type="submit"], input[type="button"], button').forEach((btn) => {
+      const label = getFieldLabel(btn) || btn.value || btn.textContent?.trim() || '';
+      fields.push({
+        locator: getFieldLocator(btn),
+        xpath: getXPath(btn),
+        locatorDesc: formatLocator(getFieldLocator(btn)),
+        type: btn.type || 'submit',
+        name: btn.name || '',
+        id: btn.id || '',
+        placeholder: '',
+        label: label.slice(0, 80),
+        ariaLabel: btn.getAttribute('aria-label') || '',
+        required: false,
+        isSubmitButton: true
+      });
+    });
+  });
+  const firstForm = document.querySelector('form');
+  const formHtml = firstForm ? firstForm.outerHTML.slice(0, 12000) : '';
   return {
     hasForm: fields.length > 0,
     fields,
@@ -596,6 +680,325 @@ function recognizeByKeywords(formMetadata) {
   }
 
   return matches;
+}
+
+// ---------- Blog 评论表单：关键词匹配与缓存 ----------
+const COMMENT_FIELD_KEYWORDS = {
+  comment: {
+    keywords: ['comment', 'comments', 'message', 'reply', 'komentář', 'komentar', 'commentaire', '评论', '留言', '内容'],
+    isTextarea: true,
+    weights: { name: 3, label: 2, placeholder: 1 }
+  },
+  commentName: {
+    keywords: ['name', 'author', 'jméno', 'jmeno', 'nombre', 'nom', '姓名', '名字', '昵称'],
+    weights: { name: 3, label: 2, placeholder: 1 }
+  },
+  commentEmail: {
+    keywords: ['email', 'e-mail', 'mail', '邮箱', '邮件'],
+    type: 'email',
+    weights: { type: 3, name: 2, label: 2 }
+  },
+  commentWebsite: {
+    keywords: ['website', 'url', 'web', 'site', 'homepage', '网址', '网站', '个人网站'],
+    type: 'url',
+    weights: { type: 2, name: 2, label: 2 }
+  }
+};
+
+function recognizeCommentByKeywords(formMetadata) {
+  const matches = [];
+  for (const field of formMetadata.fields) {
+    if (field.isSubmitButton) continue;
+    const nameLower = (field.name || '').toLowerCase();
+    const labelLower = (field.label || '').toLowerCase();
+    const placeholderLower = (field.placeholder || '').toLowerCase();
+    const ariaLabelLower = (field.ariaLabel || '').toLowerCase();
+    const idLower = (field.id || '').toLowerCase();
+    const scores = {};
+
+    for (const [standardField, config] of Object.entries(COMMENT_FIELD_KEYWORDS)) {
+      let score = 0;
+      if (config.type && field.type === config.type) score += (config.weights.type || 2) * 2;
+      if (config.isTextarea && field.isTextarea) score += 3;
+      for (const kw of config.keywords) {
+        const k = kw.toLowerCase();
+        if (nameLower.includes(k)) score += config.weights.name || 1;
+        if (labelLower.includes(k)) score += config.weights.label || 1;
+        if (placeholderLower.includes(k)) score += config.weights.placeholder || 1;
+        if (ariaLabelLower.includes(k)) score += (config.weights.label || 1) * 1.2;
+        if (idLower.includes(k)) score += config.weights.name || 1;
+      }
+      if (score > 0) scores[standardField] = score;
+    }
+
+    let bestField = null;
+    let bestScore = 0;
+    for (const [fn, sc] of Object.entries(scores)) {
+      if (sc > bestScore) { bestScore = sc; bestField = fn; }
+    }
+    if (bestScore >= 2 && bestField) {
+      matches.push({
+        locator: field.locator,
+        standardField: bestField,
+        confidence: Math.min(bestScore / 6, 1),
+        method: 'keyword',
+        xpath: field.xpath,
+        locatorDesc: field.locatorDesc
+      });
+    }
+  }
+
+  // 提交按钮：常见文案
+  const submitPatterns = [/submit|post\s*comment|send|发表|提交|komentovat|odeslat|submitter|envoyer/i];
+  for (const field of formMetadata.fields) {
+    if (!field.isSubmitButton) continue;
+    const text = ((field.label || '') + (field.name || '') + (field.ariaLabel || '')).toLowerCase();
+    if (submitPatterns.some(p => p.test(text))) {
+      return { mappings: matches, submitButton: { locator: field.locator, xpath: field.xpath, locatorDesc: field.locatorDesc } };
+    }
+  }
+  const lastSubmit = formMetadata.fields.filter(f => f.isSubmitButton).pop();
+  return {
+    mappings: matches,
+    submitButton: lastSubmit ? { locator: lastSubmit.locator, xpath: lastSubmit.xpath, locatorDesc: lastSubmit.locatorDesc } : null
+  };
+}
+
+function getCommentCacheKey() {
+  const url = new URL(window.location.href);
+  return 'blog_' + url.hostname + url.pathname;
+}
+
+async function getCachedCommentMapping(cacheKey) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['blogCommentFieldMappings'], (result) => {
+      const data = result.blogCommentFieldMappings?.[cacheKey];
+      if (!data) { resolve(null); return; }
+      const mappings = data.mappings || data;
+      const submitButton = data.submitButton || null;
+      resolve(Array.isArray(mappings) ? { mappings, submitButton } : { mappings: mappings.mappings || [], submitButton: mappings.submitButton });
+    });
+  });
+}
+
+async function cacheCommentMapping(cacheKey, payload) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['blogCommentFieldMappings'], (result) => {
+      const mappings = result.blogCommentFieldMappings || {};
+      mappings[cacheKey] = {
+        mappings: payload.mappings || payload,
+        submitButton: payload.submitButton || null,
+        cachedAt: new Date().toISOString()
+      };
+      chrome.storage.local.set({ blogCommentFieldMappings: mappings }, () => resolve());
+    });
+  });
+}
+
+async function clearCommentMapping() {
+  const cacheKey = getCommentCacheKey();
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['blogCommentFieldMappings'], (result) => {
+      const mappings = result.blogCommentFieldMappings || {};
+      delete mappings[cacheKey];
+      chrome.storage.local.set({ blogCommentFieldMappings: mappings }, () => {
+        commentFormState.fieldMappings = null;
+        commentFormState.submitButton = null;
+        commentFormState.recognitionStatus = 'idle';
+        resolve();
+      });
+    });
+  });
+}
+
+/**
+ * 检测评论区是否包含防 spam 验证（算术题、验证码等）
+ */
+function checkCommentSpamVerification() {
+  const captchaSelectors = [
+    'iframe[src*="recaptcha"]',
+    'iframe[src*="captcha"]',
+    'div[class*="captcha"]',
+    'div[id*="captcha"]',
+    'img[src*="captcha"]',
+    '.g-recaptcha',
+    '#g-recaptcha-response'
+  ];
+  for (const sel of captchaSelectors) {
+    if (document.querySelector(sel)) return true;
+  }
+  const bodyText = document.body.textContent || '';
+  const spamKeywords = [
+    'captcha', '验证码', 'human verification',
+    'sum of', 'součet', 'soucet', '答', '验证', '1 + 10', 'plus', 'equals'
+  ];
+  for (const kw of spamKeywords) {
+    if (bodyText.toLowerCase().includes(kw.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * 评论表单识别（优先缓存 → AI → 关键词）
+ */
+async function recognizeCommentForm(useLlm = false) {
+  commentFormState.recognitionStatus = 'recognizing';
+  commentFormState.domain = window.location.hostname;
+
+  try {
+    const formMetadata = getCommentFormMetadata();
+    if (!formMetadata.hasForm || !formMetadata.fields?.length) {
+      commentFormState.recognitionStatus = 'failed';
+      return { status: 'no_form', message: '当前页面未检测到评论表单' };
+    }
+
+    const cacheKey = getCommentCacheKey();
+    const cached = await getCachedCommentMapping(cacheKey);
+    if (cached && cached.mappings?.length > 0) {
+      commentFormState.fieldMappings = cached.mappings;
+      commentFormState.submitButton = cached.submitButton;
+      commentFormState.recognitionStatus = 'done';
+      commentFormState.recognitionMethod = 'cache';
+      commentFormState.hasForm = true;
+      commentFormState.hasSpamVerification = checkCommentSpamVerification();
+      return { status: 'success', method: 'cache', mappings: cached.mappings, submitButton: cached.submitButton, fieldCount: cached.mappings.length };
+    }
+
+    if (useLlm) {
+      try {
+        const response = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ action: 'aiRecognizeCommentForm', formMetadata }, (resp) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(resp);
+          });
+        });
+        if (response?.success && response.result) {
+          const { mappings, submitButton } = response.result;
+          if (mappings?.length > 0) {
+            commentFormState.fieldMappings = mappings;
+            commentFormState.submitButton = submitButton || null;
+            commentFormState.recognitionStatus = 'done';
+            commentFormState.recognitionMethod = 'ai';
+            commentFormState.hasForm = true;
+            commentFormState.hasSpamVerification = checkCommentSpamVerification();
+            await cacheCommentMapping(cacheKey, { mappings, submitButton });
+            return { status: 'success', method: 'ai', mappings, submitButton, fieldCount: mappings.length };
+          }
+        }
+      } catch (aiErr) {
+        console.warn(`${TAG} Comment form AI failed, fallback to keywords:`, aiErr.message);
+      }
+    }
+
+    const keywordResult = recognizeCommentByKeywords(formMetadata);
+    commentFormState.fieldMappings = keywordResult.mappings;
+    commentFormState.submitButton = keywordResult.submitButton || null;
+    commentFormState.recognitionStatus = 'done';
+    commentFormState.recognitionMethod = 'keyword';
+    commentFormState.hasForm = true;
+    commentFormState.hasSpamVerification = checkCommentSpamVerification();
+    await cacheCommentMapping(cacheKey, keywordResult);
+    return {
+      status: 'success',
+      method: 'keyword',
+      mappings: keywordResult.mappings,
+      submitButton: keywordResult.submitButton,
+      fieldCount: (keywordResult.mappings || []).length
+    };
+  } catch (err) {
+    commentFormState.recognitionStatus = 'failed';
+    return { status: 'error', error: err.message };
+  }
+}
+
+/**
+ * 填充评论表单并可选点击提交（无验证时）
+ */
+async function fillCommentForm(siteId, commentText) {
+  const siteData = await getSiteData(siteId);
+  if (!siteData) throw new Error('未找到站点或未选择站点');
+
+  if (!commentFormState.fieldMappings?.length) {
+    const rec = await recognizeCommentForm(!!chrome.runtime?.sendMessage);
+    if (rec.status !== 'success' || !rec.mappings?.length) throw new Error('评论表单未识别或无可填字段');
+  }
+
+  const data = {
+    comment: commentText || '',
+    commentName: siteData.siteName || '',
+    commentEmail: siteData.email || '',
+    commentWebsite: siteData.siteUrl || ''
+  };
+
+  let filledCount = 0;
+  const errors = [];
+  for (const mapping of commentFormState.fieldMappings) {
+    try {
+      const el = findElementByLocator(mapping.locator);
+      if (!el) { errors.push(`未找到元素: ${mapping.standardField}`); continue; }
+      const value = data[mapping.standardField];
+      if (value == null || (typeof value === 'string' && !value.trim())) continue;
+      await typeIntoElementWithDelay(el, String(value).trim());
+      filledCount++;
+    } catch (e) {
+      errors.push(`${mapping.standardField}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
+  }
+
+  const hasSpam = checkCommentSpamVerification();
+  let clickedSubmit = false;
+  if (!hasSpam && commentFormState.submitButton) {
+    try {
+      const btn = findElementByLocator(commentFormState.submitButton.locator);
+      if (btn && isElementVisible(btn)) {
+        simulateClick(btn);
+        clickedSubmit = true;
+      }
+    } catch (_) {}
+  }
+
+  return {
+    filledCount,
+    hasSpamVerification: hasSpam,
+    clickedSubmit,
+    errors
+  };
+}
+
+/**
+ * 提交后验证：重新读取页面，查找可点击的、指向 siteUrl 的链接
+ */
+async function verifyCommentSubmission(siteUrl) {
+  await new Promise(r => setTimeout(r, 3000));
+  const normalizedSite = normalizeUrlForCompare(siteUrl);
+  if (!normalizedSite) return { success: false, message: '无效的站点 URL' };
+
+  const links = document.querySelectorAll('a[href]');
+  for (const a of links) {
+    const href = (a.getAttribute('href') || '').trim();
+    if (!href) continue;
+    const linkNorm = normalizeUrlForCompare(href);
+    if (!linkNorm) continue;
+    if (linkNorm !== normalizedSite && !linkNorm.startsWith(normalizedSite + '/') && !normalizedSite.startsWith(linkNorm + '/')) continue;
+    if (!isElementVisible(a)) continue;
+    const style = window.getComputedStyle(a);
+    if (style.pointerEvents === 'none' || style.display === 'none' || style.visibility === 'hidden') continue;
+    return { success: true, message: '已在页面中找到您的站点链接', found: true };
+  }
+  return { success: false, message: '未在页面中检测到您的站点链接，请确认评论是否已发布', found: false };
+}
+
+function normalizeUrlForCompare(url) {
+  if (!url || typeof url !== 'string') return '';
+  let u = url.trim().toLowerCase();
+  u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  try {
+    const parsed = new URL(u.startsWith('http') ? u : 'https://' + u);
+    return parsed.hostname + (parsed.pathname === '/' ? '' : parsed.pathname).replace(/\/+$/, '');
+  } catch (_) {
+    return u.replace(/\/+$/, '');
+  }
 }
 
 /**
@@ -906,7 +1309,7 @@ async function fillForm(siteId) {
         fillCodeMirror(element, value);
         filledCount++;
         console.log(`${TAG} Filled ${mapping.standardField}:`, value);
-        await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
+        await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
         continue;
       }
       // contenteditable / ProseMirror（如 auraplusplus Short Description）
@@ -914,7 +1317,7 @@ async function fillForm(siteId) {
         fillContentEditable(element, value);
         filledCount++;
         console.log(`${TAG} Filled ${mapping.standardField}:`, value);
-        await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
+        await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
         continue;
       }
 
@@ -930,7 +1333,7 @@ async function fillForm(siteId) {
           filledOnceByField.add(mapping.standardField);
         }
       } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
-        fillInputElement(element, value);
+        await typeIntoElementWithDelay(element, value);
         filledCount++;
       } else {
         // Try to set value for other types
@@ -944,8 +1347,8 @@ async function fillForm(siteId) {
     } catch (error) {
       errors.push(`Failed to fill ${mapping.standardField}: ${error.message}`);
     }
-    // 时间隔离：同一时间只填充一个字段，避免下拉/编辑器等未就绪导致错乱
-    await new Promise(r => setTimeout(r, FILL_FIELD_DELAY_MS));
+    // 每个字段填充后随机等待 0.5~1s，模拟人工间隔
+    await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
   }
 
   // Check for CAPTCHA
@@ -1883,6 +2286,53 @@ function fillCodeMirror(cmDiv, value) {
   } catch (err) {
     console.warn(`${TAG} fillCodeMirror 失败:`, err);
   }
+}
+
+/**
+ * 模拟打字：分字符（或分块）输入，每步 50–200ms 随机延迟，降低被识别为自动化的概率
+ * @param {HTMLInputElement|HTMLTextAreaElement} input
+ * @param {string} text
+ */
+function randomDelayMs() {
+  return TYPING_DELAY_MIN_MS + Math.floor(Math.random() * (TYPING_DELAY_MAX_MS - TYPING_DELAY_MIN_MS + 1));
+}
+
+function randomPostFillDelayMs() {
+  return POST_FILL_DELAY_MIN_MS + Math.floor(Math.random() * (POST_FILL_DELAY_MAX_MS - POST_FILL_DELAY_MIN_MS + 1));
+}
+
+async function typeIntoElementWithDelay(input, text) {
+  const str = text != null ? String(text) : '';
+  input.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  simulateClick(input);
+  input.focus();
+
+  const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+  const setValue = (val) => {
+    try {
+      if (descriptor && descriptor.set) descriptor.set.call(input, val);
+      else input.value = val;
+    } catch (_) {
+      input.value = val;
+    }
+  };
+
+  setValue('');
+  const useChunks = str.length > TYPING_CHUNK_THRESHOLD;
+  const chunkSize = useChunks ? 4 : 1;
+  for (let i = 0; i < str.length; i += chunkSize) {
+    const chunk = str.slice(i, i + chunkSize);
+    setValue(str.slice(0, i + chunk.length));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (i + chunk.length < str.length) {
+      await new Promise(r => setTimeout(r, randomDelayMs()));
+    }
+  }
+
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.dispatchEvent(new Event('blur', { bubbles: true }));
+  input.blur();
 }
 
 /**
