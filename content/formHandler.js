@@ -1923,12 +1923,19 @@ function isElementVisible(el) {
 }
 
 /**
- * 模拟真实用户点击（mousedown -> mouseup -> click），提高被框架识别的概率
+ * 模拟真实用户点击（mousedown -> mouseup -> click），提高被框架识别的概率。
+ * 若传入 useCoordinates=true，则使用元素中心坐标，便于输入框获得焦点并显示光标。
  */
-function simulateClick(el) {
+function simulateClick(el, useCoordinates = false) {
   if (!el) return;
   el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-  const opts = { bubbles: true, cancelable: true, view: window };
+  let opts = { bubbles: true, cancelable: true, view: window };
+  if (useCoordinates) {
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    opts = { ...opts, clientX: x, clientY: y, screenX: x, screenY: y };
+  }
   el.dispatchEvent(new MouseEvent('mousedown', opts));
   el.dispatchEvent(new MouseEvent('mouseup', opts));
   el.dispatchEvent(new MouseEvent('click', opts));
@@ -2212,6 +2219,8 @@ function fillFileInputWithDataUrl(fileInput, dataUrl) {
  */
 function fillContentEditable(editableEl, value) {
   const str = value != null ? String(value).trim() : '';
+  editableEl.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  simulateClick(editableEl, true);
   editableEl.focus();
   try {
     // 清空后写入纯文本，兼容 ProseMirror/TipTap
@@ -2301,11 +2310,17 @@ function randomPostFillDelayMs() {
   return POST_FILL_DELAY_MIN_MS + Math.floor(Math.random() * (POST_FILL_DELAY_MAX_MS - POST_FILL_DELAY_MIN_MS + 1));
 }
 
+/** 点击并聚焦后等待一段时间再开始输入，让输入框光标可见 */
+const FOCUS_BEFORE_TYPE_DELAY_MS = 120;
+
 async function typeIntoElementWithDelay(input, text) {
   const str = text != null ? String(text) : '';
   input.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-  simulateClick(input);
+  // 先模拟点击输入框（带坐标），再 focus，使光标显示
+  simulateClick(input, true);
   input.focus();
+  input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+  await new Promise(r => setTimeout(r, FOCUS_BEFORE_TYPE_DELAY_MS));
 
   const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -2338,9 +2353,12 @@ async function typeIntoElementWithDelay(input, text) {
 /**
  * Fill input or textarea element（避免 Illegal invocation：textarea 用 HTMLTextAreaElement，且 setter 失败时回退直接赋值）
  * 若为 Markdown 编辑器（SimpleMDE/CodeMirror）包裹的 textarea，会同步到编辑器实例使界面显示更新
+ * 填充前先模拟点击并聚焦，使输入框光标显示
  */
 function fillInputElement(input, value) {
   const str = value != null ? String(value) : '';
+  input.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  simulateClick(input, true);
   input.focus();
 
   try {
