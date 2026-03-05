@@ -812,9 +812,77 @@ async function clearCommentMapping() {
 }
 
 /**
+ * 获取评论表单的 DOM 范围（用于仅在表单内检测验证项，减少误判）
+ * 返回包含「第一个字段 + 提交按钮」的最近共同祖先，或 null
+ */
+function getCommentFormScope() {
+  const mappings = commentFormState.fieldMappings;
+  const submitLoc = commentFormState.submitButton?.locator;
+  let formScope = null;
+  if (mappings?.length > 0) {
+    const firstEl = findElementByLocator(mappings[0].locator);
+    if (firstEl) formScope = firstEl.closest('form') || firstEl.parentElement?.closest('[class*="comment"], [id*="comment"], [class*="respond"], [id*="respond"]') || firstEl;
+  }
+  if (submitLoc && !formScope) {
+    const submitEl = findElementByLocator(submitLoc);
+    if (submitEl) formScope = submitEl.closest('form') || submitEl.parentElement;
+  }
+  return formScope;
+}
+
+/**
+ * 获取与元素相关的字段名/标签/文字（用于验证项日志）
+ */
+function getElementLabelOrText(el) {
+  if (!el) return '';
+  const id = el.id;
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    if (label) return (label.textContent || '').trim().slice(0, 120);
+  }
+  const aria = el.getAttribute?.('aria-label');
+  if (aria) return aria.trim().slice(0, 120);
+  const placeholder = el.getAttribute?.('placeholder');
+  if (placeholder) return placeholder.trim().slice(0, 120);
+  const title = el.getAttribute?.('title');
+  if (title) return title.trim().slice(0, 120);
+  const name = el.getAttribute?.('name');
+  if (name) return `name="${name}"`;
+  const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+  return text || el.tagName + (el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : '');
+}
+
+/**
+ * 是否为「仅展示用」的 reCAPTCHA 徽章（右下角小 logo，不要求用户点选）
+ * 此类不视为需要暂停自动提交的验证项
+ */
+function isRecaptchaBadgeOnly(el) {
+  if (!el) return false;
+  const cls = (el.className && typeof el.className === 'string') ? el.className : '';
+  if (/\bgrecaptcha-badge\b/.test(cls) || /\bgrecaptcha-logo\b/.test(cls) || /\bgrecaptcha-error\b/.test(cls)) return true;
+  if (el.closest && el.closest('.grecaptcha-badge')) return true;
+  if (el.tagName === 'IFRAME') {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.width < 320 && r.height < 120) return true;
+  }
+  return false;
+}
+
+/**
+ * 验证控件是否在评论表单内（在表单内才视为需用户操作的验证项，避免误判整页的 reCAPTCHA 徽章）
+ */
+function isInsideCommentForm(el, formScope) {
+  if (!formScope || !el) return false;
+  return formScope.contains(el);
+}
+
+/**
  * 检测评论区是否包含防 spam 验证（算术题、验证码等）
+ * 返回 { hasSpam, details }。排除仅展示的 reCAPTCHA 徽章，只计表单内或主验证控件。
  */
 function checkCommentSpamVerification() {
+  const details = [];
+  const formScope = getCommentFormScope();
   const captchaSelectors = [
     'iframe[src*="recaptcha"]',
     'iframe[src*="captcha"]',
@@ -822,20 +890,100 @@ function checkCommentSpamVerification() {
     'div[id*="captcha"]',
     'img[src*="captcha"]',
     '.g-recaptcha',
-    '#g-recaptcha-response'
+    '#g-recaptcha-response',
+    '[class*="hcaptcha"]',
+    '[class*="turnstile"]',
+    '.cf-turnstile'
   ];
+  const minSize = 20;
   for (const sel of captchaSelectors) {
-    if (document.querySelector(sel)) return true;
+    const nodes = document.querySelectorAll(sel);
+    for (const el of nodes) {
+      if (!isElementVisible(el)) continue;
+      if (isRecaptchaBadgeOnly(el)) continue;
+      const rect = el.getBoundingClientRect();
+      const inForm = isInsideCommentForm(el, formScope);
+      const isMainWidget = el.classList?.contains('g-recaptcha') || el.id === 'g-recaptcha-response';
+      if (!inForm && !isMainWidget) {
+        if (el.tagName === 'IFRAME' && !formScope) continue;
+      }
+      if (inForm && (rect.width < minSize || rect.height < minSize)) continue;
+      details.push({
+        type: 'selector',
+        selector: sel,
+        xpath: getXPath(el),
+        fieldName: el.id || el.name || el.getAttribute?.('aria-label') || '',
+        text: getElementLabelOrText(el)
+      });
+    }
   }
-  const bodyText = document.body.textContent || '';
-  const spamKeywords = [
-    'captcha', '验证码', 'human verification',
-    'sum of', 'součet', 'soucet', '答', '验证', '1 + 10', 'plus', 'equals'
+  if (details.length > 0) {
+    return { hasSpam: true, details };
+  }
+
+  const searchText = (formScope ? (formScope.textContent || '') : '');
+  if (!searchText.trim()) return { hasSpam: false, details: [] };
+
+  const lower = searchText.toLowerCase();
+  const spamPhrases = [
+    '验证码',
+    'human verification',
+    'not a robot',
+    'are you human',
+    'recaptcha',
+    'complete the captcha',
+    'solve the captcha',
+    '算术题',
+    '算术验证',
+    'součet',
+    'soucet',
+    '1 + 10',
+    '2 + 3'
   ];
-  for (const kw of spamKeywords) {
-    if (bodyText.toLowerCase().includes(kw.toLowerCase())) return true;
+  for (const phrase of spamPhrases) {
+    if (lower.includes(phrase.toLowerCase())) {
+      details.push({
+        type: 'keyword',
+        matchedPhrase: phrase,
+        xpath: formScope ? getXPath(formScope) : '',
+        fieldName: '表单内文案',
+        text: formScope ? (formScope.textContent || '').trim().slice(0, 200) : searchText.slice(0, 200)
+      });
+      return { hasSpam: true, details };
+    }
   }
-  return false;
+  if (/\bcaptcha\b/i.test(searchText) && /(complete|solve|verify|验证|输入)/i.test(searchText)) {
+    details.push({
+      type: 'keyword',
+      matchedPhrase: 'captcha + complete/solve/verify',
+      xpath: formScope ? getXPath(formScope) : '',
+      fieldName: '表单内文案',
+      text: formScope ? (formScope.textContent || '').trim().slice(0, 200) : searchText.slice(0, 200)
+    });
+    return { hasSpam: true, details };
+  }
+  if (/\d+\s*\+\s*\d+/.test(searchText) && /(equals|等于|答|result)/i.test(searchText)) {
+    details.push({
+      type: 'keyword',
+      matchedPhrase: '算术题',
+      xpath: formScope ? getXPath(formScope) : '',
+      fieldName: '表单内文案',
+      text: formScope ? (formScope.textContent || '').trim().slice(0, 200) : searchText.slice(0, 200)
+    });
+    return { hasSpam: true, details };
+  }
+  return { hasSpam: false, details: [] };
+}
+
+/** 当检测到验证项时，将详情输出到控制台日志 */
+function logSpamVerificationDetails(result) {
+  if (!result?.hasSpam || !result.details?.length) return;
+  console.log(`${TAG} 检测到验证项，将暂停自动提交。验证项详情：`);
+  result.details.forEach((d, i) => {
+    console.log(`${TAG}  [${i + 1}] type=${d.type} | xpath=${d.xpath || '-'} | fieldName=${d.fieldName || '-'} | text=${(d.text || d.matchedPhrase || '-').slice(0, 100)}${(d.text && d.text.length > 100) ? '...' : ''}`);
+    if (d.selector) console.log(`${TAG}       selector=${d.selector}`);
+  });
+  console.log(`${TAG} 如何验证：在 DevTools -> Elements 中按 Ctrl+F 搜索上述 xpath，查看该节点是否在评论表单内、是否为可见的验证框。若仅为右下角 reCAPTCHA 徽章或实际提交时无验证框，可忽略本次提示。`);
 }
 
 /**
@@ -860,7 +1008,9 @@ async function recognizeCommentForm(useLlm = false) {
       commentFormState.recognitionStatus = 'done';
       commentFormState.recognitionMethod = 'cache';
       commentFormState.hasForm = true;
-      commentFormState.hasSpamVerification = checkCommentSpamVerification();
+      const spamResult = checkCommentSpamVerification();
+      commentFormState.hasSpamVerification = spamResult.hasSpam;
+      if (spamResult.hasSpam) logSpamVerificationDetails(spamResult);
       return { status: 'success', method: 'cache', mappings: cached.mappings, submitButton: cached.submitButton, fieldCount: cached.mappings.length };
     }
 
@@ -880,7 +1030,9 @@ async function recognizeCommentForm(useLlm = false) {
             commentFormState.recognitionStatus = 'done';
             commentFormState.recognitionMethod = 'ai';
             commentFormState.hasForm = true;
-            commentFormState.hasSpamVerification = checkCommentSpamVerification();
+            const spamResult = checkCommentSpamVerification();
+            commentFormState.hasSpamVerification = spamResult.hasSpam;
+            if (spamResult.hasSpam) logSpamVerificationDetails(spamResult);
             await cacheCommentMapping(cacheKey, { mappings, submitButton });
             return { status: 'success', method: 'ai', mappings, submitButton, fieldCount: mappings.length };
           }
@@ -896,7 +1048,9 @@ async function recognizeCommentForm(useLlm = false) {
     commentFormState.recognitionStatus = 'done';
     commentFormState.recognitionMethod = 'keyword';
     commentFormState.hasForm = true;
-    commentFormState.hasSpamVerification = checkCommentSpamVerification();
+    const spamResult = checkCommentSpamVerification();
+    commentFormState.hasSpamVerification = spamResult.hasSpam;
+    if (spamResult.hasSpam) logSpamVerificationDetails(spamResult);
     await cacheCommentMapping(cacheKey, keywordResult);
     return {
       status: 'success',
@@ -946,7 +1100,9 @@ async function fillCommentForm(siteId, commentText) {
     await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
   }
 
-  const hasSpam = checkCommentSpamVerification();
+  const spamResult = checkCommentSpamVerification();
+  const hasSpam = spamResult.hasSpam;
+  if (hasSpam) logSpamVerificationDetails(spamResult);
   let clickedSubmit = false;
   if (!hasSpam && commentFormState.submitButton) {
     try {
