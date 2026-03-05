@@ -60,7 +60,8 @@ const elements = {
   blogGenerateAndFillBtn: document.getElementById('blogGenerateAndFillBtn'),
   blogVerifySubmitBtn: document.getElementById('blogVerifySubmitBtn'),
   openBlogSitesBtn: document.getElementById('openBlogSitesBtn'),
-  blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn')
+  blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn'),
+  autoSubmit: document.getElementById('autoSubmit')
 };
 
 // State
@@ -126,6 +127,9 @@ async function loadSites() {
     currentSiteId = result.settings?.currentSiteId;
     if (result.popupMode === 'blog' || result.popupMode === 'nav') {
       currentMode = result.popupMode;
+    }
+    if (elements.autoSubmit) {
+      elements.autoSubmit.checked = result.settings?.autoSubmit ?? false;
     }
 
     // 检查 LLM 是否启用
@@ -716,6 +720,15 @@ function setupEventListeners() {
     chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
     window.close();
   });
+
+  // 其他设置：允许自动提交（变更时立即写入 storage）
+  elements.autoSubmit?.addEventListener('change', async () => {
+    const result = await chrome.storage.local.get(['settings']);
+    const settings = result.settings || {};
+    settings.autoSubmit = elements.autoSubmit.checked;
+    await chrome.storage.local.set({ settings });
+  });
+
   elements.blogAddSiteLink?.addEventListener('click', (e) => {
     e.preventDefault();
     chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });

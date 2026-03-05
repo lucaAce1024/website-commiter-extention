@@ -228,8 +228,10 @@
             <div class="form-group">
               <label for="llmProvider">API 提供商</label>
               <select id="llmProvider" class="select">
-                <option value="openai">OpenAI</option>
                 <option value="glm">智谱 GLM</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="moonshot">MoonshotAI (Kimi)</option>
+                <option value="openai">OpenAI</option>
                 <option value="groq">Groq</option>
                 <option value="custom">自定义</option>
               </select>
@@ -251,12 +253,7 @@
             <div class="form-group">
               <label for="llmModel">模型</label>
               <select id="llmModel" class="select">
-                <option value="glm-4.7-flash" selected>glm-4.7-flash</option>
-                <option value="glm-4.7">glm-4.7</option>
-                <option value="glm-5">glm-5</option>
-                <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-                <option value="gpt-4">gpt-4</option>
-                <option value="__custom__">其他（手动输入）</option>
+                <!-- 选项由 JS 根据当前 API 提供商动态填充 -->
               </select>
               <div id="llmModelCustomWrap" class="form-group hidden" style="margin-top: 8px;">
                 <label for="llmModelCustom" class="form-label">自定义模型名</label>
@@ -276,18 +273,6 @@
               <span class="btn-icon">🔧</span>
               测试连接
             </button>
-          </div>
-        </div>
-
-        <div class="settings-section">
-          <h3>其他设置</h3>
-
-          <div class="form-group">
-            <label for="autoSubmit" class="checkbox-label">
-              <input type="checkbox" id="autoSubmit">
-              允许自动提交（慎用）
-            </label>
-            <p class="hint">开启后将在填充完成自动点击提交按钮。建议仅在熟悉的导航站使用。</p>
           </div>
         </div>
 

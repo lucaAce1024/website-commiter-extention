@@ -167,7 +167,6 @@ function cacheElements() {
   elements.llmModelCustom = document.getElementById('llmModelCustom');
   elements.llmDisableThinking = document.getElementById('llmDisableThinking');
   elements.testLlmBtn = document.getElementById('testLlmBtn');
-  elements.autoSubmit = document.getElementById('autoSubmit');
   elements.saveSettingsBtn = document.getElementById('saveSettingsBtn');
 
   // Modal
@@ -536,34 +535,128 @@ function renderSettingsTab() {
   elements.llmConfigFields.classList.toggle('hidden', !settings.llmConfig?.enabled);
 
   const llmConfig = settings.llmConfig || {};
-  elements.llmProvider.value = getProviderFromEndpoint(llmConfig.endpoint);
-  elements.llmEndpoint.value = llmConfig.endpoint || '';
+  const provider = getProviderFromEndpoint(llmConfig.endpoint);
+  elements.llmProvider.value = provider;
+  elements.llmEndpoint.value = llmConfig.endpoint || (PROVIDER_CONFIG[provider]?.endpoint || '');
   elements.llmApiKey.value = llmConfig.apiKey || '';
-  const modelVal = (llmConfig.model || 'glm-4.7-flash').trim();
-  const modelOptions = ['glm-4.7-flash', 'glm-4.7', 'glm-5', 'gpt-3.5-turbo', 'gpt-4'];
-  if (modelOptions.includes(modelVal)) {
-    elements.llmModel.value = modelVal;
-    elements.llmModelCustomWrap?.classList.add('hidden');
-    elements.llmModelCustom.value = '';
-  } else {
-    elements.llmModel.value = '__custom__';
-    elements.llmModelCustomWrap?.classList.remove('hidden');
-    elements.llmModelCustom.value = modelVal || '';
+  updateModelSelect(provider, (llmConfig.model || '').trim());
+  if ((llmConfig.model || '').trim() && (elements.llmModel.value === '__custom__' || provider === 'custom')) {
+    elements.llmModelCustom.value = (llmConfig.model || '').trim();
   }
   elements.llmDisableThinking.checked = llmConfig.disableThinking !== false;
 
   // Auto submit
-  elements.autoSubmit.checked = settings.autoSubmit || false;
+}
+
+/**
+ * API 提供商与对应端点、模型列表（选定提供商后只展示该提供商的模型）
+ */
+const PROVIDER_CONFIG = {
+  glm: {
+    name: '智谱 GLM',
+    endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+    models: [
+      { value: 'glm-4.7-flash', label: 'glm-4.7-flash' },
+      { value: 'glm-4.7', label: 'glm-4.7' },
+      { value: 'glm-5', label: 'glm-5' }
+    ],
+    defaultModel: 'glm-4.7-flash'
+  },
+  google: {
+    name: 'Google (Gemini)',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    models: [
+      { value: 'gemini-2.0-flash-001', label: 'gemini-2.0-flash-001' },
+      { value: 'gemini-3-flash', label: 'gemini-3-flash' },
+      { value: 'gemini-3-pro', label: 'gemini-3-pro' }
+    ],
+    defaultModel: 'gemini-2.0-flash-001'
+  },
+  moonshot: {
+    name: 'MoonshotAI (Kimi)',
+    endpoint: 'https://api.moonshot.ai/v1/chat/completions',
+    models: [
+      { value: 'kimi-k2.5-instant', label: 'kimi-k2.5-instant' },
+      { value: 'kimi-k2.5-thinking', label: 'kimi-k2.5-thinking' }
+    ],
+    defaultModel: 'kimi-k2.5-instant'
+  },
+  openai: {
+    name: 'OpenAI',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    models: [
+      { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
+      { value: 'gpt-4', label: 'gpt-4' },
+      { value: 'gpt-4o', label: 'gpt-4o' }
+    ],
+    defaultModel: 'gpt-3.5-turbo'
+  },
+  groq: {
+    name: 'Groq',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    models: [
+      { value: 'llama3-8b-8192', label: 'llama3-8b-8192' },
+      { value: 'llama3-70b-8192', label: 'llama3-70b-8192' }
+    ],
+    defaultModel: 'llama3-8b-8192'
+  },
+  custom: {
+    name: '自定义',
+    endpoint: '',
+    models: [],
+    defaultModel: ''
+  }
+};
+
+/**
+ * 根据当前选中的 API 提供商填充模型下拉框，并可选保留当前已选模型
+ */
+function updateModelSelect(provider, currentModel) {
+  const config = PROVIDER_CONFIG[provider] || PROVIDER_CONFIG.custom;
+  const select = elements.llmModel;
+  if (!select) return;
+
+  select.innerHTML = '';
+  if (provider === 'custom') {
+    elements.llmModelCustomWrap?.classList.remove('hidden');
+    return;
+  }
+
+  const models = config.models || [];
+  models.forEach((m) => {
+    const opt = document.createElement('option');
+    opt.value = m.value;
+    opt.textContent = m.label;
+    if (currentModel && m.value === currentModel) opt.selected = true;
+    select.appendChild(opt);
+  });
+  const opt = document.createElement('option');
+  opt.value = '__custom__';
+  opt.textContent = '其他（手动输入）';
+  if (currentModel && !models.some((m) => m.value === currentModel)) opt.selected = true;
+  select.appendChild(opt);
+
+  elements.llmModelCustomWrap?.classList.toggle('hidden', select.value !== '__custom__');
+  if (select.value !== '__custom__') {
+    elements.llmModelCustom.value = '';
+  } else if (currentModel && !models.some((m) => m.value === currentModel)) {
+    elements.llmModelCustom.value = currentModel;
+  }
+  if (!currentModel || (!models.some((m) => m.value === currentModel) && select.value !== '__custom__')) {
+    select.value = config.defaultModel || (models[0]?.value ?? '');
+  }
 }
 
 /**
  * Get provider from endpoint
  */
 function getProviderFromEndpoint(endpoint) {
-  if (!endpoint) return 'openai';
+  if (!endpoint) return 'glm';
 
-  if (endpoint.includes('openai.com')) return 'openai';
   if (endpoint.includes('bigmodel.cn')) return 'glm';
+  if (endpoint.includes('generativelanguage.googleapis.com') || endpoint.includes('ai.google.dev')) return 'google';
+  if (endpoint.includes('moonshot.ai')) return 'moonshot';
+  if (endpoint.includes('openai.com')) return 'openai';
   if (endpoint.includes('groq.com')) return 'groq';
   return 'custom';
 }
@@ -1219,44 +1312,30 @@ function mergeById(existing, incoming) {
 }
 
 /**
- * LLM provider change
+ * LLM provider change：切换提供商时更新端点并只展示该提供商的模型列表
  */
 function onLlmProviderChange(e) {
   const provider = e.target.value;
-  const endpoints = {
-    openai: 'https://api.openai.com/v1/chat/completions',
-    glm: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
-    groq: 'https://api.groq.com/openai/v1/chat/completions',
-    custom: ''
-  };
-
-  if (provider !== 'custom' && !elements.llmEndpoint.value) {
-    elements.llmEndpoint.value = endpoints[provider];
+  const config = PROVIDER_CONFIG[provider];
+  if (config && config.endpoint) {
+    elements.llmEndpoint.value = config.endpoint;
   }
-
-  // 智谱 GLM 时建议模型为 glm-4.7-flash
-  if (provider === 'glm') {
-    const model = elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value;
-    if (!model || model === 'gpt-3.5-turbo') {
-      elements.llmModel.value = 'glm-4.7-flash';
-      elements.llmModelCustomWrap?.classList.add('hidden');
-      elements.llmModelCustom.value = '';
-    }
-  }
+  updateModelSelect(provider);
 }
 
 /**
  * Test LLM connection
  */
 function getDefaultModelForEndpoint(endpoint) {
-  if (endpoint && endpoint.includes('bigmodel.cn')) return 'glm-4.7-flash';
-  return 'gpt-3.5-turbo';
+  const provider = getProviderFromEndpoint(endpoint);
+  return PROVIDER_CONFIG[provider]?.defaultModel || 'glm-4.7-flash';
 }
 
 async function testLlmConnection() {
   const endpoint = elements.llmEndpoint.value.trim();
   const apiKey = elements.llmApiKey.value.trim();
-  const model = (elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || getDefaultModelForEndpoint(endpoint);
+  const provider = getProviderFromEndpoint(endpoint);
+  const model = (provider === 'custom' || elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || getDefaultModelForEndpoint(endpoint);
 
   if (!endpoint || !apiKey) {
     showToast('请先填写 API 端点和 API Key', 'warning');
@@ -1304,10 +1383,10 @@ async function saveSettings() {
         enabled: elements.llmEnabled.checked,
         endpoint: elements.llmEndpoint.value.trim(),
         apiKey: elements.llmApiKey.value.trim(),
-        model: (elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || 'glm-4.7-flash',
+        model: (getProviderFromEndpoint(elements.llmEndpoint?.value?.trim()) === 'custom' || elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || getDefaultModelForEndpoint(elements.llmEndpoint?.value?.trim()),
         disableThinking: elements.llmDisableThinking.checked
       },
-      autoSubmit: elements.autoSubmit.checked
+      autoSubmit: (await chrome.storage.local.get(['settings'])).settings?.autoSubmit ?? false
     };
 
     await chrome.storage.local.set({ settings: newSettings });
