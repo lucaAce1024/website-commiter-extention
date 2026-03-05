@@ -57,6 +57,9 @@ const elements = {
   blogSpamHint: document.getElementById('blogSpamHint'),
   blogNoFormHint: document.getElementById('blogNoFormHint'),
   blogClearCacheBtn: document.getElementById('blogClearCacheBtn'),
+  blogStatusMessage: document.getElementById('blogStatusMessage'),
+  blogStatusText: document.getElementById('blogStatusText'),
+  blogCloseStatusBtn: document.getElementById('blogCloseStatusBtn'),
   blogGenerateAndFillBtn: document.getElementById('blogGenerateAndFillBtn'),
   blogVerifySubmitBtn: document.getElementById('blogVerifySubmitBtn'),
   openBlogSitesBtn: document.getElementById('openBlogSitesBtn'),
@@ -738,7 +741,7 @@ function setupEventListeners() {
   // 生成评论并填充
   elements.blogGenerateAndFillBtn?.addEventListener('click', async () => {
     if (!currentSiteId || !currentTab?.id) {
-      showWarning('请先选择当前站点');
+      showBlogMessage('请先选择当前站点', 'warning');
       return;
     }
     elements.blogGenerateAndFillBtn.disabled = true;
@@ -749,13 +752,13 @@ function setupEventListeners() {
       const description = metaRes?.description ?? '';
       const genRes = await chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description });
       if (!genRes?.success) {
-        showError(genRes?.error || '评论生成失败');
+        showBlogMessage(genRes?.error || '评论生成失败', 'error');
         return;
       }
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 识别表单...';
       const recRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'recognizeCommentForm', useLlm: llmEnabled });
       if (!recRes?.success || recRes.result?.status !== 'success') {
-        showError(recRes?.result?.message || recRes?.error || '评论表单识别失败');
+        showBlogMessage(recRes?.result?.message || recRes?.error || '评论表单识别失败', 'error');
         return;
       }
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
@@ -765,7 +768,7 @@ function setupEventListeners() {
         commentText: genRes.comment
       });
       if (!fillRes?.success) {
-        showError(fillRes?.error || '填充失败');
+        showBlogMessage(fillRes?.error || '填充失败', 'error');
         return;
       }
       const r = fillRes.result;
@@ -778,14 +781,14 @@ function setupEventListeners() {
         if (site?.siteUrl) {
           setTimeout(async () => {
             const verifyRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
-            if (verifyRes?.success && verifyRes.result?.success) showSuccess(verifyRes.result.message);
-            else showWarning(verifyRes?.result?.message || '未检测到本站链接');
+            if (verifyRes?.success && verifyRes.result?.success) showBlogMessage(verifyRes.result.message, 'success');
+            else showBlogMessage(verifyRes?.result?.message || '未检测到本站链接', 'warning');
           }, 4000);
         }
       }
-      showSuccess(msg);
+      showBlogMessage(msg, 'success');
     } catch (err) {
-      showError(err?.message?.includes('Receiving end') ? '请刷新页面后再试' : (err?.message || '操作失败'));
+      showBlogMessage(err?.message?.includes('Receiving end') ? '请刷新页面后再试' : (err?.message || '操作失败'), 'error');
     } finally {
       elements.blogGenerateAndFillBtn.disabled = false;
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">💬</span> 生成评论并填充';
@@ -796,25 +799,27 @@ function setupEventListeners() {
     if (!currentSiteId || !currentTab?.id) return;
     const site = sites.find((s) => s.id === currentSiteId);
     if (!site?.siteUrl) {
-      showWarning('当前站点未设置网站 URL');
+      showBlogMessage('当前站点未设置网站 URL', 'warning');
       return;
     }
     try {
       const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
-      if (res?.success && res.result?.success) showSuccess(res.result.message);
-      else showWarning(res?.result?.message || '未在页面中检测到您的站点链接');
+      if (res?.success && res.result?.success) showBlogMessage(res.result.message, 'success');
+      else showBlogMessage(res?.result?.message || '未在页面中检测到您的站点链接', 'warning');
     } catch (e) {
-      showError(e?.message || '验证失败');
+      showBlogMessage(e?.message || '验证失败', 'error');
     }
   });
+
+  elements.blogCloseStatusBtn?.addEventListener('click', hideBlogMessage);
 
   elements.blogClearCacheBtn?.addEventListener('click', async () => {
     try {
       await chrome.tabs.sendMessage(currentTab.id, { action: 'clearCommentMapping' });
-      showSuccess('已清除本页评论缓存');
+      showBlogMessage('已清除本页评论缓存', 'success');
       await getCommentPageState();
     } catch (e) {
-      showError('清除失败');
+      showBlogMessage('清除失败', 'error');
     }
   });
 
@@ -868,6 +873,23 @@ function showMessage(message, type = 'info') {
  */
 function hideMessage() {
   elements.statusMessage.classList.add('hidden');
+}
+
+/**
+ * 评论流程专用：在「生成评论并填充」按钮上方展示成功/失败/警告
+ */
+function showBlogMessage(message, type = 'info') {
+  if (!elements.blogStatusText || !elements.blogStatusMessage) return;
+  elements.blogStatusText.textContent = message;
+  elements.blogStatusMessage.className = 'status-message status-message-above-actions ' + type;
+  elements.blogStatusMessage.classList.remove('hidden');
+  if (type === 'success' || type === 'warning') {
+    setTimeout(hideBlogMessage, 5000);
+  }
+}
+
+function hideBlogMessage() {
+  if (elements.blogStatusMessage) elements.blogStatusMessage.classList.add('hidden');
 }
 
 // Initialize on load

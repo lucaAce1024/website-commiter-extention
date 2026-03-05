@@ -154,6 +154,44 @@ function aiLogToPage(tabId, level, ...args) {
   }
 }
 
+/** AI 请求超时上限（单次） */
+const AI_REQUEST_TIMEOUT_MS = 15000;
+/** AI 请求最大重试次数（不含首次） */
+const AI_REQUEST_MAX_RETRIES = 2;
+
+/**
+ * 带超时与重试的 fetch：单次 15s 超时，最多重试 3 次，全部失败则抛出提示用户检查接口
+ * @param {string} url
+ * @param {RequestInit} init
+ * @param {{ timeoutMs?: number, maxRetries?: number }} opts
+ * @returns {Promise<Response>}
+ */
+async function fetchLlmWithRetry(url, init, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
+  const maxRetries = opts.maxRetries ?? AI_REQUEST_MAX_RETRIES;
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      lastError = e;
+      if (attempt <= maxRetries) {
+        await new Promise(r => setTimeout(r, 800));
+      }
+    }
+  }
+  const isTimeout = lastError?.name === 'AbortError';
+  const msg = isTimeout
+    ? `AI 请求超时（${timeoutMs / 1000} 秒），已重试 ${maxRetries} 次均失败，请检查 AI 接口是否正常`
+    : `AI 请求失败，已重试 ${maxRetries} 次：${lastError?.message || lastError}。请检查 AI 接口是否正常`;
+  throw new Error(msg);
+}
+
 /**
  * 调用 GLM API 进行表单字段识别
  * @param {Object} formMetadata - 表单元数据
@@ -201,22 +239,19 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
   log('AI 请求 body (发送给接口的完整 JSON):', JSON.stringify(requestBody, null, 2));
   log('AI 请求 user message 全文:', prompt);
 
-  const controller = new AbortController();
-  const timeoutMs = 60000; // 60 秒，避免 GLM 识别表单时超时
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${llmConfig.apiKey}`
+    const response = await fetchLlmWithRetry(
+      endpoint,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${llmConfig.apiKey}`
+        },
+        body: JSON.stringify(requestBody)
       },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
+      { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
+    );
 
     log('AI 收到响应:', { status: response.status, ok: response.ok });
 
@@ -261,12 +296,6 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
     return mappings;
 
   } catch (error) {
-    clearTimeout(timeoutId);
-
-    if (error.name === 'AbortError') {
-      throw new Error(`AI 请求超时（${timeoutMs / 1000}秒）`);
-    }
-
     logErr('AI 识别失败:', error);
     throw error;
   }
@@ -530,21 +559,19 @@ async function handleGenerateBlogComment(title, description) {
   log('请求开始:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
   log('请求 user 内容:', userContent);
 
-  const controller = new AbortController();
-  const timeoutMs = 30000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${llmConfig.apiKey}`
+    const response = await fetchLlmWithRetry(
+      endpoint,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${llmConfig.apiKey}`
+        },
+        body: JSON.stringify(requestBody)
       },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+      { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
+    );
 
     log('响应:', { status: response.status, ok: response.ok });
 
@@ -576,11 +603,6 @@ async function handleGenerateBlogComment(title, description) {
     log('解析得到评论长度:', comment.length, '预览:', comment.slice(0, 80) + (comment.length > 80 ? '…' : ''));
     return comment;
   } catch (error) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      logErr('请求超时');
-      throw new Error(`请求超时（${timeoutMs / 1000}秒）`);
-    }
     logErr('异常:', error.message);
     throw error;
   }
@@ -675,21 +697,19 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
     requestBody.thinking = { type: 'disabled' };
   }
 
-  const controller = new AbortController();
-  const timeoutMs = 45000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch(endpointComment, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${llmConfig.apiKey}`
+    const response = await fetchLlmWithRetry(
+      endpointComment,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${llmConfig.apiKey}`
+        },
+        body: JSON.stringify(requestBody)
       },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+      { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -705,8 +725,6 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
     log('Comment form AI mappings:', mappings.length, 'submitButton:', submitButton);
     return { mappings, submitButton };
   } catch (error) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') throw new Error(`请求超时（${timeoutMs / 1000}秒）`);
     throw error;
   }
 }

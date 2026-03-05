@@ -337,6 +337,12 @@ body {
   line-height: 1.5;
 }
 
+/* 评论流程：提示框在「生成评论并填充」按钮上方 */
+.status-message-above-actions {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
 .status-message.success {
   background-color: #d1fae5;
   color: #065f46;
