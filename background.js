@@ -264,25 +264,27 @@ function aiLogToPage(tabId, level, ...args) {
 }
 
 /** AI 请求超时上限（单次） */
-const AI_REQUEST_TIMEOUT_MS = 15000;
+const AI_REQUEST_TIMEOUT_MS = 30000;
 /** AI 请求最大重试次数（不含首次） */
 const AI_REQUEST_MAX_RETRIES = 2;
 /** 重试前等待时长（避免 429 等限流），毫秒 */
 const AI_RETRY_DELAY_MS = 30000;
 
 /**
- * 带超时与重试的 fetch：单次 15s 超时，失败或 429 时等待 30s 再重试，全部失败则抛出提示用户检查接口
+ * 带超时与重试的 fetch：单次 30s 超时，失败或 429 时等待 30s 再重试，全部失败则抛出提示用户检查接口
  * @param {string} url
  * @param {RequestInit} init
- * @param {{ timeoutMs?: number, maxRetries?: number }} opts
+ * @param {{ timeoutMs?: number, maxRetries?: number, retryDelayMs?: number, onRetry?: (attempt: number, totalAttempts: number, reason: string) => void|Promise<void> }} opts
  * @returns {Promise<Response>}
  */
 async function fetchLlmWithRetry(url, init, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
   const maxRetries = opts.maxRetries ?? AI_REQUEST_MAX_RETRIES;
   const retryDelayMs = opts.retryDelayMs ?? AI_RETRY_DELAY_MS;
+  const onRetry = opts.onRetry;
+  const totalAttempts = maxRetries + 1;
   let lastError;
-  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+  for (let attempt = 1; attempt <= totalAttempts; attempt++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -291,12 +293,22 @@ async function fetchLlmWithRetry(url, init, opts = {}) {
       if (response.ok) return response;
       if (response.status === 429 && attempt <= maxRetries) {
         await response.text();
+        if (onRetry) {
+          try {
+            await Promise.resolve(onRetry(attempt, totalAttempts, '429'));
+          } catch (_) {}
+        }
         await new Promise(r => setTimeout(r, retryDelayMs));
         continue;
       }
       const errText = await response.text();
       lastError = new Error(`API 错误 ${response.status}: ${errText.slice(0, 200)}`);
       if (attempt <= maxRetries) {
+        if (onRetry) {
+          try {
+            await Promise.resolve(onRetry(attempt, totalAttempts, 'error'));
+          } catch (_) {}
+        }
         await new Promise(r => setTimeout(r, retryDelayMs));
         continue;
       }
@@ -305,6 +317,11 @@ async function fetchLlmWithRetry(url, init, opts = {}) {
       clearTimeout(timeoutId);
       lastError = e;
       if (attempt <= maxRetries) {
+        if (onRetry) {
+          try {
+            await Promise.resolve(onRetry(attempt, totalAttempts, e?.name === 'AbortError' ? 'timeout' : 'error'));
+          } catch (_) {}
+        }
         await new Promise(r => setTimeout(r, retryDelayMs));
       }
     }
@@ -691,7 +708,9 @@ async function handleGenerateBlogComment(title, description, h1 = '') {
   if (llmConfig.disableThinking !== false) {
     requestBody.thinking = { type: 'disabled' };
   }
-  log('请求开始:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  const genReqJson = JSON.stringify(requestBody, null, 2);
+  log('请求开始（发请求前）:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  log('[generateBlogComment] 请求 body:', genReqJson);
   log('请求 user 内容:', userContent);
 
   try {
@@ -810,7 +829,7 @@ function parseCommentFormAIResponse(content, formMetadata) {
  */
 function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, description, h1 = '') {
   const standardList = BLOG_COMMENT_STANDARD_FIELDS.join(', ');
-  const multiLangInstruction = `The form labels/placeholders may be in ANY language (e.g. Slovenian, Czech, Chinese, German). Before mapping, interpret each label in English: e.g. "Spletišče" = website → commentWebsite; "Ime" / "Jméno" = name → commentName; "E-pošta" / "Notif. e-mail" = email → commentEmail; "Komentar" / "Komentář" = comment body → comment. Then map to exactly one of the standard types below.`;
+  const multiLangInstruction = `The form labels/placeholders may be in ANY language (e.g. Japanese, Slovenian, Czech, Chinese, German). Before mapping, interpret each label: e.g. "名前"/"Namae" = name → commentName; "URL" = website → commentWebsite; "コメント" = comment body → comment; "E-pošta" = email → commentEmail. Then map to exactly one of the standard types below.`;
   const formHtml = formMetadata?.formHtml;
   const formPart = formHtml
     ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nMultilingual: ${multiLangInstruction}\n\nStandard types (use exactly): ${standardList}\n  - comment: the main comment/feedback text (usually a textarea)\n  - commentName: commenter's name\n  - commentEmail: commenter's email\n  - commentWebsite: commenter's website URL\n\nHTML:\n${formHtml}`
@@ -870,6 +889,15 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
   const formDescription = buildCompactFormDescription(formMetadata);
   const userContent = buildBlogCommentOneShotPrompt(formDescription, formMetadata, title || '', description || '', h1 || '');
 
+  let popupStateKey = null;
+  if (tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const ck = getBlogPopupStateCacheKey(tab?.url);
+      if (ck) popupStateKey = BLOG_POPUP_STATE_PREFIX + ck;
+    } catch (_) {}
+  }
+
   const endpoint = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
   const requestBody = {
     model: llmConfig.model || 'gpt-3.5-turbo',
@@ -885,7 +913,9 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
     requestBody.thinking = { type: 'disabled' };
   }
 
-  log('请求开始:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  const oneShotReqJson = JSON.stringify(requestBody, null, 2);
+  log('请求开始（发请求前）:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  log('[BlogComment OneShot] 请求 body:', oneShotReqJson);
   pageLog('[BlogComment OneShot] 请求开始');
 
   try {
@@ -899,7 +929,24 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
         },
         body: JSON.stringify(requestBody)
       },
-      { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
+      {
+        timeoutMs: AI_REQUEST_TIMEOUT_MS,
+        maxRetries: AI_REQUEST_MAX_RETRIES,
+        onRetry: popupStateKey
+          ? async (attempt, totalAttempts) => {
+              const retryMsg = `AI 请求失败，正在重试 ${attempt}/${totalAttempts - 1}（约 30 秒后重试）`;
+              const stored = await chrome.storage.local.get(popupStateKey);
+              const existing = stored[popupStateKey] || {};
+              await chrome.storage.local.set({
+                [popupStateKey]: {
+                  statusLineText: retryMsg,
+                  statusMessageText: existing.statusMessageText || '',
+                  statusMessageType: existing.statusMessageType || 'info'
+                }
+              });
+            }
+          : undefined
+      }
     );
 
     if (!response.ok) {
@@ -912,19 +959,45 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
     let content = (data?.choices?.[0]?.message?.content || '').trim();
     if (!content) throw new Error('API 返回内容为空');
 
-    const { mappings, submitButton, comment } = parseBlogCommentOneShotResponse(content, formMetadata);
+    log('API 返回原始 content 长度:', content.length);
+    log('API 返回原始 content 前 800 字:', content.slice(0, 800));
+
+    let mappings;
+    let submitButton;
+    let comment;
+    try {
+      const parsed = parseBlogCommentOneShotResponse(content, formMetadata);
+      mappings = parsed.mappings;
+      submitButton = parsed.submitButton;
+      comment = parsed.comment;
+    } catch (parseErr) {
+      logOneShotParseFailure(content, formMetadata);
+      throw parseErr;
+    }
     if (!comment) {
-      logErr('解析得到 comment 为空');
+      logErr('解析得到 comment 为空，原始 content 前 500 字:', content.slice(0, 500));
+      logOneShotParseFailure(content, formMetadata);
       throw new Error('API 返回中缺少有效 comment 字段');
     }
 
-    log('解析得到 mappings:', mappings.length, 'submitButton:', !!submitButton, 'comment 长度:', comment.length);
+    log('解析得到 mappings:', mappings?.length, 'submitButton:', !!submitButton, 'comment 长度:', comment?.length);
     pageLog('[BlogComment OneShot] 完成');
     return { mappings, submitButton, comment };
   } catch (error) {
     logErr('异常:', error.message);
     throw error;
   }
+}
+
+/**
+ * 解析失败时在控制台输出原始 content，便于排查日语等多语言表单
+ */
+function logOneShotParseFailure(content, formMetadata) {
+  try {
+    console.warn('[Background][BlogComment OneShot] 解析失败，原始 API content 长度:', content?.length);
+    console.warn('[Background][BlogComment OneShot] 原始 content 前 1200 字:', typeof content === 'string' ? content.slice(0, 1200) : content);
+    console.warn('[Background][BlogComment OneShot] formMetadata.fields 数量:', formMetadata?.fields?.length);
+  } catch (_) {}
 }
 
 async function handleAIRecognizeCommentForm(formMetadata, tabId) {

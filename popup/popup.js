@@ -53,7 +53,10 @@ const elements = {
   blogPageDomain: document.getElementById('blogPageDomain'),
   blogFormStatus: document.getElementById('blogFormStatus'),
   blogRecognitionStatus: document.getElementById('blogRecognitionStatus'),
+  blogFieldCountRow: document.getElementById('blogFieldCountRow'),
   blogFieldCount: document.getElementById('blogFieldCount'),
+  blogFieldPrevBtn: document.getElementById('blogFieldPrevBtn'),
+  blogFieldNextBtn: document.getElementById('blogFieldNextBtn'),
   blogSpamHint: document.getElementById('blogSpamHint'),
   blogNoFormHint: document.getElementById('blogNoFormHint'),
   blogCacheHint: document.getElementById('blogCacheHint'),
@@ -459,6 +462,23 @@ function saveBlogPopupState() {
 }
 
 /**
+ * 仅将 state 应用到 Blog 面板 DOM（不触发 save），供恢复与 storage 变更监听使用
+ */
+function applyBlogPopupStateToDom(state) {
+  if (!state || typeof state !== 'object') return;
+  if (state.statusLineText !== undefined && elements.blogStatusLine) {
+    elements.blogStatusLine.textContent = state.statusLineText || '';
+    elements.blogStatusLine.classList.toggle('hidden', !state.statusLineText);
+    if (state.statusLineText) elements.blogStatusLine.scrollLeft = 0;
+  }
+  if (state.statusMessageText !== undefined && elements.blogStatusText && elements.blogStatusMessage) {
+    elements.blogStatusText.textContent = state.statusMessageText || '';
+    elements.blogStatusMessage.className = 'status-message status-message-above-actions ' + (state.statusMessageType || 'info');
+    elements.blogStatusMessage.classList.toggle('hidden', !state.statusMessageText);
+  }
+}
+
+/**
  * 从 storage 恢复当前 URL 的 Blog 面板状态（仅写 DOM，不触发 save）
  */
 async function restoreBlogPopupState() {
@@ -468,23 +488,7 @@ async function restoreBlogPopupState() {
   try {
     const key = BLOG_POPUP_STATE_PREFIX + cacheKey;
     const stored = await chrome.storage.local.get(key);
-    const state = stored[key];
-    if (!state || typeof state !== 'object') return;
-    if (state.statusLineText && elements.blogStatusLine) {
-      elements.blogStatusLine.textContent = state.statusLineText;
-      elements.blogStatusLine.classList.remove('hidden');
-      elements.blogStatusLine.scrollLeft = 0;
-    } else if (elements.blogStatusLine) {
-      elements.blogStatusLine.textContent = '';
-      elements.blogStatusLine.classList.add('hidden');
-    }
-    if (state.statusMessageText && elements.blogStatusText && elements.blogStatusMessage) {
-      elements.blogStatusText.textContent = state.statusMessageText;
-      elements.blogStatusMessage.className = 'status-message status-message-above-actions ' + (state.statusMessageType || 'info');
-      elements.blogStatusMessage.classList.remove('hidden');
-    } else if (elements.blogStatusMessage) {
-      elements.blogStatusMessage.classList.add('hidden');
-    }
+    applyBlogPopupStateToDom(stored[key]);
   } catch (_) {}
 }
 
@@ -494,6 +498,9 @@ async function updateBlogClearCacheState() {
   if (!cacheKey) {
     elements.blogClearCacheBtn.disabled = true;
     elements.blogClearCacheBtn.classList.remove('blog-cache-has');
+    elements.blogFieldCount?.classList.remove('blog-field-count-has-cache');
+    if (elements.blogFieldPrevBtn) elements.blogFieldPrevBtn.disabled = true;
+    if (elements.blogFieldNextBtn) elements.blogFieldNextBtn.disabled = true;
     if (elements.blogCacheHint) {
       elements.blogCacheHint.classList.add('hidden');
     }
@@ -505,6 +512,9 @@ async function updateBlogClearCacheState() {
   const hasCache = !!(cached && (cached.mappings?.length || (Array.isArray(cached) && cached.length)));
   elements.blogClearCacheBtn.disabled = !hasCache;
   elements.blogClearCacheBtn.classList.toggle('blog-cache-has', hasCache);
+  elements.blogFieldCount?.classList.toggle('blog-field-count-has-cache', hasCache);
+  if (elements.blogFieldPrevBtn) elements.blogFieldPrevBtn.disabled = !hasCache;
+  if (elements.blogFieldNextBtn) elements.blogFieldNextBtn.disabled = !hasCache;
   if (elements.blogCacheHint) {
     if (hasCache) {
       elements.blogCacheHint.textContent = '当前页已有缓存';
@@ -956,6 +966,59 @@ function setupEventListeners() {
     }
   });
 
+  // 点击「可填字段」时，根据缓存在页面上用蓝色虚线框标出可填字段；再次点击取消高亮
+  elements.blogFieldCountRow?.addEventListener('click', async (e) => {
+    if (e.target.closest('.blog-field-nav-btns')) return; // 点击箭头不触发整行高亮
+    if (!currentTab?.id) return;
+    try {
+      const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'highlightCommentFieldsFromCache' });
+      if (res?.success) {
+        if (res.cleared) {
+          showBlogMessage('已取消高亮', 'info');
+        } else if (res.highlightedCount != null && res.highlightedCount > 0) {
+          showBlogMessage(`已在页面用蓝色虚线框标出 ${res.highlightedCount} 个可填字段`, 'success');
+        } else {
+          showBlogMessage('已在页面标出可填字段', 'success');
+        }
+      } else {
+        showBlogMessage(res?.error || '高亮失败', 'warning');
+      }
+    } catch (e) {
+      const msg = e?.message?.includes('Receiving end') ? '请打开目标网页后再试' : (e?.message || '高亮失败');
+      showBlogMessage(msg, 'warning');
+    }
+  });
+
+  // 上/下箭头：在已高亮的可填字段之间跳转
+  elements.blogFieldPrevBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!currentTab?.id) return;
+    try {
+      const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'highlightCommentFieldPrev' });
+      if (res?.success) {
+        showBlogMessage(`第 ${(res.index ?? 0) + 1}/${res.total ?? 0} 个字段`, 'info');
+      } else {
+        showBlogMessage(res?.error || '跳转失败', 'warning');
+      }
+    } catch (err) {
+      showBlogMessage(err?.message?.includes('Receiving end') ? '请打开目标网页后再试' : '跳转失败', 'warning');
+    }
+  });
+  elements.blogFieldNextBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!currentTab?.id) return;
+    try {
+      const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'highlightCommentFieldNext' });
+      if (res?.success) {
+        showBlogMessage(`第 ${(res.index ?? 0) + 1}/${res.total ?? 0} 个字段`, 'info');
+      } else {
+        showBlogMessage(res?.error || '跳转失败', 'warning');
+      }
+    } catch (err) {
+      showBlogMessage(err?.message?.includes('Receiving end') ? '请打开目标网页后再试' : '跳转失败', 'warning');
+    }
+  });
+
   elements.openBlogSitesBtn?.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html?tab=blogSites') });
     window.close();
@@ -1038,6 +1101,18 @@ function setBlogStatusLine(text) {
   if (text) elements.blogStatusLine.scrollLeft = 0;
   saveBlogPopupState();
 }
+
+// 监听 storage 变更，使 background 写入的「AI 请求失败，正在重试 x 次」等状态能实时同步到 popup 状态栏
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (currentMode !== 'blog' || !currentTab) return;
+  const cacheKey = getCommentCacheKeyForTab(currentTab);
+  if (!cacheKey) return;
+  const key = BLOG_POPUP_STATE_PREFIX + cacheKey;
+  if (changes[key] && changes[key].newValue) {
+    applyBlogPopupStateToDom(changes[key].newValue);
+  }
+});
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', init);

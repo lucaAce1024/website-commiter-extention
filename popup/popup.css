@@ -275,6 +275,51 @@ body {
   align-items: center;
 }
 
+.blog-field-count-clickable {
+  cursor: pointer;
+}
+.blog-field-count-clickable:hover {
+  color: var(--primary-color);
+}
+
+/* 有缓存时「xx个字段」显示为蓝色+下划线，提示可点击高亮 */
+.blog-field-count-has-cache {
+  color: var(--primary-color) !important;
+  text-decoration: underline;
+}
+
+/* 可填字段行内的上/下箭头按钮 */
+.blog-field-nav-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.blog-field-nav-btns .btn-arrow {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.blog-field-nav-btns .btn-arrow:hover:not(:disabled) {
+  background: var(--border-color);
+  color: var(--primary-color);
+}
+.blog-field-nav-btns .btn-arrow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .status-label {
   font-size: 12px;
   color: var(--text-secondary);

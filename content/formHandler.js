@@ -127,6 +127,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'clearCommentMapping') {
     clearCommentMapping().then(() => sendResponse({ success: true }));
     return true;
+  } else if (request.action === 'highlightCommentFieldsFromCache') {
+    highlightOrClearCommentFieldsFromCache()
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ success: false, error: err?.message || '高亮失败' }));
+    return true;
+  } else if (request.action === 'highlightCommentFieldPrev') {
+    sendResponse(jumpToHighlightedCommentField(-1));
+  } else if (request.action === 'highlightCommentFieldNext') {
+    sendResponse(jumpToHighlightedCommentField(1));
   } else if (request.action === 'getPageMetadata') {
     const title = document.title || '';
     const descEl = document.querySelector('meta[name="description"]');
@@ -203,50 +212,54 @@ function getFormMetadata() {
   const forms = document.querySelectorAll('form');
   const fields = [];
 
+  /** 将单个 input/textarea/select 转为 fieldInfo 并 push 到 fields（供 form 内与兄弟节点共用） */
+  function pushFieldInfo(input) {
+    if (['hidden', 'submit', 'button', 'reset', 'image'].includes(input.type)) return false;
+    if (input.tagName === 'TEXTAREA' && input.style.display === 'none' && /simplemde|easymde/i.test(input.id)) return false;
+    const label = getFieldLabel(input);
+    const locator = getFieldLocator(input);
+    const fieldInfo = {
+      locator,
+      xpath: getXPath(input),
+      locatorDesc: formatLocator(locator),
+      type: input.type || (input.tagName === 'TEXTAREA' ? 'textarea' : input.tagName.toLowerCase()),
+      name: input.name || input.dataset?.name || input.dataset?.field || '',
+      id: input.id || '',
+      placeholder: input.placeholder || '',
+      label: label || '',
+      ariaLabel: input.getAttribute('aria-label') || '',
+      required: input.required || false,
+      ariaHidden: input.getAttribute('aria-hidden') || null
+    };
+    if (input.tagName === 'SELECT') {
+      fieldInfo.options = Array.from(input.options).map(opt => ({ value: opt.value, text: opt.text.trim() })).filter(opt => opt.text);
+    }
+    if (input.tagName === 'TEXTAREA') fieldInfo.isTextarea = true;
+    fields.push(fieldInfo);
+    return true;
+  }
+
   forms.forEach((form, formIndex) => {
     const inputs = form.querySelectorAll('input, textarea, select');
+    const countBeforeForm = fields.length;
 
-    inputs.forEach((input, index) => {
-      if (['hidden', 'submit', 'button', 'reset', 'image'].includes(input.type)) {
-        return;
-      }
-      // 跳过 SimpleMDE 的隐藏 textarea（style="display: none;" 且 id 包含 "simplemde" 或 "easymde"）
-      if (input.tagName === 'TEXTAREA' && input.style.display === 'none' &&
-          /simplemde|easymde/i.test(input.id)) {
-        return;
-      }
-      // 包含 type="file"（Logo/截图上传框），便于识别并自动填入
-
-      const label = getFieldLabel(input);
-      const locator = getFieldLocator(input);
-
-      const fieldInfo = {
-        locator,
-        xpath: getXPath(input),
-        locatorDesc: formatLocator(locator),
-        type: input.type || (input.tagName === 'TEXTAREA' ? 'textarea' : input.tagName.toLowerCase()),
-        name: input.name || input.dataset?.name || input.dataset?.field || '',
-        id: input.id || '',
-        placeholder: input.placeholder || '',
-        label: label || '',
-        ariaLabel: input.getAttribute('aria-label') || '',
-        required: input.required || false,
-        ariaHidden: input.getAttribute('aria-hidden') || null
-      };
-
-      if (input.tagName === 'SELECT') {
-        fieldInfo.options = Array.from(input.options).map(opt => ({
-          value: opt.value,
-          text: opt.text.trim()
-        })).filter(opt => opt.text);
-      }
-
-      if (input.tagName === 'TEXTAREA') {
-        fieldInfo.isTextarea = true;
-      }
-
-      fields.push(fieldInfo);
+    inputs.forEach((input) => {
+      pushFieldInfo(input);
     });
+
+    // 部分站点（如日语）form 标签在 table 内且提前闭合，真实输入在 tbody（form 的 nextElementSibling）中
+    if (fields.length === countBeforeForm) {
+      let sibling = form.nextElementSibling;
+      for (let i = 0; i < 3 && sibling; i++) {
+        const siblingInputs = sibling.querySelectorAll ? sibling.querySelectorAll('input, textarea, select') : [];
+        let added = 0;
+        for (const input of siblingInputs) {
+          if (pushFieldInfo(input)) added++;
+        }
+        if (added) break;
+        sibling = sibling.nextElementSibling;
+      }
+    }
 
     // 收集「Short Description」等由 label 关联的 contenteditable/ProseMirror（如 auraplusplus）
     const shortDescLabelPatterns = [/short\s*description/i, /brief\s*description/i, /short\s*desc/i, /简介/i, /简述/i];
@@ -397,8 +410,43 @@ function getCommentFormMetadata() {
     const { ariaHidden, ...rest } = f;
     fields.push(rest);
   });
+
+  // 部分站点（如日语）form 提前闭合，评论框 textarea 在 form 外的兄弟节点中；先补充这些 textarea，
+  // 再补充 submit，保证发给 AI 的 [0]=name [1]=url [2]=comment [3]=submit，避免 index 2 错位成提交按钮
+  const locatorKey = (loc) => JSON.stringify(loc);
+  const existingKeys = new Set(fields.map((f) => locatorKey(f.locator)));
   const forms = document.querySelectorAll('form');
   forms.forEach((form) => {
+    let sibling = form.nextElementSibling;
+    for (let i = 0; i < 3 && sibling; i++) {
+      const textareas = sibling.querySelectorAll ? sibling.querySelectorAll('textarea') : [];
+      for (const ta of textareas) {
+        if (!isElementVisible(ta)) continue;
+        const loc = getFieldLocator(ta);
+        if (existingKeys.has(locatorKey(loc))) continue;
+        existingKeys.add(locatorKey(loc));
+        const label = getFieldLabel(ta);
+        fields.push({
+          locator: loc,
+          xpath: getXPath(ta),
+          locatorDesc: formatLocator(loc),
+          type: 'textarea',
+          name: ta.name || '',
+          id: ta.id || '',
+          placeholder: ta.placeholder || '',
+          label: label ? label.slice(0, 80) : '',
+          ariaLabel: ta.getAttribute('aria-label') || '',
+          required: ta.required || false,
+          isTextarea: true
+        });
+        break;
+      }
+      sibling = sibling.nextElementSibling;
+    }
+  });
+
+  forms.forEach((form) => {
+    const countBefore = fields.length;
     form.querySelectorAll('input[type="submit"], input[type="button"], button').forEach((btn) => {
       const label = getFieldLabel(btn) || btn.value || btn.textContent?.trim() || '';
       fields.push({
@@ -415,6 +463,31 @@ function getCommentFormMetadata() {
         isSubmitButton: true
       });
     });
+    // 部分站点（如日语）form 标签提前闭合，提交按钮在紧随的 table 内，从该 form 的相邻兄弟节点补充
+    if (fields.length === countBefore) {
+      let sibling = form.nextElementSibling;
+      for (let i = 0; i < 3 && sibling; i++) {
+        const btn = sibling.querySelector && sibling.querySelector('input[type="submit"], input[type="button"], button');
+        if (btn && isElementVisible(btn)) {
+          const label = getFieldLabel(btn) || btn.value || btn.textContent?.trim() || '';
+          fields.push({
+            locator: getFieldLocator(btn),
+            xpath: getXPath(btn),
+            locatorDesc: formatLocator(getFieldLocator(btn)),
+            type: btn.type || 'submit',
+            name: btn.name || '',
+            id: btn.id || '',
+            placeholder: '',
+            label: label.slice(0, 80),
+            ariaLabel: btn.getAttribute('aria-label') || '',
+            required: false,
+            isSubmitButton: true
+          });
+          break;
+        }
+        sibling = sibling.nextElementSibling;
+      }
+    }
   });
   return {
     hasForm: fields.length > 0,
@@ -528,12 +601,24 @@ function findElementByLocator(locator) {
       return document.getElementById(locator.value);
 
     case 'name': {
+      // 只匹配表单控件，避免 name 与 form 的 name 重复时选到 form（如 <form name="comment"> 与 <textarea name="comment">）
+      const nameSelector = `input[name="${locator.value}"], textarea[name="${locator.value}"], select[name="${locator.value}"]`;
       const forms = document.querySelectorAll('form');
       const form = forms[locator.formIndex];
       if (form) {
-        return form.querySelector(`[name="${locator.value}"]`);
+        let el = form.querySelector(nameSelector);
+        // 部分站点 form 提前闭合，输入在 table/tbody（form 的兄弟节点）中
+        if (!el) {
+          let sibling = form.nextElementSibling;
+          for (let i = 0; i < 3 && sibling; i++) {
+            el = sibling.querySelector && sibling.querySelector(nameSelector);
+            if (el) break;
+            sibling = sibling.nextElementSibling;
+          }
+        }
+        if (el) return el;
       }
-      return document.querySelector(`[name="${locator.value}"]`);
+      return document.querySelector(nameSelector);
     }
 
     case 'data':
@@ -875,6 +960,101 @@ async function clearCommentMapping() {
       });
     });
   });
+}
+
+/** 可填字段高亮用的 CSS 类名（蓝色虚线框） */
+const COMMENT_FIELD_HIGHLIGHT_CLASS = 'blog-comment-field-highlight';
+
+/** 当前是否正处于「可填字段高亮」状态，用于点击切换清除 */
+let commentFieldHighlightActive = false;
+
+/** 当前箭头跳转指向的高亮字段索引（0-based），用于上/下箭头切换 */
+let commentFieldHighlightCurrentIndex = 0;
+
+/**
+ * 注入可填字段高亮样式（蓝色虚线框），仅注入一次
+ */
+function ensureCommentFieldHighlightStyle() {
+  if (document.getElementById('blog-comment-field-highlight-style')) return;
+  const style = document.createElement('style');
+  style.id = 'blog-comment-field-highlight-style';
+  style.textContent = `.${COMMENT_FIELD_HIGHLIGHT_CLASS} { outline: 2px dashed #2196F3; outline-offset: 2px; background: rgba(33, 150, 243, 0.06); }`;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+/**
+ * 清除页面上所有可填字段高亮
+ */
+function clearCommentFieldHighlight() {
+  document.querySelectorAll(`.${COMMENT_FIELD_HIGHLIGHT_CLASS}`).forEach((el) => {
+    el.classList.remove(COMMENT_FIELD_HIGHLIGHT_CLASS);
+  });
+  commentFieldHighlightActive = false;
+}
+
+/**
+ * 根据当前页评论识别缓存，在页面上对可填字段与提交按钮用蓝色虚线框进行可视化高亮。
+ * 若当前已在 high light 状态则先清除再返回 cleared。
+ * @returns {Promise<{ success: boolean, highlightedCount?: number, cleared?: boolean, error?: string }>}
+ */
+async function highlightOrClearCommentFieldsFromCache() {
+  if (commentFieldHighlightActive) {
+    clearCommentFieldHighlight();
+    return { success: true, cleared: true };
+  }
+
+  const cacheKey = getCommentCacheKey();
+  const cached = await getCachedCommentMapping(cacheKey);
+  if (!cached || !cached.mappings?.length) {
+    return { success: false, error: '当前页无缓存或无可填字段，请先识别表单' };
+  }
+
+  ensureCommentFieldHighlightStyle();
+  clearCommentFieldHighlight(); // 先清掉可能残留的旧高亮
+
+  const toHighlight = [];
+  for (const m of cached.mappings) {
+    if (!m.locator) continue;
+    const el = findElementByLocator(m.locator);
+    if (el) toHighlight.push(el);
+  }
+  if (cached.submitButton?.locator) {
+    const submitEl = findElementByLocator(cached.submitButton.locator);
+    if (submitEl) toHighlight.push(submitEl);
+  }
+
+  toHighlight.forEach((el) => el.classList.add(COMMENT_FIELD_HIGHLIGHT_CLASS));
+  commentFieldHighlightActive = true;
+  commentFieldHighlightCurrentIndex = 0;
+
+  // 将第一个可填字段滚动到可见区域
+  if (toHighlight.length > 0) {
+    toHighlight[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  return { success: true, highlightedCount: toHighlight.length };
+}
+
+/**
+ * 在已高亮的可填字段之间上/下跳转，滚动到对应蓝线框并尝试聚焦
+ * @param {number} delta 1=下一个，-1=上一个
+ * @returns {{ success: boolean, index?: number, total?: number, error?: string }}
+ */
+function jumpToHighlightedCommentField(delta) {
+  if (!commentFieldHighlightActive) {
+    return { success: false, error: '请先点击「可填字段」以标出高亮' };
+  }
+  const list = Array.from(document.querySelectorAll(`.${COMMENT_FIELD_HIGHLIGHT_CLASS}`));
+  if (list.length === 0) {
+    return { success: false, error: '未找到高亮字段' };
+  }
+  commentFieldHighlightCurrentIndex = (commentFieldHighlightCurrentIndex + delta + list.length) % list.length;
+  const el = list[commentFieldHighlightCurrentIndex];
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (el.focus && typeof el.focus === 'function') {
+    try { el.focus(); } catch (_) {}
+  }
+  return { success: true, index: commentFieldHighlightCurrentIndex, total: list.length };
 }
 
 /**

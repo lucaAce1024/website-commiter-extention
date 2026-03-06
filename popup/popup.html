@@ -124,9 +124,13 @@
           <span class="status-label">评论表单:</span>
           <span id="blogRecognitionStatus" class="status-value">检测中...</span>
         </div>
-        <div class="status-row">
+        <div id="blogFieldCountRow" class="status-row blog-field-count-clickable" title="点击在页面上用蓝色虚线框标出可填字段">
           <span class="status-label">可填字段:</span>
           <span id="blogFieldCount" class="status-value">-</span>
+          <span class="blog-field-nav-btns">
+            <button type="button" id="blogFieldPrevBtn" class="btn-arrow" title="上一个可填字段">↑</button>
+            <button type="button" id="blogFieldNextBtn" class="btn-arrow" title="下一个可填字段">↓</button>
+          </span>
         </div>
         <div id="blogSpamHint" class="hint hidden" style="color: var(--warning-color);">检测到验证项，将暂停自动提交</div>
       </div>
