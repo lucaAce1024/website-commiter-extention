@@ -98,6 +98,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'blogCommentGenerateAndFill') {
+    const startMs = Date.now();
     blogCommentGenerateAndFill({
       title: request.title,
       description: request.description,
@@ -108,8 +109,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       tabId: request.tabId,
       siteUrl: request.siteUrl
     })
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ success: false, error: error.message }));
+      .then((result) => {
+        sendResponse(result);
+        chrome.runtime.sendMessage({ action: 'blogCommentFlowComplete', response: result }).catch(() => {});
+      })
+      .catch((error) => {
+        const response = { success: false, error: error?.message || '操作失败', elapsedMs: Date.now() - startMs };
+        sendResponse(response);
+        chrome.runtime.sendMessage({ action: 'blogCommentFlowComplete', response }).catch(() => {});
+      });
     return true;
   } else if (request.action === 'verifyCommentSubmission') {
     verifyCommentSubmission(request.siteUrl)
@@ -1206,6 +1214,8 @@ async function recognizeCommentForm(useLlm = false) {
 async function blogCommentGenerateAndFill(opts) {
   const { title = '', description = '', h1 = '', siteId, autoSubmit = true, llmEnabled = false, tabId, siteUrl } = opts || {};
   const verifyOpts = tabId != null && siteUrl ? { tabId, siteUrl } : {};
+  const startMs = Date.now();
+  const elapsed = () => Date.now() - startMs;
   commentFormState.recognitionStatus = 'recognizing';
   commentFormState.domain = window.location.hostname;
 
@@ -1215,7 +1225,7 @@ async function blogCommentGenerateAndFill(opts) {
     while (!formMetadata.hasForm || !formMetadata.fields?.length) {
       if (scrollCount >= MAX_SCROLL_ATTEMPTS) {
         commentFormState.recognitionStatus = 'failed';
-        return { success: false, error: '找不到form表单' };
+        return { success: false, error: '找不到form表单', elapsedMs: elapsed() };
       }
       scrollPageToBottomAndWait();
       await new Promise(r => setTimeout(r, SCROLL_TO_BOTTOM_WAIT_MS));
@@ -1234,7 +1244,7 @@ async function blogCommentGenerateAndFill(opts) {
           else resolve(resp);
         });
       });
-      if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败' };
+      if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败', elapsedMs: elapsed() };
       commentFormState.fieldMappings = cached.mappings;
       commentFormState.submitButton = cached.submitButton;
       commentFormState.consentCheckboxes = cached.consentCheckboxes || null;
@@ -1244,7 +1254,7 @@ async function blogCommentGenerateAndFill(opts) {
       const spamResult = checkCommentSpamVerification();
       commentFormState.hasSpamVerification = spamResult.hasSpam;
       const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit, verifyOpts);
-      return { success: true, result: { ...fillResult, usedCache: true, method: 'cache', fieldCount: cached.mappings.length } };
+      return { success: true, result: { ...fillResult, usedCache: true, method: 'cache', fieldCount: cached.mappings.length, elapsedMs: elapsed() } };
     }
 
     if (llmEnabled) {
@@ -1255,9 +1265,9 @@ async function blogCommentGenerateAndFill(opts) {
           else resolve(resp);
         });
       });
-      if (!oneShotRes?.success) return { success: false, error: oneShotRes?.error || '一发请求失败' };
+      if (!oneShotRes?.success) return { success: false, error: oneShotRes?.error || '一发请求失败', elapsedMs: elapsed() };
       const { mappings, submitButton, comment } = oneShotRes.result;
-      if (!mappings?.length || !comment) return { success: false, error: '一发返回缺少 mappings 或 comment' };
+      if (!mappings?.length || !comment) return { success: false, error: '一发返回缺少 mappings 或 comment', elapsedMs: elapsed() };
       commentFormState.fieldMappings = mappings;
       commentFormState.submitButton = submitButton || null;
       const consentList = getCommentConsentCheckboxes();
@@ -1270,13 +1280,13 @@ async function blogCommentGenerateAndFill(opts) {
       commentFormState.hasSpamVerification = spamResult.hasSpam;
       await cacheCommentMapping(cacheKey, { mappings, submitButton, consentCheckboxes: commentFormState.consentCheckboxes });
       const fillResult = await fillCommentForm(siteId, comment, autoSubmit, verifyOpts);
-      return { success: true, result: { ...fillResult, usedCache: false, method: 'oneShot', fieldCount: mappings.length } };
+      return { success: true, result: { ...fillResult, usedCache: false, method: 'oneShot', fieldCount: mappings.length, elapsedMs: elapsed() } };
     }
 
     // 无缓存且 LLM 关闭：关键词识别 + 评论生成
     const rec = await recognizeCommentForm(false);
     if (rec.status !== 'success' || !rec.mappings?.length) {
-      return { success: false, error: rec.message || '评论表单识别失败' };
+      return { success: false, error: rec.message || '评论表单识别失败', elapsedMs: elapsed() };
     }
     const genRes = await new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description, h1 }, (resp) => {
@@ -1284,12 +1294,12 @@ async function blogCommentGenerateAndFill(opts) {
         else resolve(resp);
       });
     });
-    if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败' };
+    if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败', elapsedMs: elapsed() };
     const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit, verifyOpts);
-    return { success: true, result: { ...fillResult, usedCache: false, method: 'keyword', fieldCount: rec.fieldCount ?? 0 } };
+    return { success: true, result: { ...fillResult, usedCache: false, method: 'keyword', fieldCount: rec.fieldCount ?? 0, elapsedMs: elapsed() } };
   } catch (err) {
     commentFormState.recognitionStatus = 'failed';
-    return { success: false, error: err?.message || '操作失败' };
+    return { success: false, error: err?.message || '操作失败', elapsedMs: elapsed() };
   }
 }
 

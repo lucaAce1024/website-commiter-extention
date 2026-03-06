@@ -121,7 +121,8 @@ async function init() {
   syncBlogSiteSelect();
   showModePanel(currentMode);
 
-  // 若有「提交后自动验证」的结果（页面刷新后由 background 写入），展示并清除
+  // 恢复当前 URL 的 Blog 面板状态（运行状态栏、结果消息），再处理「提交后自动验证」结果
+  if (currentMode === 'blog') await restoreBlogPopupState();
   await tryShowLastVerifyResult();
 }
 
@@ -433,6 +434,58 @@ function getCommentCacheKeyForTab(tab) {
   } catch {
     return null;
   }
+}
+
+/** 按 URL 持久化的 Blog 面板状态 key 前缀（与需求文档 4.1 一致） */
+const BLOG_POPUP_STATE_PREFIX = 'blog_popup_state_';
+
+/**
+ * 将当前 Blog 面板的运行状态栏、结果消息写入 storage（per-URL），失焦后再打开可恢复
+ */
+function saveBlogPopupState() {
+  const cacheKey = getCommentCacheKeyForTab(currentTab);
+  if (!cacheKey) return;
+  const statusLineText = elements.blogStatusLine?.textContent?.trim() || '';
+  const statusMessageVisible = elements.blogStatusMessage && !elements.blogStatusMessage.classList.contains('hidden');
+  const statusMessageText = statusMessageVisible ? (elements.blogStatusText?.textContent?.trim() || '') : '';
+  let statusMessageType = 'info';
+  if (statusMessageVisible && elements.blogStatusMessage?.className) {
+    if (elements.blogStatusMessage.className.includes('success')) statusMessageType = 'success';
+    else if (elements.blogStatusMessage.className.includes('warning')) statusMessageType = 'warning';
+    else if (elements.blogStatusMessage.className.includes('error')) statusMessageType = 'error';
+  }
+  const payload = { statusLineText, statusMessageText, statusMessageType };
+  chrome.storage.local.set({ [BLOG_POPUP_STATE_PREFIX + cacheKey]: payload }).catch(() => {});
+}
+
+/**
+ * 从 storage 恢复当前 URL 的 Blog 面板状态（仅写 DOM，不触发 save）
+ */
+async function restoreBlogPopupState() {
+  if (currentMode !== 'blog') return;
+  const cacheKey = getCommentCacheKeyForTab(currentTab);
+  if (!cacheKey) return;
+  try {
+    const key = BLOG_POPUP_STATE_PREFIX + cacheKey;
+    const stored = await chrome.storage.local.get(key);
+    const state = stored[key];
+    if (!state || typeof state !== 'object') return;
+    if (state.statusLineText && elements.blogStatusLine) {
+      elements.blogStatusLine.textContent = state.statusLineText;
+      elements.blogStatusLine.classList.remove('hidden');
+      elements.blogStatusLine.scrollLeft = 0;
+    } else if (elements.blogStatusLine) {
+      elements.blogStatusLine.textContent = '';
+      elements.blogStatusLine.classList.add('hidden');
+    }
+    if (state.statusMessageText && elements.blogStatusText && elements.blogStatusMessage) {
+      elements.blogStatusText.textContent = state.statusMessageText;
+      elements.blogStatusMessage.className = 'status-message status-message-above-actions ' + (state.statusMessageType || 'info');
+      elements.blogStatusMessage.classList.remove('hidden');
+    } else if (elements.blogStatusMessage) {
+      elements.blogStatusMessage.classList.add('hidden');
+    }
+  } catch (_) {}
 }
 
 async function updateBlogClearCacheState() {
@@ -763,6 +816,7 @@ function setupEventListeners() {
       if (tab.dataset.mode === 'blog') {
         syncBlogSiteSelect();
         await getCommentPageState();
+        await restoreBlogPopupState();
         await tryShowLastVerifyResult();
       }
     });
@@ -965,10 +1019,12 @@ function showBlogMessage(message, type = 'info') {
   if (type === 'success' || type === 'warning') {
     setTimeout(hideBlogMessage, 5000);
   }
+  saveBlogPopupState();
 }
 
 function hideBlogMessage() {
   if (elements.blogStatusMessage) elements.blogStatusMessage.classList.add('hidden');
+  saveBlogPopupState();
 }
 
 /**
@@ -980,6 +1036,7 @@ function setBlogStatusLine(text) {
   elements.blogStatusLine.textContent = text || '';
   elements.blogStatusLine.classList.toggle('hidden', !text);
   if (text) elements.blogStatusLine.scrollLeft = 0;
+  saveBlogPopupState();
 }
 
 // Initialize on load

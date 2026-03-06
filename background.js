@@ -5,6 +5,55 @@ const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
 /** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
 let pendingVerifyByTab = {};
 const VERIFY_AFTER_LOAD_DELAY_MS = 2500;
+/** 与 popup 一致的 Blog 面板状态 key 前缀（per-URL） */
+const BLOG_POPUP_STATE_PREFIX = 'blog_popup_state_';
+
+function getBlogPopupStateCacheKey(url) {
+  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) return null;
+  try {
+    const u = new URL(url);
+    return 'blog_' + u.hostname + u.pathname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 根据 blogCommentGenerateAndFill 的响应构建与 popup 一致的 statusLine + message（popup 关闭后由 background 写入 storage）
+ */
+function buildBlogPopupStateFromResponse(response) {
+  if (!response || typeof response !== 'object') return null;
+  const elapsedMs = response.elapsedMs ?? response.result?.elapsedMs ?? 0;
+  const elapsedSec = (elapsedMs / 1000).toFixed(1);
+  if (response.success && response.result) {
+    const r = response.result;
+    const totalFields = r.fieldCount ?? r.filledCount ?? 0;
+    const allFilled = totalFields > 0 && r.filledCount >= totalFields;
+    let checkText = '';
+    if (allFilled && !r.hasSpamVerification && r.clickedSubmit) {
+      checkText = '完整检查：已填充全部字段并已自动提交。';
+    } else if (allFilled && r.hasSpamVerification) {
+      checkText = '完整检查：已填充全部字段，因检测到验证项未自动提交。';
+    } else if (allFilled) {
+      checkText = '完整检查：已填充全部字段，可手动提交。';
+    } else {
+      checkText = `完整检查：已填充 ${r.filledCount}/${totalFields} 个字段，未完全填充。`;
+    }
+    const methodHint = r.method === 'oneShot' ? '一发' : r.method === 'cache' ? '缓存' : '关键词';
+    const statusLineText = `耗时 ${elapsedSec}s (${methodHint}) · 已填充 ${r.filledCount} 个字段${r.consentCheckboxesChecked > 0 ? `，已勾选 ${r.consentCheckboxesChecked} 个选项` : ''} · ${checkText}`;
+    let statusMessageText = `已填充 ${r.filledCount} 个字段。`;
+    if (r.consentCheckboxesChecked > 0) statusMessageText += ` 已勾选 ${r.consentCheckboxesChecked} 个选项。`;
+    if (r.hasSpamVerification) {
+      statusMessageText += ' 检测到验证项，请手动完成验证后点击提交。';
+    } else if (r.clickedSubmit) {
+      statusMessageText += ' 已自动点击提交。页面刷新后将自动验证本站链接是否出现，再次打开 popup 可查看验证结果。';
+    }
+    return { statusLineText, statusMessageText, statusMessageType: 'success' };
+  }
+  const statusLineText = `失败 · 已耗时 ${elapsedSec}s`;
+  const statusMessageText = response.error || '操作失败';
+  return { statusLineText, statusMessageText, statusMessageType: 'error' };
+}
 const FILL_FIELD_ITEMS = [
   { id: 'siteUrl', title: '网站 URL' },
   { id: 'siteName', title: '网站名称' },
@@ -165,6 +214,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: true });
     } else {
       sendResponse({ success: false });
+    }
+    return false;
+  } else if (request.action === 'blogCommentFlowComplete') {
+    // 流程在 content 结束时同步状态到 storage，popup 关闭后再打开也能看到最终状态
+    const tabId = sender.tab?.id;
+    const response = request.response;
+    if (tabId != null && response) {
+      chrome.tabs.get(tabId).then((tab) => {
+        const cacheKey = getBlogPopupStateCacheKey(tab?.url);
+        if (!cacheKey) return;
+        const state = buildBlogPopupStateFromResponse(response);
+        if (state) chrome.storage.local.set({ [BLOG_POPUP_STATE_PREFIX + cacheKey]: state }).catch(() => {});
+      }).catch(() => {});
     }
     return false;
   }
