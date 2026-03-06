@@ -92,7 +92,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'fillCommentForm') {
-    fillCommentForm(request.siteId, request.commentText, request.autoSubmit)
+    const verifyOpts = { tabId: request.tabId, siteUrl: request.siteUrl };
+    fillCommentForm(request.siteId, request.commentText, request.autoSubmit, verifyOpts)
       .then(result => sendResponse({ success: true, result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
@@ -103,7 +104,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       h1: request.h1,
       siteId: request.siteId,
       autoSubmit: request.autoSubmit,
-      llmEnabled: request.llmEnabled
+      llmEnabled: request.llmEnabled,
+      tabId: request.tabId,
+      siteUrl: request.siteUrl
     })
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -1197,11 +1200,12 @@ async function recognizeCommentForm(useLlm = false) {
 
 /**
  * 一发流程入口：有缓存时仅调 AI 评论生成 + 缓存定位；无缓存且 LLM 开启时一发请求（字段映射+评论），否则关键词识别+评论生成。
- * @param {{ title: string, description: string, h1: string, siteId: string, autoSubmit: boolean, llmEnabled: boolean }} opts
+ * @param {{ title: string, description: string, h1: string, siteId: string, autoSubmit: boolean, llmEnabled: boolean, tabId?: number, siteUrl?: string }} opts
  * @returns {Promise<{ success: boolean, result?: object, error?: string }>}
  */
 async function blogCommentGenerateAndFill(opts) {
-  const { title = '', description = '', h1 = '', siteId, autoSubmit = true, llmEnabled = false } = opts || {};
+  const { title = '', description = '', h1 = '', siteId, autoSubmit = true, llmEnabled = false, tabId, siteUrl } = opts || {};
+  const verifyOpts = tabId != null && siteUrl ? { tabId, siteUrl } : {};
   commentFormState.recognitionStatus = 'recognizing';
   commentFormState.domain = window.location.hostname;
 
@@ -1239,7 +1243,7 @@ async function blogCommentGenerateAndFill(opts) {
       commentFormState.hasForm = true;
       const spamResult = checkCommentSpamVerification();
       commentFormState.hasSpamVerification = spamResult.hasSpam;
-      const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit);
+      const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit, verifyOpts);
       return { success: true, result: { ...fillResult, usedCache: true, method: 'cache', fieldCount: cached.mappings.length } };
     }
 
@@ -1265,7 +1269,7 @@ async function blogCommentGenerateAndFill(opts) {
       const spamResult = checkCommentSpamVerification();
       commentFormState.hasSpamVerification = spamResult.hasSpam;
       await cacheCommentMapping(cacheKey, { mappings, submitButton, consentCheckboxes: commentFormState.consentCheckboxes });
-      const fillResult = await fillCommentForm(siteId, comment, autoSubmit);
+      const fillResult = await fillCommentForm(siteId, comment, autoSubmit, verifyOpts);
       return { success: true, result: { ...fillResult, usedCache: false, method: 'oneShot', fieldCount: mappings.length } };
     }
 
@@ -1281,7 +1285,7 @@ async function blogCommentGenerateAndFill(opts) {
       });
     });
     if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败' };
-    const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit);
+    const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit, verifyOpts);
     return { success: true, result: { ...fillResult, usedCache: false, method: 'keyword', fieldCount: rec.fieldCount ?? 0 } };
   } catch (err) {
     commentFormState.recognitionStatus = 'failed';
@@ -1294,8 +1298,9 @@ async function blogCommentGenerateAndFill(opts) {
  * @param {string} siteId - 站点 ID
  * @param {string} commentText - 评论文本
  * @param {boolean} [autoSubmit=true] - 是否在无验证时自动点击提交（由 popup「允许自动提交」控制，未传时视为 true 以兼容旧调用）
+ * @param {{ tabId?: number, siteUrl?: string }} [opts] - 可选；若提供且本次点击了提交，会通知 background 在页面刷新后自动验证本站链接
  */
-async function fillCommentForm(siteId, commentText, autoSubmit = true) {
+async function fillCommentForm(siteId, commentText, autoSubmit = true, opts = {}) {
   const siteData = await getSiteData(siteId);
   if (!siteData) throw new Error('未找到站点或未选择站点');
 
@@ -1364,6 +1369,9 @@ async function fillCommentForm(siteId, commentText, autoSubmit = true) {
       if (btn && isElementVisible(btn)) {
         simulateClick(btn);
         clickedSubmit = true;
+        if (clickedSubmit && opts.tabId != null && opts.siteUrl) {
+          chrome.runtime.sendMessage({ action: 'scheduleVerifyAfterLoad', tabId: opts.tabId, siteUrl: opts.siteUrl }).catch(() => {});
+        }
       }
     } catch (_) {}
   }

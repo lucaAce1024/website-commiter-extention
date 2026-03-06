@@ -120,6 +120,25 @@ async function init() {
   // 同步 Blog 面板的站点下拉与当前模式显示
   syncBlogSiteSelect();
   showModePanel(currentMode);
+
+  // 若有「提交后自动验证」的结果（页面刷新后由 background 写入），展示并清除
+  await tryShowLastVerifyResult();
+}
+
+/**
+ * 若当前 tab 存在上次「提交后自动验证」结果，在 Blog 面板展示并清除 storage
+ */
+async function tryShowLastVerifyResult() {
+  if (!currentTab?.id || currentMode !== 'blog') return;
+  try {
+    const key = 'lastVerifyResult_' + currentTab.id;
+    const stored = await chrome.storage.session.get(key);
+    const result = stored[key];
+    if (result && (result.message || result.success !== undefined)) {
+      showBlogMessage(result.message || (result.success ? '已在页面中找到您的站点链接' : '未在页面中检测到您的站点链接'), result.success ? 'success' : 'warning');
+      await chrome.storage.session.remove(key);
+    }
+  } catch (_) {}
 }
 
 /**
@@ -739,11 +758,12 @@ function setupEventListeners() {
 
   // Mode tabs
   elements.modeTabs?.forEach((tab) => {
-    tab.addEventListener('click', () => {
+    tab.addEventListener('click', async () => {
       showModePanel(tab.dataset.mode);
       if (tab.dataset.mode === 'blog') {
         syncBlogSiteSelect();
-        getCommentPageState();
+        await getCommentPageState();
+        await tryShowLastVerifyResult();
       }
     });
   });
@@ -798,6 +818,7 @@ function setupEventListeners() {
       const statusHint = llmEnabled ? 'AI 评论生成与表单识别中...' : '评论生成与表单识别中...';
       setBlogStatusLine(statusHint);
 
+      const site = sites.find((s) => s.id === currentSiteId);
       const res = await chrome.tabs.sendMessage(currentTab.id, {
         action: 'blogCommentGenerateAndFill',
         title,
@@ -805,7 +826,9 @@ function setupEventListeners() {
         h1,
         siteId: currentSiteId,
         autoSubmit: elements.autoSubmit?.checked ?? false,
-        llmEnabled
+        llmEnabled,
+        tabId: currentTab.id,
+        siteUrl: site?.siteUrl
       });
 
       const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -838,15 +861,7 @@ function setupEventListeners() {
       if (r.hasSpamVerification) {
         msg += ' 检测到验证项，请手动完成验证后点击提交。';
       } else if (r.clickedSubmit) {
-        msg += ' 已自动点击提交。';
-        const site = sites.find((s) => s.id === currentSiteId);
-        if (site?.siteUrl) {
-          setTimeout(async () => {
-            const verifyRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
-            if (verifyRes?.success && verifyRes.result?.success) showBlogMessage(verifyRes.result.message, 'success');
-            else showBlogMessage(verifyRes?.result?.message || '未检测到本站链接', 'warning');
-          }, 6000);
-        }
+        msg += ' 已自动点击提交。页面刷新后将自动验证本站链接是否出现，再次打开 popup 可查看验证结果。';
       }
       showBlogMessage(msg, 'success');
     } catch (err) {

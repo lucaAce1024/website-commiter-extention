@@ -2,6 +2,9 @@
 // Handles extension lifecycle and cross-tab communication
 
 const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
+/** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
+let pendingVerifyByTab = {};
+const VERIFY_AFTER_LOAD_DELAY_MS = 2500;
 const FILL_FIELD_ITEMS = [
   { id: 'siteUrl', title: '网站 URL' },
   { id: 'siteName', title: '网站名称' },
@@ -154,7 +157,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => safeSend({ success: true, result }))
       .catch(error => safeSend({ success: false, error: error.message }));
     return true;
+  } else if (request.action === 'scheduleVerifyAfterLoad') {
+    // 评论提交后：在「该 tab 下一次加载完成」时自动执行验证（用于提交后页面刷新的场景）
+    const { tabId, siteUrl } = request;
+    if (tabId != null && siteUrl) {
+      pendingVerifyByTab[tabId] = { siteUrl };
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false });
+    }
+    return false;
   }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== 'complete') return;
+  const pending = pendingVerifyByTab[tabId];
+  if (!pending) return;
+  delete pendingVerifyByTab[tabId];
+  const siteUrl = pending.siteUrl;
+  setTimeout(() => {
+    chrome.tabs.sendMessage(tabId, { action: 'verifyCommentSubmission', siteUrl })
+      .then((response) => {
+        if (response?.success && response.result) {
+          chrome.storage.session.set({ ['lastVerifyResult_' + tabId]: response.result });
+        }
+      })
+      .catch(() => {});
+  }, VERIFY_AFTER_LOAD_DELAY_MS);
 });
 
 /**
