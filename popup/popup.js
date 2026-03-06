@@ -783,7 +783,7 @@ function setupEventListeners() {
             const verifyRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'verifyCommentSubmission', siteUrl: site.siteUrl });
             if (verifyRes?.success && verifyRes.result?.success) showBlogMessage(verifyRes.result.message, 'success');
             else showBlogMessage(verifyRes?.result?.message || '未检测到本站链接', 'warning');
-          }, 4000);
+          }, 6000);
         }
       }
       showBlogMessage(msg, 'success');

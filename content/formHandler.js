@@ -1123,10 +1123,34 @@ async function fillCommentForm(siteId, commentText) {
 }
 
 /**
- * 提交后验证：重新读取页面，查找可点击的、指向 siteUrl 的链接
+ * 等待页面刷新并加载完成（readyState === 'complete'，再预留一段时间给动态内容）
+ */
+function waitForPageLoad() {
+  const LOAD_WAIT_MS = 25000;
+  const EXTRA_MS = 2000;
+  return new Promise((resolve) => {
+    if (document.readyState === 'complete') {
+      setTimeout(resolve, EXTRA_MS);
+      return;
+    }
+    const onLoad = () => {
+      clearTimeout(t);
+      document.removeEventListener('load', onLoad);
+      setTimeout(resolve, EXTRA_MS);
+    };
+    document.addEventListener('load', onLoad);
+    const t = setTimeout(() => {
+      document.removeEventListener('load', onLoad);
+      resolve();
+    }, LOAD_WAIT_MS);
+  });
+}
+
+/**
+ * 提交后验证：等待页面刷新并加载完成后，查找可点击的、指向 siteUrl 的链接
  */
 async function verifyCommentSubmission(siteUrl) {
-  await new Promise(r => setTimeout(r, 3000));
+  await waitForPageLoad();
   const normalizedSite = normalizeUrlForCompare(siteUrl);
   if (!normalizedSite) return { success: false, message: '无效的站点 URL' };
 

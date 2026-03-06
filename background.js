@@ -158,9 +158,11 @@ function aiLogToPage(tabId, level, ...args) {
 const AI_REQUEST_TIMEOUT_MS = 15000;
 /** AI 请求最大重试次数（不含首次） */
 const AI_REQUEST_MAX_RETRIES = 2;
+/** 重试前等待时长（避免 429 等限流），毫秒 */
+const AI_RETRY_DELAY_MS = 30000;
 
 /**
- * 带超时与重试的 fetch：单次 15s 超时，最多重试 3 次，全部失败则抛出提示用户检查接口
+ * 带超时与重试的 fetch：单次 15s 超时，失败或 429 时等待 30s 再重试，全部失败则抛出提示用户检查接口
  * @param {string} url
  * @param {RequestInit} init
  * @param {{ timeoutMs?: number, maxRetries?: number }} opts
@@ -169,6 +171,7 @@ const AI_REQUEST_MAX_RETRIES = 2;
 async function fetchLlmWithRetry(url, init, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? AI_REQUEST_TIMEOUT_MS;
   const maxRetries = opts.maxRetries ?? AI_REQUEST_MAX_RETRIES;
+  const retryDelayMs = opts.retryDelayMs ?? AI_RETRY_DELAY_MS;
   let lastError;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const controller = new AbortController();
@@ -176,12 +179,24 @@ async function fetchLlmWithRetry(url, init, opts = {}) {
     try {
       const response = await fetch(url, { ...init, signal: controller.signal });
       clearTimeout(timeoutId);
-      return response;
+      if (response.ok) return response;
+      if (response.status === 429 && attempt <= maxRetries) {
+        await response.text();
+        await new Promise(r => setTimeout(r, retryDelayMs));
+        continue;
+      }
+      const errText = await response.text();
+      lastError = new Error(`API 错误 ${response.status}: ${errText.slice(0, 200)}`);
+      if (attempt <= maxRetries) {
+        await new Promise(r => setTimeout(r, retryDelayMs));
+        continue;
+      }
+      throw lastError;
     } catch (e) {
       clearTimeout(timeoutId);
       lastError = e;
       if (attempt <= maxRetries) {
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, retryDelayMs));
       }
     }
   }
