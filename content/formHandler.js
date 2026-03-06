@@ -100,6 +100,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     blogCommentGenerateAndFill({
       title: request.title,
       description: request.description,
+      h1: request.h1,
       siteId: request.siteId,
       autoSubmit: request.autoSubmit,
       llmEnabled: request.llmEnabled
@@ -119,7 +120,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const title = document.title || '';
     const descEl = document.querySelector('meta[name="description"]');
     const description = (descEl && descEl.getAttribute('content')) || '';
-    sendResponse({ success: true, title, description });
+    const h1El = document.querySelector('h1');
+    const h1 = (h1El && h1El.textContent && h1El.textContent.trim()) || '';
+    sendResponse({ success: true, title, description, h1 });
   }
 });
 
@@ -1194,11 +1197,11 @@ async function recognizeCommentForm(useLlm = false) {
 
 /**
  * 一发流程入口：有缓存时仅调 AI 评论生成 + 缓存定位；无缓存且 LLM 开启时一发请求（字段映射+评论），否则关键词识别+评论生成。
- * @param {{ title: string, description: string, siteId: string, autoSubmit: boolean, llmEnabled: boolean }} opts
+ * @param {{ title: string, description: string, h1: string, siteId: string, autoSubmit: boolean, llmEnabled: boolean }} opts
  * @returns {Promise<{ success: boolean, result?: object, error?: string }>}
  */
 async function blogCommentGenerateAndFill(opts) {
-  const { title = '', description = '', siteId, autoSubmit = true, llmEnabled = false } = opts || {};
+  const { title = '', description = '', h1 = '', siteId, autoSubmit = true, llmEnabled = false } = opts || {};
   commentFormState.recognitionStatus = 'recognizing';
   commentFormState.domain = window.location.hostname;
 
@@ -1222,7 +1225,7 @@ async function blogCommentGenerateAndFill(opts) {
     if (cached && cached.mappings?.length > 0) {
       // 有缓存：仅 AI 评论生成，字段用缓存
       const genRes = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description }, (resp) => {
+        chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description, h1 }, (resp) => {
           if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
           else resolve(resp);
         });
@@ -1243,7 +1246,7 @@ async function blogCommentGenerateAndFill(opts) {
     if (llmEnabled) {
       // 无缓存且 LLM 开启：一发请求
       const oneShotRes = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: 'blogCommentOneShot', formMetadata, title, description }, (resp) => {
+        chrome.runtime.sendMessage({ action: 'blogCommentOneShot', formMetadata, title, description, h1 }, (resp) => {
           if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
           else resolve(resp);
         });
@@ -1272,7 +1275,7 @@ async function blogCommentGenerateAndFill(opts) {
       return { success: false, error: rec.message || '评论表单识别失败' };
     }
     const genRes = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description }, (resp) => {
+      chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description, h1 }, (resp) => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
         else resolve(resp);
       });

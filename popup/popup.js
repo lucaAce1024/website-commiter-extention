@@ -793,6 +793,7 @@ function setupEventListeners() {
       const metaRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'getPageMetadata' });
       const title = metaRes?.title ?? '';
       const description = metaRes?.description ?? '';
+      const h1 = metaRes?.h1 ?? '';
 
       const statusHint = llmEnabled ? 'AI 评论生成与表单识别中...' : '评论生成与表单识别中...';
       setBlogStatusLine(statusHint);
@@ -801,6 +802,7 @@ function setupEventListeners() {
         action: 'blogCommentGenerateAndFill',
         title,
         description,
+        h1,
         siteId: currentSiteId,
         autoSubmit: elements.autoSubmit?.checked ?? false,
         llmEnabled

@@ -116,7 +116,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.warn('[Background] sendResponse 已关闭:', e.message);
       }
     };
-    handleGenerateBlogComment(request.title, request.description)
+    handleGenerateBlogComment(request.title, request.description, request.h1)
       .then(text => safeSend({ success: true, comment: text }))
       .catch(error => safeSend({ success: false, error: error.message }));
     return true;
@@ -150,7 +150,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.warn('[Background] sendResponse 已关闭:', e.message);
       }
     };
-    handleBlogCommentOneShot(request.formMetadata, request.title, request.description, tabId)
+    handleBlogCommentOneShot(request.formMetadata, request.title, request.description, request.h1, tabId)
       .then(result => safeSend({ success: true, result }))
       .catch(error => safeSend({ success: false, error: error.message }));
     return true;
@@ -484,8 +484,8 @@ function parseAIResponse(content, formMetadata) {
 }
 
 // ---------- Blog Comment: 评论内容生成 ----------
-const BLOG_COMMENT_SYSTEM = 'You write natural blog comments in English. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation. Length must be 500–600 characters.';
-const BLOG_COMMENT_USER_PREFIX = 'Write one natural, friendly comment in English. Length: 500 to 600 characters (strict). Only output the single line of comment.\n\nTitle: ';
+const BLOG_COMMENT_SYSTEM = 'You write natural blog comments. Use the SAME language as the page content (title, description, H1): if they are in English, write in English; if in Slovenian, write in Slovenian; if in Chinese, write in Chinese; etc. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation. Comment length: at least 500 characters, at most 600 characters (strict).';
+const BLOG_COMMENT_USER_PREFIX = 'Write one natural, friendly comment in the SAME language as the Title, Description, and H1 below (match their language). Comment length: at least 500 characters, at most 600 characters (strict). Only output the single line of comment.\n\nTitle: ';
 const BLOG_COMMENT_USER_SUFFIX = '\n\nDescription: ';
 
 /**
@@ -562,13 +562,14 @@ function parseBlogCommentResponse(data) {
 }
 
 /**
- * 根据页面 title/description 调用 LLM 生成 500–600 字符英文评论
+ * 根据页面 title、description、h1 调用 LLM 生成 500–600 字符英文评论
  * 控制台会打印请求/响应日志，便于调试（扩展 Service Worker 控制台）
  * @param {string} title - document.title
  * @param {string} description - meta description
+ * @param {string} [h1] - 本页第一个 h1 标签的文本
  * @returns {Promise<string>} 评论文本
  */
-async function handleGenerateBlogComment(title, description) {
+async function handleGenerateBlogComment(title, description, h1 = '') {
   const log = (...a) => console.log('[Background][BlogComment]', ...a);
   const logWarn = (...a) => console.warn('[Background][BlogComment]', ...a);
   const logErr = (...a) => console.error('[Background][BlogComment]', ...a);
@@ -580,7 +581,9 @@ async function handleGenerateBlogComment(title, description) {
     throw new Error('LLM 未启用或 API Key 未配置，请在设置中配置后重试');
   }
 
-  const userContent = BLOG_COMMENT_USER_PREFIX + (title || '(no title)') + BLOG_COMMENT_USER_SUFFIX + (description || '(no description)');
+  const userContent =
+    BLOG_COMMENT_USER_PREFIX + (title || '(no title)') + BLOG_COMMENT_USER_SUFFIX + (description || '(no description)') +
+    '\n\nH1 (page heading): ' + (h1 && h1.trim() ? h1.trim() : '(no h1)');
 
   const endpoint = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
   const requestBody = {
@@ -713,7 +716,7 @@ function parseCommentFormAIResponse(content, formMetadata) {
 /**
  * 一发请求：构建「字段映射 + 评论生成」统一 prompt，要求返回 JSON 含 mappings、submitButtonFieldIndex、comment
  */
-function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, description) {
+function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, description, h1 = '') {
   const standardList = BLOG_COMMENT_STANDARD_FIELDS.join(', ');
   const multiLangInstruction = `The form labels/placeholders may be in ANY language (e.g. Slovenian, Czech, Chinese, German). Before mapping, interpret each label in English: e.g. "Spletišče" = website → commentWebsite; "Ime" / "Jméno" = name → commentName; "E-pošta" / "Notif. e-mail" = email → commentEmail; "Komentar" / "Komentář" = comment body → comment. Then map to exactly one of the standard types below.`;
   const formHtml = formMetadata?.formHtml;
@@ -721,10 +724,12 @@ function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, des
     ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nMultilingual: ${multiLangInstruction}\n\nStandard types (use exactly): ${standardList}\n  - comment: the main comment/feedback text (usually a textarea)\n  - commentName: commenter's name\n  - commentEmail: commenter's email\n  - commentWebsite: commenter's website URL\n\nHTML:\n${formHtml}`
     : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMultilingual: ${multiLangInstruction}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button (e.g. "Post comment", "Objavi komentar", "Submit").`;
 
-  const commentPart = `Also, based on the following page title and description, write one short, natural, friendly comment in English (about 200 characters). Only the comment text, no quotes or explanation.
+  const h1Text = h1 && h1.trim() ? h1.trim() : '(no h1)';
+  const commentPart = `Also, based on the following page title, description, and H1 heading, write one natural, friendly comment. Comment length: at least 500 characters, at most 600 characters (strict). Use the SAME language as the title/description/H1: if they are in English, write in English; if in another language (e.g. Slovenian, Czech, Chinese), write in that language. Only the comment text, no quotes or explanation.
 
 Title: ${title || '(no title)'}
-Description: ${description || '(no description)'}`;
+Description: ${description || '(no description)'}
+H1 (page heading): ${h1Text}`;
 
   return `${formPart}
 
@@ -758,7 +763,7 @@ function parseBlogCommentOneShotResponse(content, formMetadata) {
  * 一发请求：一次 LLM 调用同时返回字段映射 + 提交按钮 + 评论文本
  * @returns {Promise<{ mappings: Array, submitButton: object|null, comment: string }>}
  */
-async function handleBlogCommentOneShot(formMetadata, title, description, tabId) {
+async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '', tabId) {
   const log = (...a) => console.log('[Background][BlogComment OneShot]', ...a);
   const logErr = (...a) => console.error('[Background][BlogComment OneShot]', ...a);
   const pageLog = (tabId != null) ? (...a) => aiLogToPage(tabId, 'log', ...a) : () => {};
@@ -771,13 +776,13 @@ async function handleBlogCommentOneShot(formMetadata, title, description, tabId)
   }
 
   const formDescription = buildCompactFormDescription(formMetadata);
-  const userContent = buildBlogCommentOneShotPrompt(formDescription, formMetadata, title || '', description || '');
+  const userContent = buildBlogCommentOneShotPrompt(formDescription, formMetadata, title || '', description || '', h1 || '');
 
   const endpoint = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
   const requestBody = {
     model: llmConfig.model || 'gpt-3.5-turbo',
     messages: [
-      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language and write brief blog comments in English. Map form fields to standard types (comment, commentName, commentEmail, commentWebsite), identify the submit button index, and generate one short comment. Respond only with a single JSON object.' },
+      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language. Map form fields to standard types (comment, commentName, commentEmail, commentWebsite), identify the submit button index, and generate one blog comment in the SAME language as the page title/description/H1. The comment in your JSON must be at least 500 characters and at most 600 characters (strict). Respond only with a single JSON object.' },
       { role: 'user', content: userContent }
     ],
     stream: false,
