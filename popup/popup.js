@@ -510,11 +510,16 @@ async function updateBlogClearCacheState() {
   const mappings = result.blogCommentFieldMappings || {};
   const cached = mappings[cacheKey];
   const hasCache = !!(cached && (cached.mappings?.length || (Array.isArray(cached) && cached.length)));
+  const cacheFieldCount = hasCache && cached ? (cached.mappings?.length ?? (Array.isArray(cached) ? cached.length : 0)) : 0;
   elements.blogClearCacheBtn.disabled = !hasCache;
   elements.blogClearCacheBtn.classList.toggle('blog-cache-has', hasCache);
   elements.blogFieldCount?.classList.toggle('blog-field-count-has-cache', hasCache);
   if (elements.blogFieldPrevBtn) elements.blogFieldPrevBtn.disabled = !hasCache;
   if (elements.blogFieldNextBtn) elements.blogFieldNextBtn.disabled = !hasCache;
+  // 有缓存时用缓存中的字段数同步显示，避免 content 未注入或 state 未同步时显示 0 个字段
+  if (hasCache && elements.blogFieldCount) {
+    elements.blogFieldCount.textContent = cacheFieldCount + ' 个字段';
+  }
   if (elements.blogCacheHint) {
     if (hasCache) {
       elements.blogCacheHint.textContent = '当前页已有缓存';

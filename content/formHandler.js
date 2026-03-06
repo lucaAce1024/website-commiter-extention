@@ -962,6 +962,9 @@ async function clearCommentMapping() {
   });
 }
 
+/** 验证本次提交：找到的本站链接高亮用的 CSS 类名（黄色虚线框） */
+const VERIFY_LINK_HIGHLIGHT_CLASS = 'blog-verify-link-highlight';
+
 /** 可填字段高亮用的 CSS 类名（蓝色虚线框） */
 const COMMENT_FIELD_HIGHLIGHT_CLASS = 'blog-comment-field-highlight';
 
@@ -972,13 +975,38 @@ let commentFieldHighlightActive = false;
 let commentFieldHighlightCurrentIndex = 0;
 
 /**
+ * 注入「验证本次提交」找到链接的高亮样式（黄色虚线框），仅注入一次
+ */
+function ensureVerifyLinkHighlightStyle() {
+  if (document.getElementById('blog-verify-link-highlight-style')) return;
+  const style = document.createElement('style');
+  style.id = 'blog-verify-link-highlight-style';
+  style.textContent = `.${VERIFY_LINK_HIGHLIGHT_CLASS} { outline: 2px dashed #f59e0b; outline-offset: 2px; background: rgba(245, 158, 11, 0.12); }`;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+/**
+ * 清除页面上「验证本次提交」的链接高亮
+ */
+function clearVerifyLinkHighlight() {
+  document.querySelectorAll(`.${VERIFY_LINK_HIGHLIGHT_CLASS}`).forEach((el) => {
+    el.classList.remove(VERIFY_LINK_HIGHLIGHT_CLASS);
+  });
+}
+
+/**
  * 注入可填字段高亮样式（蓝色虚线框），仅注入一次
  */
+/** 当前箭头指向的字段使用的 class（实线加粗蓝框） */
+const COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS = 'blog-comment-field-highlight-current';
+
 function ensureCommentFieldHighlightStyle() {
   if (document.getElementById('blog-comment-field-highlight-style')) return;
   const style = document.createElement('style');
   style.id = 'blog-comment-field-highlight-style';
-  style.textContent = `.${COMMENT_FIELD_HIGHLIGHT_CLASS} { outline: 2px dashed #2196F3; outline-offset: 2px; background: rgba(33, 150, 243, 0.06); }`;
+  style.textContent =
+    `.${COMMENT_FIELD_HIGHLIGHT_CLASS} { outline: 2px dashed #2196F3; outline-offset: 2px; background: rgba(33, 150, 243, 0.06); }` +
+    `.${COMMENT_FIELD_HIGHLIGHT_CLASS}.${COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS} { outline: 3px solid #2196F3; outline-offset: 2px; background: rgba(33, 150, 243, 0.12); }`;
   (document.head || document.documentElement).appendChild(style);
 }
 
@@ -987,7 +1015,7 @@ function ensureCommentFieldHighlightStyle() {
  */
 function clearCommentFieldHighlight() {
   document.querySelectorAll(`.${COMMENT_FIELD_HIGHLIGHT_CLASS}`).forEach((el) => {
-    el.classList.remove(COMMENT_FIELD_HIGHLIGHT_CLASS);
+    el.classList.remove(COMMENT_FIELD_HIGHLIGHT_CLASS, COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS);
   });
   commentFieldHighlightActive = false;
 }
@@ -1024,6 +1052,7 @@ async function highlightOrClearCommentFieldsFromCache() {
   }
 
   toHighlight.forEach((el) => el.classList.add(COMMENT_FIELD_HIGHLIGHT_CLASS));
+  if (toHighlight.length > 0) toHighlight[0].classList.add(COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS);
   commentFieldHighlightActive = true;
   commentFieldHighlightCurrentIndex = 0;
 
@@ -1048,8 +1077,10 @@ function jumpToHighlightedCommentField(delta) {
   if (list.length === 0) {
     return { success: false, error: '未找到高亮字段' };
   }
+  list.forEach((node) => node.classList.remove(COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS));
   commentFieldHighlightCurrentIndex = (commentFieldHighlightCurrentIndex + delta + list.length) % list.length;
   const el = list[commentFieldHighlightCurrentIndex];
+  el.classList.add(COMMENT_FIELD_HIGHLIGHT_CURRENT_CLASS);
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   if (el.focus && typeof el.focus === 'function') {
     try { el.focus(); } catch (_) {}
@@ -1600,10 +1631,13 @@ function waitForPageLoad() {
 }
 
 /**
- * 提交后验证：等待页面刷新并加载完成后，查找可点击的、指向 siteUrl 的链接
+ * 提交后验证：等待页面刷新并加载完成后，查找可点击的、指向 siteUrl 的链接。
+ * 找到时：滚动到该元素并加黄色虚线框高亮。
  */
 async function verifyCommentSubmission(siteUrl) {
   await waitForPageLoad();
+  clearVerifyLinkHighlight();
+
   const normalizedSite = normalizeUrlForCompare(siteUrl);
   if (!normalizedSite) return { success: false, message: '无效的站点 URL' };
 
@@ -1617,6 +1651,10 @@ async function verifyCommentSubmission(siteUrl) {
     if (!isElementVisible(a)) continue;
     const style = window.getComputedStyle(a);
     if (style.pointerEvents === 'none' || style.display === 'none' || style.visibility === 'hidden') continue;
+
+    ensureVerifyLinkHighlightStyle();
+    a.classList.add(VERIFY_LINK_HIGHLIGHT_CLASS);
+    a.scrollIntoView({ behavior: 'smooth', block: 'center' });
     return { success: true, message: '已在页面中找到您的站点链接', found: true };
   }
   return { success: false, message: '未在页面中检测到您的站点链接，请确认评论是否已发布', found: false };
