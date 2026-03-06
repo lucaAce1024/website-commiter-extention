@@ -369,6 +369,26 @@ body {
   margin-bottom: 12px;
 }
 
+/* 评论流程运行状态：消息栏下方一行，过长时横向滚动 */
+.blog-status-line {
+  margin-top: 6px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  min-height: 1.5em;
+}
+.blog-status-line.hidden {
+  display: none;
+}
+
 .status-message.success {
   background-color: #d1fae5;
   color: #065f46;

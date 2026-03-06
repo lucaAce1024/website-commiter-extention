@@ -61,6 +61,7 @@ const elements = {
   blogStatusMessage: document.getElementById('blogStatusMessage'),
   blogStatusText: document.getElementById('blogStatusText'),
   blogCloseStatusBtn: document.getElementById('blogCloseStatusBtn'),
+  blogStatusLine: document.getElementById('blogStatusLine'),
   blogGenerateAndFillBtn: document.getElementById('blogGenerateAndFillBtn'),
   blogVerifySubmitBtn: document.getElementById('blogVerifySubmitBtn'),
   openBlogSitesBtn: document.getElementById('openBlogSitesBtn'),
@@ -786,22 +787,43 @@ function setupEventListeners() {
     }
     elements.blogGenerateAndFillBtn.disabled = true;
     elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 生成中...';
+    setBlogStatusLine('');
+    let aiTotalMs = 0; // AI 请求累计耗时（评论生成 + 表单识别）
     try {
       const metaRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'getPageMetadata' });
       const title = metaRes?.title ?? '';
       const description = metaRes?.description ?? '';
+
+      // 阶段 1：AI 评论生成
+      setBlogStatusLine('AI 评论生成请求中...');
+      const t0 = Date.now();
       const genRes = await chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description });
+      const genMs = Date.now() - t0;
+      aiTotalMs += genMs;
+      setBlogStatusLine(`评论生成完成 (${(genMs / 1000).toFixed(1)}s)`);
       if (!genRes?.success) {
         showBlogMessage(genRes?.error || '评论生成失败', 'error');
+        setBlogStatusLine(`评论生成失败 · 已耗时 ${(aiTotalMs / 1000).toFixed(1)}s`);
         return;
       }
+
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 识别表单...';
+      setBlogStatusLine(llmEnabled ? 'AI 表单识别请求中...' : '评论表单识别中...');
+      const t1 = Date.now();
       const recRes = await chrome.tabs.sendMessage(currentTab.id, { action: 'recognizeCommentForm', useLlm: llmEnabled });
+      const recMs = Date.now() - t1;
+      if (llmEnabled) aiTotalMs += recMs;
+      setBlogStatusLine(`表单识别完成${llmEnabled ? ` (${(recMs / 1000).toFixed(1)}s)` : ''}`);
       if (!recRes?.success || recRes.result?.status !== 'success') {
         showBlogMessage(recRes?.result?.message || recRes?.error || '评论表单识别失败', 'error');
+        setBlogStatusLine(`表单识别失败 · AI 总耗时 ${(aiTotalMs / 1000).toFixed(1)}s`);
         return;
       }
+
+      const fieldCount = recRes.result?.fieldCount ?? 0;
+
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 填充中...';
+      setBlogStatusLine('正在填充字段并勾选选项...');
       const fillRes = await chrome.tabs.sendMessage(currentTab.id, {
         action: 'fillCommentForm',
         siteId: currentSiteId,
@@ -810,9 +832,27 @@ function setupEventListeners() {
       });
       if (!fillRes?.success) {
         showBlogMessage(fillRes?.error || '填充失败', 'error');
+        setBlogStatusLine(`填充失败 · AI 总耗时 ${(aiTotalMs / 1000).toFixed(1)}s`);
         return;
       }
+
       const r = fillRes.result;
+      const totalFields = fieldCount > 0 ? fieldCount : r.filledCount;
+      const allFilled = totalFields > 0 && r.filledCount >= totalFields;
+      let checkText = '';
+      if (allFilled && !r.hasSpamVerification && r.clickedSubmit) {
+        checkText = '完整检查：已填充全部字段并已自动提交。';
+      } else if (allFilled && r.hasSpamVerification) {
+        checkText = '完整检查：已填充全部字段，因检测到验证项未自动提交。';
+      } else if (allFilled) {
+        checkText = '完整检查：已填充全部字段，可手动提交。';
+      } else {
+        checkText = `完整检查：已填充 ${r.filledCount}/${totalFields} 个字段，未完全填充。`;
+      }
+      setBlogStatusLine(
+        `AI 耗时 ${(aiTotalMs / 1000).toFixed(1)}s · 已填充 ${r.filledCount} 个字段${r.consentCheckboxesChecked > 0 ? `，已勾选 ${r.consentCheckboxesChecked} 个选项` : ''} · ${checkText}`
+      );
+
       let msg = `已填充 ${r.filledCount} 个字段。`;
       if (r.consentCheckboxesChecked > 0) msg += ` 已勾选 ${r.consentCheckboxesChecked} 个选项。`;
       if (r.hasSpamVerification) {
@@ -831,6 +871,7 @@ function setupEventListeners() {
       showBlogMessage(msg, 'success');
     } catch (err) {
       showBlogMessage(err?.message?.includes('Receiving end') ? '请刷新页面后再试' : (err?.message || '操作失败'), 'error');
+      setBlogStatusLine(`出错 · AI 已耗时 ${(aiTotalMs / 1000).toFixed(1)}s`);
     } finally {
       elements.blogGenerateAndFillBtn.disabled = false;
       elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">💬</span> 生成评论并填充';
@@ -933,6 +974,17 @@ function showBlogMessage(message, type = 'info') {
 
 function hideBlogMessage() {
   if (elements.blogStatusMessage) elements.blogStatusMessage.classList.add('hidden');
+}
+
+/**
+ * 评论流程运行状态栏（消息通知栏下方）：一行滚动文字
+ * @param {string} text - 状态文案，空则隐藏
+ */
+function setBlogStatusLine(text) {
+  if (!elements.blogStatusLine) return;
+  elements.blogStatusLine.textContent = text || '';
+  elements.blogStatusLine.classList.toggle('hidden', !text);
+  if (text) elements.blogStatusLine.scrollLeft = 0;
 }
 
 // Initialize on load
