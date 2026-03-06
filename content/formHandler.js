@@ -96,6 +96,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => sendResponse({ success: true, result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
+  } else if (request.action === 'blogCommentGenerateAndFill') {
+    blogCommentGenerateAndFill({
+      title: request.title,
+      description: request.description,
+      siteId: request.siteId,
+      autoSubmit: request.autoSubmit,
+      llmEnabled: request.llmEnabled
+    })
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   } else if (request.action === 'verifyCommentSubmission') {
     verifyCommentSubmission(request.siteUrl)
       .then(result => sendResponse({ success: true, result }))
@@ -1178,6 +1189,100 @@ async function recognizeCommentForm(useLlm = false) {
   } catch (err) {
     commentFormState.recognitionStatus = 'failed';
     return { status: 'error', error: err.message };
+  }
+}
+
+/**
+ * 一发流程入口：有缓存时仅调 AI 评论生成 + 缓存定位；无缓存且 LLM 开启时一发请求（字段映射+评论），否则关键词识别+评论生成。
+ * @param {{ title: string, description: string, siteId: string, autoSubmit: boolean, llmEnabled: boolean }} opts
+ * @returns {Promise<{ success: boolean, result?: object, error?: string }>}
+ */
+async function blogCommentGenerateAndFill(opts) {
+  const { title = '', description = '', siteId, autoSubmit = true, llmEnabled = false } = opts || {};
+  commentFormState.recognitionStatus = 'recognizing';
+  commentFormState.domain = window.location.hostname;
+
+  try {
+    let formMetadata = getCommentFormMetadata();
+    let scrollCount = 0;
+    while (!formMetadata.hasForm || !formMetadata.fields?.length) {
+      if (scrollCount >= MAX_SCROLL_ATTEMPTS) {
+        commentFormState.recognitionStatus = 'failed';
+        return { success: false, error: '找不到form表单' };
+      }
+      scrollPageToBottomAndWait();
+      await new Promise(r => setTimeout(r, SCROLL_TO_BOTTOM_WAIT_MS));
+      scrollCount++;
+      formMetadata = getCommentFormMetadata();
+    }
+
+    const cacheKey = getCommentCacheKey();
+    const cached = await getCachedCommentMapping(cacheKey);
+
+    if (cached && cached.mappings?.length > 0) {
+      // 有缓存：仅 AI 评论生成，字段用缓存
+      const genRes = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description }, (resp) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(resp);
+        });
+      });
+      if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败' };
+      commentFormState.fieldMappings = cached.mappings;
+      commentFormState.submitButton = cached.submitButton;
+      commentFormState.consentCheckboxes = cached.consentCheckboxes || null;
+      commentFormState.recognitionStatus = 'done';
+      commentFormState.recognitionMethod = 'cache';
+      commentFormState.hasForm = true;
+      const spamResult = checkCommentSpamVerification();
+      commentFormState.hasSpamVerification = spamResult.hasSpam;
+      const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit);
+      return { success: true, result: { ...fillResult, usedCache: true, method: 'cache', fieldCount: cached.mappings.length } };
+    }
+
+    if (llmEnabled) {
+      // 无缓存且 LLM 开启：一发请求
+      const oneShotRes = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'blogCommentOneShot', formMetadata, title, description }, (resp) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(resp);
+        });
+      });
+      if (!oneShotRes?.success) return { success: false, error: oneShotRes?.error || '一发请求失败' };
+      const { mappings, submitButton, comment } = oneShotRes.result;
+      if (!mappings?.length || !comment) return { success: false, error: '一发返回缺少 mappings 或 comment' };
+      commentFormState.fieldMappings = mappings;
+      commentFormState.submitButton = submitButton || null;
+      const consentList = getCommentConsentCheckboxes();
+      const consentCheckboxes = consentList.map(({ element }) => ({ locator: getFieldLocator(element) }));
+      commentFormState.consentCheckboxes = consentCheckboxes.length ? consentCheckboxes : null;
+      commentFormState.recognitionStatus = 'done';
+      commentFormState.recognitionMethod = 'ai';
+      commentFormState.hasForm = true;
+      const spamResult = checkCommentSpamVerification();
+      commentFormState.hasSpamVerification = spamResult.hasSpam;
+      await cacheCommentMapping(cacheKey, { mappings, submitButton, consentCheckboxes: commentFormState.consentCheckboxes });
+      const fillResult = await fillCommentForm(siteId, comment, autoSubmit);
+      return { success: true, result: { ...fillResult, usedCache: false, method: 'oneShot', fieldCount: mappings.length } };
+    }
+
+    // 无缓存且 LLM 关闭：关键词识别 + 评论生成
+    const rec = await recognizeCommentForm(false);
+    if (rec.status !== 'success' || !rec.mappings?.length) {
+      return { success: false, error: rec.message || '评论表单识别失败' };
+    }
+    const genRes = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'generateBlogComment', title, description }, (resp) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(resp);
+      });
+    });
+    if (!genRes?.success) return { success: false, error: genRes?.error || '评论生成失败' };
+    const fillResult = await fillCommentForm(siteId, genRes.comment, autoSubmit);
+    return { success: true, result: { ...fillResult, usedCache: false, method: 'keyword', fieldCount: rec.fieldCount ?? 0 } };
+  } catch (err) {
+    commentFormState.recognitionStatus = 'failed';
+    return { success: false, error: err?.message || '操作失败' };
   }
 }
 

@@ -137,6 +137,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => safeSend({ success: true, result }))
       .catch(error => safeSend({ success: false, error: error.message }));
     return true;
+  } else if (request.action === 'blogCommentOneShot') {
+    // 一发请求：表单字段映射 + 评论生成，一次 LLM 返回 mappings + submitButton + comment
+    const tabId = sender.tab?.id;
+    let responded = false;
+    const safeSend = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (e) {
+        console.warn('[Background] sendResponse 已关闭:', e.message);
+      }
+    };
+    handleBlogCommentOneShot(request.formMetadata, request.title, request.description, tabId)
+      .then(result => safeSend({ success: true, result }))
+      .catch(error => safeSend({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -467,8 +484,8 @@ function parseAIResponse(content, formMetadata) {
 }
 
 // ---------- Blog Comment: 评论内容生成 ----------
-const BLOG_COMMENT_SYSTEM = 'You write brief, natural blog comments in English. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation.';
-const BLOG_COMMENT_USER_PREFIX = 'Write one short, natural, friendly comment in English (about 200 characters). Only output the single line of comment.\n\nTitle: ';
+const BLOG_COMMENT_SYSTEM = 'You write natural blog comments in English. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation. Length must be 500–600 characters.';
+const BLOG_COMMENT_USER_PREFIX = 'Write one natural, friendly comment in English. Length: 500 to 600 characters (strict). Only output the single line of comment.\n\nTitle: ';
 const BLOG_COMMENT_USER_SUFFIX = '\n\nDescription: ';
 
 /**
@@ -480,43 +497,43 @@ function extractCommentFromReasoning(reasoningContent) {
   const text = reasoningContent.trim();
   if (!text) return '';
 
-  // 1. 匹配 "…" (N characters) 形式（允许中间有单引号如 I've）
-  const withLen = text.match(/"\s*([^"]{30,450}?)\s*"\s*\(\d+\s*characters?\)/i);
+  // 1. 匹配 "…" (N characters) 形式（允许中间有单引号如 I've），评论长度约 500–600 字符
+  const withLen = text.match(/"\s*([^"]{400,700}?)\s*"\s*\(\d+\s*characters?\)/i);
   if (withLen && withLen[1]) return withLen[1].trim();
 
-  // 2. 匹配任意双引号内 30~450 字（取最长的一段作为评论）
-  const allQuoted = text.match(/"([^"]{30,450})"/g);
+  // 2. 匹配任意双引号内 400~700 字（取最长的一段作为评论）
+  const allQuoted = text.match(/"([^"]{400,700})"/g);
   if (allQuoted && allQuoted.length > 0) {
     let best = '';
     for (const m of allQuoted) {
       const inner = m.slice(1, -1).trim();
-      if (inner.length > best.length && inner.length >= 30) best = inner;
+      if (inner.length > best.length && inner.length >= 400) best = inner;
     }
     if (best) return best;
   }
 
   // 3. 取末尾连续一段“像评论”的文本（GLM 常把最终结论放在 reasoning 末尾，可能无引号或被截断）
   const noStructure = text.replace(/\*\*[^*]+\*\*/g, '').replace(/^\s*\d+\.\s+/gm, '');
-  const tail = noStructure.slice(-600).trim();
+  const tail = noStructure.slice(-800).trim();
   const tailLines = tail.split(/\n/).map(s => s.trim()).filter(Boolean);
-  const lastChunk = tailLines.slice(-3).join(' ').trim();
-  if (lastChunk.length >= 25 && lastChunk.length <= 400 && !/^[\*#\d]/.test(lastChunk)) {
+  const lastChunk = tailLines.slice(-5).join(' ').trim();
+  if (lastChunk.length >= 400 && lastChunk.length <= 700 && !/^[\*#\d]/.test(lastChunk)) {
     return lastChunk;
   }
   if (tailLines.length > 0) {
     for (let i = tailLines.length - 1; i >= 0; i--) {
       const line = tailLines[i];
-      if (line.length >= 25 && line.length <= 400 && !/^[\*#\d\s]/.test(line) && !/^(Analyze|Topic|Constraints|Drafting|Refining|Idea\s*\d)/i.test(line)) {
+      if (line.length >= 400 && line.length <= 700 && !/^[\*#\d\s]/.test(line) && !/^(Analyze|Topic|Constraints|Drafting|Refining|Idea\s*\d)/i.test(line)) {
         return line;
       }
     }
   }
 
-  // 4. 任意非空行 50~350 字且不像标题/列表
+  // 4. 任意非空行 400~700 字且不像标题/列表
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line.length >= 50 && line.length <= 350 && !/^\s*[\*#\d]/.test(line) && !/^(Analyze|Topic|Constraints|Idea\s*\d)/i.test(line)) {
+    if (line.length >= 400 && line.length <= 700 && !/^\s*[\*#\d]/.test(line) && !/^(Analyze|Topic|Constraints|Idea\s*\d)/i.test(line)) {
       return line;
     }
   }
@@ -545,7 +562,7 @@ function parseBlogCommentResponse(data) {
 }
 
 /**
- * 根据页面 title/description 调用 LLM 生成约 200 字英文评论
+ * 根据页面 title/description 调用 LLM 生成 500–600 字符英文评论
  * 控制台会打印请求/响应日志，便于调试（扩展 Service Worker 控制台）
  * @param {string} title - document.title
  * @param {string} description - meta description
@@ -574,7 +591,7 @@ async function handleGenerateBlogComment(title, description) {
     ],
     stream: false,
     temperature: 0.7,
-    max_tokens: 300
+    max_tokens: 800
   };
   if (llmConfig.disableThinking !== false) {
     requestBody.thinking = { type: 'disabled' };
@@ -690,6 +707,126 @@ function parseCommentFormAIResponse(content, formMetadata) {
   } catch (e) {
     console.warn('[Background] 解析评论表单 AI 响应失败:', e.message);
     return { mappings: [], submitButton: null };
+  }
+}
+
+/**
+ * 一发请求：构建「字段映射 + 评论生成」统一 prompt，要求返回 JSON 含 mappings、submitButtonFieldIndex、comment
+ */
+function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, description) {
+  const standardList = BLOG_COMMENT_STANDARD_FIELDS.join(', ');
+  const multiLangInstruction = `The form labels/placeholders may be in ANY language (e.g. Slovenian, Czech, Chinese, German). Before mapping, interpret each label in English: e.g. "Spletišče" = website → commentWebsite; "Ime" / "Jméno" = name → commentName; "E-pošta" / "Notif. e-mail" = email → commentEmail; "Komentar" / "Komentář" = comment body → comment. Then map to exactly one of the standard types below.`;
+  const formHtml = formMetadata?.formHtml;
+  const formPart = formHtml
+    ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nMultilingual: ${multiLangInstruction}\n\nStandard types (use exactly): ${standardList}\n  - comment: the main comment/feedback text (usually a textarea)\n  - commentName: commenter's name\n  - commentEmail: commenter's email\n  - commentWebsite: commenter's website URL\n\nHTML:\n${formHtml}`
+    : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMultilingual: ${multiLangInstruction}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button (e.g. "Post comment", "Objavi komentar", "Submit").`;
+
+  const commentPart = `Also, based on the following page title and description, write one short, natural, friendly comment in English (about 200 characters). Only the comment text, no quotes or explanation.
+
+Title: ${title || '(no title)'}
+Description: ${description || '(no description)'}`;
+
+  return `${formPart}
+
+${commentPart}
+
+Respond with ONLY one JSON object (no markdown, no code block). Example:
+{ "mappings": [ {"fieldIndex": 0, "standardField": "comment"}, {"fieldIndex": 1, "standardField": "commentName"}, ... ], "submitButtonFieldIndex": 8, "comment": "Your generated comment text here." }
+Use standardField "unknown" for unmapped. submitButtonFieldIndex is the 0-based index of the submit button in the same field list, or -1 if not found.`;
+}
+
+/**
+ * 解析一发请求 LLM 返回：mappings + submitButton（复用 parseCommentFormAIResponse）+ comment
+ */
+function parseBlogCommentOneShotResponse(content, formMetadata) {
+  if (content == null || typeof content !== 'string') return { mappings: [], submitButton: null, comment: '' };
+  let jsonStr = content.trim();
+  jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+  try {
+    const obj = typeof jsonStr === 'string' && jsonStr.startsWith('{') ? JSON.parse(jsonStr) : null;
+    if (!obj) return { mappings: [], submitButton: null, comment: '' };
+    const { mappings, submitButton } = parseCommentFormAIResponse(content, formMetadata);
+    const comment = (obj.comment && String(obj.comment).trim()) || '';
+    return { mappings, submitButton, comment };
+  } catch (e) {
+    console.warn('[Background] 解析一发请求响应失败:', e.message);
+    return { mappings: [], submitButton: null, comment: '' };
+  }
+}
+
+/**
+ * 一发请求：一次 LLM 调用同时返回字段映射 + 提交按钮 + 评论文本
+ * @returns {Promise<{ mappings: Array, submitButton: object|null, comment: string }>}
+ */
+async function handleBlogCommentOneShot(formMetadata, title, description, tabId) {
+  const log = (...a) => console.log('[Background][BlogComment OneShot]', ...a);
+  const logErr = (...a) => console.error('[Background][BlogComment OneShot]', ...a);
+  const pageLog = (tabId != null) ? (...a) => aiLogToPage(tabId, 'log', ...a) : () => {};
+
+  const storage = await chrome.storage.local.get(['settings']);
+  const llmConfig = storage.settings?.llmConfig;
+
+  if (!llmConfig?.enabled || !llmConfig?.apiKey) {
+    throw new Error('LLM 未启用或 API Key 未配置，请在设置中配置后重试');
+  }
+
+  const formDescription = buildCompactFormDescription(formMetadata);
+  const userContent = buildBlogCommentOneShotPrompt(formDescription, formMetadata, title || '', description || '');
+
+  const endpoint = llmConfig.endpoint || 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions';
+  const requestBody = {
+    model: llmConfig.model || 'gpt-3.5-turbo',
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language and write brief blog comments in English. Map form fields to standard types (comment, commentName, commentEmail, commentWebsite), identify the submit button index, and generate one short comment. Respond only with a single JSON object.' },
+      { role: 'user', content: userContent }
+    ],
+    stream: false,
+    temperature: 0.3,
+    max_tokens: 2048
+  };
+  if (llmConfig.disableThinking !== false) {
+    requestBody.thinking = { type: 'disabled' };
+  }
+
+  log('请求开始:', { endpoint, model: requestBody.model, userMessageLength: userContent.length });
+  pageLog('[BlogComment OneShot] 请求开始');
+
+  try {
+    const response = await fetchLlmWithRetry(
+      endpoint,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${llmConfig.apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+      },
+      { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logErr('API 错误:', response.status, errorText);
+      throw new Error(`API 错误 ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    let content = (data?.choices?.[0]?.message?.content || '').trim();
+    if (!content) throw new Error('API 返回内容为空');
+
+    const { mappings, submitButton, comment } = parseBlogCommentOneShotResponse(content, formMetadata);
+    if (!comment) {
+      logErr('解析得到 comment 为空');
+      throw new Error('API 返回中缺少有效 comment 字段');
+    }
+
+    log('解析得到 mappings:', mappings.length, 'submitButton:', !!submitButton, 'comment 长度:', comment.length);
+    pageLog('[BlogComment OneShot] 完成');
+    return { mappings, submitButton, comment };
+  } catch (error) {
+    logErr('异常:', error.message);
+    throw error;
   }
 }
 
