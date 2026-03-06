@@ -805,7 +805,8 @@ function setupEventListeners() {
       const fillRes = await chrome.tabs.sendMessage(currentTab.id, {
         action: 'fillCommentForm',
         siteId: currentSiteId,
-        commentText: genRes.comment
+        commentText: genRes.comment,
+        autoSubmit: elements.autoSubmit?.checked ?? false
       });
       if (!fillRes?.success) {
         showBlogMessage(fillRes?.error || '填充失败', 'error');
@@ -813,6 +814,7 @@ function setupEventListeners() {
       }
       const r = fillRes.result;
       let msg = `已填充 ${r.filledCount} 个字段。`;
+      if (r.consentCheckboxesChecked > 0) msg += ` 已勾选 ${r.consentCheckboxesChecked} 个选项。`;
       if (r.hasSpamVerification) {
         msg += ' 检测到验证项，请手动完成验证后点击提交。';
       } else if (r.clickedSubmit) {

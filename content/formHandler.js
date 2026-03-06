@@ -34,6 +34,8 @@ let commentFormState = {
   hasForm: false,
   fieldMappings: null,
   submitButton: null,
+  /** 需在提交前勾选的复选框定位列表，来自识别结果或缓存 { locator }[] */
+  consentCheckboxes: null,
   recognitionStatus: 'idle',
   recognitionMethod: null,
   hasSpamVerification: false,
@@ -90,7 +92,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'fillCommentForm') {
-    fillCommentForm(request.siteId, request.commentText)
+    fillCommentForm(request.siteId, request.commentText, request.autoSubmit)
       .then(result => sendResponse({ success: true, result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
@@ -809,7 +811,11 @@ async function getCachedCommentMapping(cacheKey) {
       if (!data) { resolve(null); return; }
       const mappings = data.mappings || data;
       const submitButton = data.submitButton || null;
-      resolve(Array.isArray(mappings) ? { mappings, submitButton } : { mappings: mappings.mappings || [], submitButton: mappings.submitButton });
+      const consentCheckboxes = data.consentCheckboxes || null;
+      const out = Array.isArray(mappings)
+        ? { mappings, submitButton, consentCheckboxes }
+        : { mappings: mappings.mappings || [], submitButton: mappings.submitButton, consentCheckboxes };
+      resolve(out);
     });
   });
 }
@@ -821,6 +827,7 @@ async function cacheCommentMapping(cacheKey, payload) {
       mappings[cacheKey] = {
         mappings: payload.mappings || payload,
         submitButton: payload.submitButton || null,
+        consentCheckboxes: payload.consentCheckboxes || null,
         cachedAt: new Date().toISOString()
       };
       chrome.storage.local.set({ blogCommentFieldMappings: mappings }, () => resolve());
@@ -837,6 +844,7 @@ async function clearCommentMapping() {
       chrome.storage.local.set({ blogCommentFieldMappings: mappings }, () => {
         commentFormState.fieldMappings = null;
         commentFormState.submitButton = null;
+        commentFormState.consentCheckboxes = null;
         commentFormState.recognitionStatus = 'idle';
         resolve();
       });
@@ -861,6 +869,45 @@ function getCommentFormScope() {
     if (submitEl) formScope = submitEl.closest('form') || submitEl.parentElement;
   }
   return formScope;
+}
+
+/**
+ * 评论表单中「需在提交前勾选」的复选框：根据标签文案判断是否为“保存信息/非垃圾/同意”等选项。
+ * 多语言：英文、斯洛文尼亚语等（如 Save my name… / Shrani moje ime…；Confirm you are not spam / Potrdite, da niste pošiljatelj…）。
+ */
+const COMMENT_CONSENT_CHECKBOX_PATTERNS = [
+  /save\s+(my|moje|meine|mijn|mes)\s+(name|ime|nome|nombre|nome|név)/i,
+  /shrani\s+moje\s+(ime|e-pošta|spletišče)/i,
+  /(save|shrani|speichern|opslaan).*(name|ime|browser|brskalnik|next\s+time|naslednjič|comment|komentiram)/i,
+  /(confirm|potrdite|bestätigen|bevestig).*(not|niste|kein|geen).*(spam|pošiljatelj|robot|sender)/i,
+  /(not|niste|kein|geen).*(spam|robot|pošiljatelj|sender).*(mail|pošte|oglasne)/i,
+  /nenaročene\s+oglasne\s+pošte/i,
+  /(agree|strinjati|zustimmen|akkoord).*(terms|pogoji|terms|privacy|zasebnost)/i,
+  /(accept|sprejemam|akzeptieren).*(terms|pogoji|privacy|zasebnost)/i,
+  /(I\s+)?agree\s+to/i,
+  /(I\s+)?accept\s+(the\s+)?(terms|privacy)/i,
+  /(save|remember).*(name|email|website).*(browser|next\s+time|comment)/i
+];
+
+/**
+ * 在评论表单范围内查找所有「需勾选」的复选框（根据标签文案匹配 COMMENT_CONSENT_CHECKBOX_PATTERNS）。
+ * 返回未勾选且可见的 checkbox 元素数组，用于在点击提交前自动勾选。
+ */
+function getCommentConsentCheckboxes() {
+  const formScope = getCommentFormScope();
+  if (!formScope) return [];
+  const checkboxes = formScope.querySelectorAll('input[type="checkbox"]');
+  const result = [];
+  for (const el of checkboxes) {
+    if (!el || !isElementVisible(el)) continue;
+    if (!formScope.contains(el)) continue;
+    const labelText = (getFieldLabel(el) || getElementLabelOrText(el) || '').trim().replace(/\s+/g, ' ');
+    if (!labelText || labelText.length > 500) continue;
+    const lower = labelText.toLowerCase();
+    const matches = COMMENT_CONSENT_CHECKBOX_PATTERNS.some((p) => (typeof p === 'string' ? lower.includes(p.toLowerCase()) : p.test(labelText)));
+    if (matches) result.push({ element: el, labelText: labelText.slice(0, 120) });
+  }
+  return result;
 }
 
 /**
@@ -1067,6 +1114,7 @@ async function recognizeCommentForm(useLlm = false) {
     if (cached && cached.mappings?.length > 0) {
       commentFormState.fieldMappings = cached.mappings;
       commentFormState.submitButton = cached.submitButton;
+      commentFormState.consentCheckboxes = cached.consentCheckboxes || null;
       commentFormState.recognitionStatus = 'done';
       commentFormState.recognitionMethod = 'cache';
       commentFormState.hasForm = true;
@@ -1089,13 +1137,16 @@ async function recognizeCommentForm(useLlm = false) {
           if (mappings?.length > 0) {
             commentFormState.fieldMappings = mappings;
             commentFormState.submitButton = submitButton || null;
+            const consentList = getCommentConsentCheckboxes();
+            const consentCheckboxes = consentList.map(({ element }) => ({ locator: getFieldLocator(element) }));
+            commentFormState.consentCheckboxes = consentCheckboxes.length ? consentCheckboxes : null;
             commentFormState.recognitionStatus = 'done';
             commentFormState.recognitionMethod = 'ai';
             commentFormState.hasForm = true;
             const spamResult = checkCommentSpamVerification();
             commentFormState.hasSpamVerification = spamResult.hasSpam;
             if (spamResult.hasSpam) logSpamVerificationDetails(spamResult);
-            await cacheCommentMapping(cacheKey, { mappings, submitButton });
+            await cacheCommentMapping(cacheKey, { mappings, submitButton, consentCheckboxes: commentFormState.consentCheckboxes });
             return { status: 'success', method: 'ai', mappings, submitButton, fieldCount: mappings.length };
           }
         }
@@ -1107,13 +1158,16 @@ async function recognizeCommentForm(useLlm = false) {
     const keywordResult = recognizeCommentByKeywords(formMetadata);
     commentFormState.fieldMappings = keywordResult.mappings;
     commentFormState.submitButton = keywordResult.submitButton || null;
+    const consentList = getCommentConsentCheckboxes();
+    const consentCheckboxes = consentList.map(({ element }) => ({ locator: getFieldLocator(element) }));
+    commentFormState.consentCheckboxes = consentCheckboxes.length ? consentCheckboxes : null;
     commentFormState.recognitionStatus = 'done';
     commentFormState.recognitionMethod = 'keyword';
     commentFormState.hasForm = true;
     const spamResult = checkCommentSpamVerification();
     commentFormState.hasSpamVerification = spamResult.hasSpam;
     if (spamResult.hasSpam) logSpamVerificationDetails(spamResult);
-    await cacheCommentMapping(cacheKey, keywordResult);
+    await cacheCommentMapping(cacheKey, { ...keywordResult, consentCheckboxes: commentFormState.consentCheckboxes });
     return {
       status: 'success',
       method: 'keyword',
@@ -1128,9 +1182,12 @@ async function recognizeCommentForm(useLlm = false) {
 }
 
 /**
- * 填充评论表单并可选点击提交（无验证时）
+ * 填充评论表单并可选点击提交（无验证时）。
+ * @param {string} siteId - 站点 ID
+ * @param {string} commentText - 评论文本
+ * @param {boolean} [autoSubmit=true] - 是否在无验证时自动点击提交（由 popup「允许自动提交」控制，未传时视为 true 以兼容旧调用）
  */
-async function fillCommentForm(siteId, commentText) {
+async function fillCommentForm(siteId, commentText, autoSubmit = true) {
   const siteData = await getSiteData(siteId);
   if (!siteData) throw new Error('未找到站点或未选择站点');
 
@@ -1162,11 +1219,38 @@ async function fillCommentForm(siteId, commentText) {
     await new Promise(r => setTimeout(r, randomPostFillDelayMs()));
   }
 
+  // 提交前：勾选「需用户同意」的复选框（优先用缓存的 consentCheckboxes，否则现场识别并回写缓存）
+  let checkedCount = 0;
+  let usedCachedConsent = !!commentFormState.consentCheckboxes?.length;
+  let toCheck = commentFormState.consentCheckboxes?.length
+    ? commentFormState.consentCheckboxes.map(({ locator }) => findElementByLocator(locator)).filter(Boolean)
+    : getCommentConsentCheckboxes().map(({ element }) => element);
+  for (const el of toCheck) {
+    if (!el || el.checked) continue;
+    try {
+      el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      simulateClick(el);
+      checkedCount++;
+      await new Promise((r) => setTimeout(r, randomPostFillDelayMs()));
+    } catch (_) {}
+  }
+  // 若本次用的是现场识别的勾选项且存在，则回写缓存供下次使用
+  if (!usedCachedConsent && toCheck.length > 0) {
+    const consentCheckboxes = toCheck.map((el) => ({ locator: getFieldLocator(el) }));
+    commentFormState.consentCheckboxes = consentCheckboxes;
+    const cacheKey = getCommentCacheKey();
+    const existing = await getCachedCommentMapping(cacheKey);
+    if (existing?.mappings?.length) {
+      await cacheCommentMapping(cacheKey, { mappings: existing.mappings, submitButton: existing.submitButton, consentCheckboxes });
+    }
+  }
+
   const spamResult = checkCommentSpamVerification();
   const hasSpam = spamResult.hasSpam;
   if (hasSpam) logSpamVerificationDetails(spamResult);
   let clickedSubmit = false;
-  if (!hasSpam && commentFormState.submitButton) {
+  const mayAutoSubmit = autoSubmit !== false;
+  if (mayAutoSubmit && !hasSpam && commentFormState.submitButton) {
     try {
       const btn = findElementByLocator(commentFormState.submitButton.locator);
       if (btn && isElementVisible(btn)) {
@@ -1178,6 +1262,7 @@ async function fillCommentForm(siteId, commentText) {
 
   return {
     filledCount,
+    consentCheckboxesChecked: checkedCount,
     hasSpamVerification: hasSpam,
     clickedSubmit,
     errors
