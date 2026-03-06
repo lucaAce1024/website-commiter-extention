@@ -236,6 +236,32 @@ body {
   color: var(--text-primary);
 }
 
+/* Blog 评论：缓存状态与清除按钮 */
+.blog-cache-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.blog-cache-hint {
+  font-size: 12px;
+  color: #c9a227;
+}
+.blog-cache-hint.hidden {
+  display: none;
+}
+.btn-link.btn-link-subtle.blog-cache-has:not(:disabled) {
+  color: #c9a227;
+}
+.btn-link.btn-link-subtle.blog-cache-has:not(:disabled):hover {
+  color: #a68520;
+}
+.btn-link.btn-link-subtle:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* Form Status */
 .form-status {
   display: flex;

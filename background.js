@@ -251,8 +251,10 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
   if (llmConfig.disableThinking !== false) {
     requestBody.thinking = { type: 'disabled' };
   }
-  log('AI 请求 body (发送给接口的完整 JSON):', JSON.stringify(requestBody, null, 2));
-  log('AI 请求 user message 全文:', prompt);
+  // 完整请求 JSON：同时输出到扩展 SW 控制台与当前页面控制台（便于在页面 DevTools 查看）
+  const navReqJson = JSON.stringify(requestBody, null, 2);
+  console.log('[AI Form 识别-导航站] 请求完整 JSON:', navReqJson);
+  log('[AI Form 识别-导航站] 请求完整 JSON:', navReqJson);
 
   try {
     const response = await fetchLlmWithRetry(
@@ -277,6 +279,10 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
     }
 
     const data = await response.json();
+    const navResJson = JSON.stringify(data, null, 2);
+    console.log('[AI Form 识别-导航站] 响应完整 JSON:', navResJson);
+    log('[AI Form 识别-导航站] 响应完整 JSON:', navResJson);
+
     const msg = data.choices?.[0]?.message || {};
     log('AI 原始返回:', {
       hasChoices: !!data.choices,
@@ -346,13 +352,15 @@ function buildCompactFormDescription(formMetadata) {
 /**
  * 构建 AI Prompt。若 formMetadata.formHtml 存在则优先用 HTML 片段，便于模型直接理解结构。
  * 输出要求：仅一个 JSON 数组，便于解析、减少空响应。
+ * 多语言：标签可能为任意语言，先理解为英文再映射。
  */
 function buildAIPrompt(formDescription, formMetadata) {
   const standardList = `siteName,email,siteUrl,category,tags,tagline,shortDescription,longDescription,logo,screenshot,unknown`;
   const formHtml = formMetadata?.formHtml;
+  const multiLangHint = `Labels/placeholders may be in any language (e.g. Chinese, Slovenian, Czech). First interpret the meaning in English (e.g. 网站名称→site name, 邮箱→email, Spletišče→website, Ime→name, E-pošta→email), then map to the standard type below.`;
   const body = formHtml
-    ? `以下是一段表单的 HTML 片段，请识别其中的可填写字段（input/textarea/select，按在 HTML 中出现的顺序），并映射到标准类型。\n\n标准类型（任选其一）: ${standardList}\n\nHTML:\n${formHtml}`
-    : `以下为表单字段列表（每行 [索引] 类型与属性），请将每项映射到标准类型。\n\n标准类型: ${standardList}\n\n字段列表:\n${formDescription}`;
+    ? `以下是一段表单的 HTML 片段，请识别其中的可填写字段（input/textarea/select，按在 HTML 中出现的顺序），并映射到标准类型。\n\n多语言说明：${multiLangHint}\n\n标准类型（任选其一）: ${standardList}\n\nHTML:\n${formHtml}`
+    : `以下为表单字段列表（每行 [索引] 类型与属性），请将每项映射到标准类型。\n\n多语言说明：${multiLangHint}\n\n标准类型: ${standardList}\n\n字段列表:\n${formDescription}`;
 
   const indexHint = formHtml
     ? 'fieldIndex 按 HTML 中 input/textarea/select 出现顺序从 0 开始编号。'
@@ -627,19 +635,21 @@ async function handleGenerateBlogComment(title, description) {
 const BLOG_COMMENT_STANDARD_FIELDS = ['comment', 'commentName', 'commentEmail', 'commentWebsite'];
 
 /**
- * 构建评论表单 AI Prompt，输出字段映射 + 提交按钮索引
+ * 构建评论表单 AI Prompt，输出字段映射 + 提交按钮索引。
+ * 多语言：标签可能为任意语言，先理解为英文再映射到标准字段。
  */
 function buildCommentFormAIPrompt(formDescription, formMetadata) {
   const standardList = BLOG_COMMENT_STANDARD_FIELDS.join(', ');
+  const multiLangInstruction = `The form labels/placeholders may be in ANY language (e.g. Slovenian, Czech, Chinese, German). Before mapping, interpret each label in English: e.g. "Spletišče" = website → commentWebsite; "Ime" / "Jméno" = name → commentName; "E-pošta" / "Notif. e-mail" = email → commentEmail; "Komentar" / "Komentář" = comment body → comment. Then map to exactly one of the standard types below.`;
   const formHtml = formMetadata?.formHtml;
   const body = formHtml
-    ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nStandard types (use exactly): ${standardList}\n\nHTML:\n${formHtml}`
-    : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button.`;
+    ? `Below is HTML of a blog comment form. Identify each fillable field (input/textarea) and map to standard types. Also identify the submit button (type="submit" or button that posts the comment).\n\nMultilingual: ${multiLangInstruction}\n\nStandard types (use exactly): ${standardList}\n  - comment: the main comment/feedback text (usually a textarea)\n  - commentName: commenter's name (e.g. Name, Ime, Jméno)\n  - commentEmail: commenter's email (e.g. Email, E-pošta)\n  - commentWebsite: commenter's website URL (e.g. Website, Spletišče, Spletna stran)\n\nHTML:\n${formHtml}`
+    : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMultilingual: ${multiLangInstruction}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button (e.g. "Post comment", "Objavi komentar", "Komentovat", "Submit").`;
 
   return `${body}
 
 Respond with ONLY a JSON object: { "mappings": [ {"fieldIndex": 0, "standardField": "comment"}, ... ], "submitButtonFieldIndex": 3 }
-Use standardField "unknown" for unmapped. submitButtonFieldIndex is the 0-based index of the submit button in the same field list, or -1 if not found.`;
+Use standardField "unknown" for unmapped. submitButtonFieldIndex is the 0-based index of the submit button in the same field list, or -1 if not found. No markdown, no explanation.`;
 }
 
 /**
@@ -700,7 +710,7 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
   const requestBody = {
     model: llmConfig.model || 'gpt-3.5-turbo',
     messages: [
-      { role: 'system', content: 'You are a helpful assistant. Respond only with valid JSON.' },
+      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language. Map each field to the correct standard type by first interpreting the label (e.g. translate to English mentally), then choose the matching standard field. Respond only with valid JSON.' },
       { role: 'user', content: prompt }
     ],
     stream: false,
@@ -711,6 +721,10 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
   if (llmConfig.disableThinking !== false) {
     requestBody.thinking = { type: 'disabled' };
   }
+
+  const commentReqJson = JSON.stringify(requestBody, null, 2);
+  console.log('[AI Form 识别-评论] 请求完整 JSON:', commentReqJson);
+  log('[AI Form 识别-评论] 请求完整 JSON:', commentReqJson);
 
   try {
     const response = await fetchLlmWithRetry(
@@ -733,6 +747,10 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
     }
 
     const data = await response.json();
+    const commentResJson = JSON.stringify(data, null, 2);
+    console.log('[AI Form 识别-评论] 响应完整 JSON:', commentResJson);
+    log('[AI Form 识别-评论] 响应完整 JSON:', commentResJson);
+
     let content = (data.choices?.[0]?.message?.content || '').trim();
     if (!content) throw new Error('API 返回内容为空');
 

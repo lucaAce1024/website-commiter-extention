@@ -203,7 +203,8 @@ function getFormMetadata() {
         placeholder: input.placeholder || '',
         label: label || '',
         ariaLabel: input.getAttribute('aria-label') || '',
-        required: input.required || false
+        required: input.required || false,
+        ariaHidden: input.getAttribute('aria-hidden') || null
       };
 
       if (input.tagName === 'SELECT') {
@@ -345,14 +346,30 @@ function getFormMetadata() {
 }
 
 /**
- * 获取评论提交区表单元数据（包含 input/textarea/select 以及 submit/button，便于 AI 返回提交按钮索引）
+ * 判断是否为蜜罐/防垃圾隐藏控件（不应参与填充，且会导致 AI 的 fieldIndex 与 fields 顺序错位）
+ */
+function isHoneypotField(field) {
+  if (field.ariaHidden === 'true') return true;
+  if (field.ariaLabel && /hp-|honeypot|^hp$/i.test(field.ariaLabel)) return true;
+  return false;
+}
+
+/**
+ * 获取评论提交区表单元数据（包含 input/textarea/select 以及 submit/button）。
+ * 会过滤掉蜜罐控件（aria-hidden、hp- 等），使 fields 顺序与 AI 按“可见可填字段”编号一致；
+ * 且不附带 formHtml，改用 formDescription 发给 AI，避免 HTML 中蜜罐导致 fieldIndex 错位。
  */
 function getCommentFormMetadata() {
   const base = getFormMetadata();
   if (!base.hasForm || !base.fields) {
     return { ...base, fields: [] };
   }
-  const fields = [...base.fields];
+  const filtered = base.fields.filter((f) => !isHoneypotField(f));
+  const fields = [];
+  filtered.forEach((f) => {
+    const { ariaHidden, ...rest } = f;
+    fields.push(rest);
+  });
   const forms = document.querySelectorAll('form');
   forms.forEach((form) => {
     form.querySelectorAll('input[type="submit"], input[type="button"], button').forEach((btn) => {
@@ -372,14 +389,12 @@ function getCommentFormMetadata() {
       });
     });
   });
-  const firstForm = document.querySelector('form');
-  const formHtml = firstForm ? firstForm.outerHTML.slice(0, 12000) : '';
   return {
     hasForm: fields.length > 0,
     fields,
     url: window.location.href,
     domain: window.location.hostname,
-    formHtml: formHtml || undefined
+    formHtml: undefined
   };
 }
 
@@ -682,24 +697,42 @@ function recognizeByKeywords(formMetadata) {
   return matches;
 }
 
-// ---------- Blog 评论表单：关键词匹配与缓存 ----------
+// ---------- Blog 评论表单：关键词匹配与缓存（每类约 30+ 种多语言关键词） ----------
 const COMMENT_FIELD_KEYWORDS = {
   comment: {
-    keywords: ['comment', 'comments', 'message', 'reply', 'komentář', 'komentar', 'commentaire', '评论', '留言', '内容'],
+    keywords: [
+      'comment', 'comments', 'message', 'reply', 'feedback', 'note', '内容', '评论', '留言', '评论内容', '回复',
+      'komentář', 'komentar', 'commentaire', 'comentario', 'kommentar', 'commento', 'comentário', 'reactie', 'kommentar',
+      'kommentera', 'yorum', 'σχόλιο', 'komentaras', 'komentārs', 'uwagi', 'комментарий', 'komentar', 'ความคิดเห็น',
+      'bình luận', '댓글', 'コメント', '评论', '意見', 'observación', 'mensaje'
+    ],
     isTextarea: true,
     weights: { name: 3, label: 2, placeholder: 1 }
   },
   commentName: {
-    keywords: ['name', 'author', 'jméno', 'jmeno', 'nombre', 'nom', '姓名', '名字', '昵称'],
+    keywords: [
+      'name', 'author', 'your name', 'username', 'display name', '姓名', '名字', '昵称', '作者', '称呼',
+      'jméno', 'jmeno', 'ime', 'nombre', 'nom', 'nome', 'naam', 'namn', 'név', 'imię', 'имя', 'tên', '이름',
+      '名前', 'nome', 'naam', 'autor', 'pengarang', 'όνομα', 'vārds', 'vardas', 'nume', 'isim', 'ad'
+    ],
     weights: { name: 3, label: 2, placeholder: 1 }
   },
   commentEmail: {
-    keywords: ['email', 'e-mail', 'mail', '邮箱', '邮件'],
+    keywords: [
+      'email', 'e-mail', 'mail', 'email address', '邮箱', '邮件', '电子邮箱', '電郵', 'メール', '이메일',
+      'e-pošta', 'eposta', 'correo', 'courriel', 'e-mail', 'e-mailadres', 'mejl', 'e-posta', 'el. paštas',
+      'e-pasts', 'elektroninis paštas', 'email', 'e-mail', 'อีเมล', 'địa chỉ email', '이메일', 'メールアドレス'
+    ],
     type: 'email',
     weights: { type: 3, name: 2, label: 2 }
   },
   commentWebsite: {
-    keywords: ['website', 'url', 'web', 'site', 'homepage', '网址', '网站', '个人网站'],
+    keywords: [
+      'website', 'url', 'web', 'site', 'homepage', 'link', '网址', '网站', '个人网站', '主页', '連結', '網址',
+      'spletišče', 'spletisce', 'spletna', 'weblink', 'webová stránka', 'sitio', 'webseite', 'site web', 'site internet',
+      'pagina web', 'website', 'weblink', 'hemsida', 'honlap', 'strona', 'site', 'сайт', 'trang web', '웹사이트',
+      'ウェブサイト', 'website url', 'home page', 'personal website', 'your website', 'blog url'
+    ],
     type: 'url',
     weights: { type: 2, name: 2, label: 2 }
   }
@@ -987,17 +1020,46 @@ function logSpamVerificationDetails(result) {
 }
 
 /**
+ * 将页面滚动到最底部并等待，便于动态加载的评论区域进入视口/DOM
+ * 评论表单常在页面底部，部分站点需滚动后才加载
+ */
+function scrollPageToBottomAndWait() {
+  const maxScroll = Math.max(
+    document.body.scrollHeight ?? 0,
+    document.documentElement.scrollHeight ?? 0,
+    (document.body.offsetHeight ?? 0) + (document.body.scrollTop ?? 0),
+    (document.documentElement.offsetHeight ?? 0) + (document.documentElement.scrollTop ?? 0)
+  );
+  window.scrollTo({ top: maxScroll, left: 0, behavior: 'auto' });
+  console.log(`${TAG} 已滚动到页面底部 (scrollTop=${maxScroll})，等待动态加载…`);
+}
+
+/** 滚动到底部后的等待时间（毫秒），给懒加载评论区留出时间 */
+const SCROLL_TO_BOTTOM_WAIT_MS = 1200;
+/** 最多滚动次数：先识别，识别不到再滚动并重试，超过此次数仍未找到 form 则退出 */
+const MAX_SCROLL_ATTEMPTS = 3;
+
+/**
  * 评论表单识别（优先缓存 → AI → 关键词）
+ * 流程：1. 先识别 form 是否存在 → 2. 若识别不到则滚动到底部 → 3. 等待后再次识别 → 4. 重复 2～3，最多滚动 3 次；仍无 form 则提示「找不到form表单」。
  */
 async function recognizeCommentForm(useLlm = false) {
   commentFormState.recognitionStatus = 'recognizing';
   commentFormState.domain = window.location.hostname;
 
   try {
-    const formMetadata = getCommentFormMetadata();
-    if (!formMetadata.hasForm || !formMetadata.fields?.length) {
-      commentFormState.recognitionStatus = 'failed';
-      return { status: 'no_form', message: '当前页面未检测到评论表单' };
+    let formMetadata = getCommentFormMetadata();
+    let scrollCount = 0;
+
+    while (!formMetadata.hasForm || !formMetadata.fields?.length) {
+      if (scrollCount >= MAX_SCROLL_ATTEMPTS) {
+        commentFormState.recognitionStatus = 'failed';
+        return { status: 'no_form', message: '找不到form表单' };
+      }
+      scrollPageToBottomAndWait();
+      await new Promise(r => setTimeout(r, SCROLL_TO_BOTTOM_WAIT_MS));
+      scrollCount++;
+      formMetadata = getCommentFormMetadata();
     }
 
     const cacheKey = getCommentCacheKey();

@@ -56,6 +56,7 @@ const elements = {
   blogFieldCount: document.getElementById('blogFieldCount'),
   blogSpamHint: document.getElementById('blogSpamHint'),
   blogNoFormHint: document.getElementById('blogNoFormHint'),
+  blogCacheHint: document.getElementById('blogCacheHint'),
   blogClearCacheBtn: document.getElementById('blogClearCacheBtn'),
   blogStatusMessage: document.getElementById('blogStatusMessage'),
   blogStatusText: document.getElementById('blogStatusText'),
@@ -404,6 +405,43 @@ function syncBlogSiteSelect() {
   if (currentSiteId) elements.blogSiteSelect.value = currentSiteId;
 }
 
+function getCommentCacheKeyForTab(tab) {
+  if (!tab?.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) return null;
+  try {
+    const u = new URL(tab.url);
+    return 'blog_' + u.hostname + u.pathname;
+  } catch {
+    return null;
+  }
+}
+
+async function updateBlogClearCacheState() {
+  if (!elements.blogClearCacheBtn) return;
+  const cacheKey = getCommentCacheKeyForTab(currentTab);
+  if (!cacheKey) {
+    elements.blogClearCacheBtn.disabled = true;
+    elements.blogClearCacheBtn.classList.remove('blog-cache-has');
+    if (elements.blogCacheHint) {
+      elements.blogCacheHint.classList.add('hidden');
+    }
+    return;
+  }
+  const result = await chrome.storage.local.get(['blogCommentFieldMappings']);
+  const mappings = result.blogCommentFieldMappings || {};
+  const cached = mappings[cacheKey];
+  const hasCache = !!(cached && (cached.mappings?.length || (Array.isArray(cached) && cached.length)));
+  elements.blogClearCacheBtn.disabled = !hasCache;
+  elements.blogClearCacheBtn.classList.toggle('blog-cache-has', hasCache);
+  if (elements.blogCacheHint) {
+    if (hasCache) {
+      elements.blogCacheHint.textContent = '当前页已有缓存';
+      elements.blogCacheHint.classList.remove('hidden');
+    } else {
+      elements.blogCacheHint.classList.add('hidden');
+    }
+  }
+}
+
 async function getCommentPageState() {
   if (!currentTab?.id) return;
   try {
@@ -424,6 +462,7 @@ async function getCommentPageState() {
     if (e?.message?.includes('Receiving end')) setBlogNoForm();
     else setBlogNoForm();
   }
+  await updateBlogClearCacheState();
 }
 
 function updateBlogFormStatus() {
@@ -463,6 +502,7 @@ function setBlogNoForm() {
   if (elements.blogNoFormHint) elements.blogNoFormHint.classList.remove('hidden');
   if (elements.blogGenerateAndFillBtn) elements.blogGenerateAndFillBtn.disabled = true;
   if (elements.blogVerifySubmitBtn) elements.blogVerifySubmitBtn.disabled = true;
+  updateBlogClearCacheState();
 }
 
 /**
@@ -818,6 +858,7 @@ function setupEventListeners() {
       await chrome.tabs.sendMessage(currentTab.id, { action: 'clearCommentMapping' });
       showBlogMessage('已清除本页评论缓存', 'success');
       await getCommentPageState();
+      await updateBlogClearCacheState();
     } catch (e) {
       showBlogMessage('清除失败', 'error');
     }

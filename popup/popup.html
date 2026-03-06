@@ -131,7 +131,10 @@
         <div id="blogSpamHint" class="hint hidden" style="color: var(--warning-color);">检测到验证项，将暂停自动提交</div>
       </div>
       <div id="blogNoFormHint" class="hint hidden">未在当前页面检测到评论表单</div>
-      <button id="blogClearCacheBtn" class="btn-link btn-link-subtle" type="button">清除本页评论识别缓存</button>
+      <div class="blog-cache-row">
+        <span id="blogCacheHint" class="blog-cache-hint hidden">当前页已有缓存</span>
+        <button id="blogClearCacheBtn" class="btn-link btn-link-subtle" type="button">清除本页评论识别缓存</button>
+      </div>
     </section>
 
     <!-- 评论操作结果提示（成功/失败）展示在按钮上方 -->
