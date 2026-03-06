@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>外链提交助手 - Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="title">
+        <img src="../icons/icon128.png" class="icon" alt="">
+        外链提交助手
+      </h1>
+      <div class="header-actions">
+        <button type="button" id="refreshTabBtn" class="btn-icon-header" title="刷新当前页面">🔄</button>
+      </div>
+    </header>
+
+    <!-- Mode Tabs -->
+    <nav class="mode-tabs">
+      <button type="button" class="mode-tab active" data-mode="blog">Blog 评论</button>
+      <button type="button" class="mode-tab" data-mode="batch">批量提交</button>
+    </nav>
+
+    <!-- ========== Blog 评论模式 ========== -->
+    <div id="panel-blog" class="mode-panel">
+      <!-- 站点选择 -->
+      <section class="section">
+        <div class="section-header">
+          <label for="blogSiteSelect" class="label">当前站点</label>
+          <button id="blogManageSitesBtn" class="btn-link" title="管理站点">⚙️ 管理</button>
+        </div>
+        <select id="blogSiteSelect" class="select">
+          <option value="">-- 请选择站点 --</option>
+        </select>
+        <div id="blogCurrentSiteUrl" class="current-site-url hidden"></div>
+        <div id="blogNoSitesHint" class="hint hidden">还没有站点，<a href="#" id="blogAddSiteLink">添加一个</a></div>
+      </section>
+
+      <!-- 当前页面 -->
+      <section class="section">
+        <div class="section-header">
+          <span class="label">当前页面</span>
+          <span id="blogPageDomain" class="page-domain"></span>
+        </div>
+        <div id="blogFormStatus" class="form-status">
+          <div class="status-row">
+            <span class="status-label">评论表单:</span>
+            <span id="blogRecognitionStatus" class="status-value">检测中...</span>
+          </div>
+          <div id="blogFieldCountRow" class="status-row blog-field-count-clickable" title="点击在页面上用蓝色虚线框标出可填字段">
+            <span class="status-label">可填字段:</span>
+            <span id="blogFieldCount" class="status-value">-</span>
+            <span class="blog-field-nav-btns">
+              <button type="button" id="blogFieldPrevBtn" class="btn-arrow" title="上一个可填字段">↑</button>
+              <button type="button" id="blogFieldNextBtn" class="btn-arrow" title="下一个可填字段">↓</button>
+            </span>
+          </div>
+          <div id="blogSpamHint" class="hint hidden" style="color: var(--warning-color);">检测到验证项，将暂停自动提交</div>
+        </div>
+        <div id="blogNoFormHint" class="hint hidden">未在当前页面检测到评论表单</div>
+        <div class="blog-cache-row">
+          <span id="blogCacheHint" class="blog-cache-hint hidden">当前页已有缓存</span>
+          <button id="blogClearCacheBtn" class="btn-link btn-link-subtle" type="button">清除本页评论识别缓存</button>
+        </div>
+      </section>
+
+      <!-- 评论操作结果提示 -->
+      <div id="blogStatusMessage" class="status-message status-message-above-actions hidden">
+        <span id="blogStatusText"></span>
+        <button id="blogCloseStatusBtn" class="close-btn" type="button" title="关闭">×</button>
+      </div>
+      <!-- 运行状态栏 -->
+      <div id="blogStatusLine" class="blog-status-line hidden" title="运行状态"></div>
+
+      <!-- 操作按钮 -->
+      <section class="section actions">
+        <button id="blogGenerateAndFillBtn" class="btn btn-primary" disabled>
+          <span class="btn-icon">💬</span>
+          生成评论并填充
+        </button>
+        <button id="blogVerifySubmitBtn" class="btn btn-secondary" disabled title="提交后点击，验证页面是否出现本站链接">
+          <span class="btn-icon">✓</span>
+          验证本次提交
+        </button>
+      </section>
+
+      <!-- 快捷操作 -->
+      <section class="section">
+        <div class="section-header"><span class="label">快捷操作</span></div>
+        <div class="quick-links">
+          <button id="openBlogSitesBtn" class="btn-link">📝 Blog 评论站点列表</button>
+          <button id="blogOpenOptionsBtn" class="btn-link">⚙️ 设置</button>
+        </div>
+      </section>
+
+      <!-- 其他设置 -->
+      <section class="section section-other">
+        <div class="section-header"><span class="label">其他设置</span></div>
+        <label for="autoSubmit" class="checkbox-label">
+          <input type="checkbox" id="autoSubmit">
+          允许自动提交（慎用）
+        </label>
+        <p class="hint hint-other">开启后将在填充完成后自动点击提交。建议仅在熟悉的站点使用。</p>
+      </section>
+    </div>
+    <!-- /panel-blog -->
+
+    <!-- ========== 批量提交模式 ========== -->
+    <div id="panel-batch" class="mode-panel hidden">
+      <!-- 飞书凭证配置 -->
+      <section class="section">
+        <div class="section-header">
+          <span class="label">飞书配置</span>
+          <span id="feishuSyncStatus" class="sync-status">未同步</span>
+        </div>
+        <div class="feishu-config-form">
+          <div class="form-group">
+            <label for="feishuAppId" class="form-label">App ID</label>
+            <input type="text" id="feishuAppId" class="input" placeholder="飞书应用 App ID">
+          </div>
+          <div class="form-group">
+            <label for="feishuAppSecret" class="form-label">App Secret</label>
+            <input type="password" id="feishuAppSecret" class="input" placeholder="飞书应用 App Secret">
+          </div>
+          <div class="form-group">
+            <label for="feishuAppToken" class="form-label">App Token</label>
+            <input type="text" id="feishuAppToken" class="input" placeholder="多维表格 App Token">
+          </div>
+          <div class="form-group">
+            <label for="feishuTableId" class="form-label">Table ID</label>
+            <input type="text" id="feishuTableId" class="input" placeholder="数据表 ID">
+          </div>
+          <div class="form-actions">
+            <button id="saveFeishuCredentialsBtn" class="btn btn-secondary btn-sm">保存凭证</button>
+            <button id="syncFromFeishuBtn" class="btn btn-primary btn-sm" disabled>从飞书同步</button>
+          </div>
+          <div id="feishuLastSyncTime" class="sync-time hidden"></div>
+        </div>
+      </section>
+
+      <!-- 批量任务控制 -->
+      <section class="section">
+        <div class="section-header">
+          <span class="label">批量任务</span>
+          <span id="batchProgress" class="batch-progress hidden">0/0</span>
+        </div>
+
+        <!-- 任务状态消息 -->
+        <div id="batchStatusMessage" class="status-message hidden">
+          <span id="batchStatusText"></span>
+        </div>
+
+        <!-- URL 列表 -->
+        <div id="batchUrlList" class="batch-url-list">
+          <div class="empty-list-hint">请先从飞书同步数据</div>
+        </div>
+
+        <!-- 批量操作按钮 -->
+        <div class="batch-actions">
+          <div class="filter-row">
+            <select id="batchTypeFilter" class="select select-sm">
+              <option value="">全部类型</option>
+              <option value="Blog 评论站" selected>Blog 评论站</option>
+              <option value="导航站">导航站</option>
+              <option value="其他">其他</option>
+            </select>
+            <select id="batchStatusFilter" class="select select-sm">
+              <option value="">全部状态</option>
+              <option value="待提交" selected>待提交</option>
+              <option value="提交中">提交中</option>
+              <option value="检测成功">检测成功</option>
+              <option value="检测失败">检测失败</option>
+            </select>
+          </div>
+          <div class="action-buttons">
+            <button id="selectAllBtn" class="btn btn-link btn-sm">全选</button>
+            <button id="deselectAllBtn" class="btn btn-link btn-sm">取消全选</button>
+          </div>
+          <div class="start-buttons">
+            <button id="startBatchBtn" class="btn btn-primary" disabled>
+              <span class="btn-icon">▶️</span>
+              开始批量提交
+            </button>
+            <button id="pauseBatchBtn" class="btn btn-secondary hidden" disabled>
+              <span class="btn-icon">⏸️</span>
+              暂停
+            </button>
+            <button id="stopBatchBtn" class="btn btn-danger hidden" disabled>
+              <span class="btn-icon">⏹️</span>
+              停止
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 批量提交日志 -->
+      <section class="section">
+        <div class="section-header">
+          <span class="label">执行日志</span>
+          <button id="clearBatchLogBtn" class="btn-link btn-sm">清除</button>
+        </div>
+        <div id="batchLogContainer" class="batch-log-container">
+          <div class="empty-log-hint">暂无日志</div>
+        </div>
+      </section>
+    </div>
+    <!-- /panel-batch -->
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

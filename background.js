@@ -1069,5 +1069,330 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
   }
 }
 
-// Handle extension icon click (already handled by popup)
-// chrome.action.onClicked.addListener((tab) => { ... });
+// Handle extension icon click - Open Side Panel
+chrome.action.onClicked.addListener(async (tab) => {
+  // 如果有 popup，这个监听器不会被触发
+  // 当移除 popup 后，点击图标会打开 Side Panel
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch (e) {
+    console.error('[Background] Failed to open side panel:', e);
+  }
+});
+
+// 允许在所有页面使用 Side Panel
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
+// ========== 批量提交：Background 驱动的自动化流程 ==========
+
+/**
+ * 批量提交任务状态
+ */
+let batchTaskState = {
+  running: false,
+  paused: false,
+  currentIndex: 0,
+  total: 0,
+  urls: [],
+  results: []
+};
+
+/**
+ * 开始批量提交任务
+ * @param {Array} urls - 要提交的 URL 列表
+ * @param {Object} options - 配置选项
+ */
+async function startBatchTask(urls, options = {}) {
+  if (batchTaskState.running) {
+    return { success: false, error: '已有任务在运行' };
+  }
+
+  batchTaskState = {
+    running: true,
+    paused: false,
+    currentIndex: 0,
+    total: urls.length,
+    urls: urls,
+    results: [],
+    options: {
+      siteId: options.siteId,
+      autoSubmit: options.autoSubmit ?? false,
+      interval: options.interval ?? 2000,
+      timeout: options.timeout ?? 30000,
+      onProgress: options.onProgress,
+      onComplete: options.onComplete
+    }
+  };
+
+  // 通知 Side Panel 更新 UI
+  notifyBatchProgress();
+
+  // 异步执行批量任务
+  executeBatchTask();
+
+  return { success: true, total: urls.length };
+}
+
+/**
+ * 执行批量提交任务
+ */
+async function executeBatchTask() {
+  const { urls, options } = batchTaskState;
+
+  // 获取站点信息
+  const storage = await chrome.storage.local.get(['sites', 'settings']);
+  const sites = storage.sites || [];
+  const site = sites.find(s => s.id === options.siteId);
+
+  if (!site) {
+    batchTaskState.running = false;
+    notifyBatchComplete({ error: '未找到站点配置' });
+    return;
+  }
+
+  for (let i = batchTaskState.currentIndex; i < urls.length; i++) {
+    // 检查是否暂停或停止
+    while (batchTaskState.paused && batchTaskState.running) {
+      await sleep(500);
+    }
+    if (!batchTaskState.running) break;
+
+    batchTaskState.currentIndex = i;
+    const urlItem = urls[i];
+
+    // 通知进度
+    notifyBatchProgress({
+      url: urlItem.url,
+      index: i,
+      status: 'running'
+    });
+
+    try {
+      // 打开新标签页
+      const tab = await chrome.tabs.create({ url: urlItem.url, active: false });
+
+      // 等待页面加载完成
+      await waitForTabComplete(tab.id, options.timeout);
+
+      // 获取 LLM 配置
+      const llmConfig = storage.settings?.llmConfig;
+      const llmEnabled = !!(llmConfig?.enabled && llmConfig?.apiKey);
+
+      // 获取页面元数据
+      const metaRes = await chrome.tabs.sendMessage(tab.id, { action: 'getPageMetadata' }).catch(() => null);
+      const title = metaRes?.title ?? '';
+      const description = metaRes?.description ?? '';
+      const h1 = metaRes?.h1 ?? '';
+
+      // 执行评论生成和填充
+      const fillRes = await chrome.tabs.sendMessage(tab.id, {
+        action: 'blogCommentGenerateAndFill',
+        title,
+        description,
+        h1,
+        siteId: options.siteId,
+        autoSubmit: options.autoSubmit,
+        llmEnabled,
+        tabId: tab.id,
+        siteUrl: site.siteUrl
+      }).catch(() => null);
+
+      let result = {
+        url: urlItem.url,
+        record_id: urlItem.record_id,
+        success: false,
+        status: '识别失败',
+        message: '无法与页面通信'
+      };
+
+      if (fillRes?.success) {
+        const r = fillRes.result;
+
+        // 等待页面刷新后验证
+        if (r.clickedSubmit) {
+          await sleep(3000);
+          const verifyRes = await chrome.tabs.sendMessage(tab.id, {
+            action: 'verifyCommentSubmission',
+            siteUrl: site.siteUrl
+          }).catch(() => null);
+
+          if (verifyRes?.success && verifyRes.result?.success) {
+            result = {
+              url: urlItem.url,
+              record_id: urlItem.record_id,
+              success: true,
+              status: '检测成功',
+              message: verifyRes.result.message
+            };
+          } else {
+            result = {
+              url: urlItem.url,
+              record_id: urlItem.record_id,
+              success: false,
+              status: '检测失败',
+              message: verifyRes?.result?.message || '未在页面中找到站点链接'
+            };
+          }
+        } else if (r.hasSpamVerification) {
+          result = {
+            url: urlItem.url,
+            record_id: urlItem.record_id,
+            success: false,
+            status: '需人工验证',
+            message: '检测到验证项'
+          };
+        } else {
+          result = {
+            url: urlItem.url,
+            record_id: urlItem.record_id,
+            success: false,
+            status: '未提交',
+            message: `已填充 ${r.filledCount} 个字段`
+          };
+        }
+      } else {
+        result = {
+          url: urlItem.url,
+          record_id: urlItem.record_id,
+          success: false,
+          status: '识别失败',
+          message: fillRes?.error || '评论生成失败'
+        };
+      }
+
+      batchTaskState.results.push(result);
+
+      // 通知进度
+      notifyBatchProgress({
+        url: urlItem.url,
+        index: i,
+        status: result.success ? 'success' : 'failed',
+        result
+      });
+
+      // 关闭标签页
+      await chrome.tabs.remove(tab.id).catch(() => {});
+
+      // 间隔等待
+      if (i < urls.length - 1 && batchTaskState.running) {
+        await sleep(options.interval);
+      }
+
+    } catch (error) {
+      const result = {
+        url: urlItem.url,
+        record_id: urlItem.record_id,
+        success: false,
+        status: '超时',
+        message: error.message
+      };
+      batchTaskState.results.push(result);
+
+      notifyBatchProgress({
+        url: urlItem.url,
+        index: i,
+        status: 'failed',
+        result
+      });
+    }
+  }
+
+  // 任务完成
+  batchTaskState.running = false;
+  notifyBatchComplete({
+    total: urls.length,
+    results: batchTaskState.results
+  });
+}
+
+/**
+ * 暂停/继续批量任务
+ */
+function pauseBatchTask(pause) {
+  batchTaskState.paused = pause;
+}
+
+/**
+ * 停止批量任务
+ */
+function stopBatchTask() {
+  batchTaskState.running = false;
+  batchTaskState.paused = false;
+}
+
+/**
+ * 获取批量任务状态
+ */
+function getBatchTaskState() {
+  return {
+    running: batchTaskState.running,
+    paused: batchTaskState.paused,
+    currentIndex: batchTaskState.currentIndex,
+    total: batchTaskState.total,
+    progress: batchTaskState.total > 0 ? (batchTaskState.currentIndex / batchTaskState.total) : 0
+  };
+}
+
+/**
+ * 通知 Side Panel 批量任务进度
+ */
+function notifyBatchProgress(data) {
+  chrome.runtime.sendMessage({
+    action: 'batchProgress',
+    data: {
+      ...getBatchTaskState(),
+      ...data
+    }
+  }).catch(() => {});
+}
+
+/**
+ * 通知 Side Panel 批量任务完成
+ */
+function notifyBatchComplete(data) {
+  chrome.runtime.sendMessage({
+    action: 'batchComplete',
+    data
+  }).catch(() => {});
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function waitForTabComplete(tabId, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('页面加载超时'));
+    }, timeout);
+
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// 监听来自 Side Panel 的批量任务消息
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'startBatchTask') {
+    startBatchTask(request.urls, request.options)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'pauseBatchTask') {
+    pauseBatchTask(request.paused);
+    sendResponse({ success: true });
+  } else if (request.action === 'stopBatchTask') {
+    stopBatchTask();
+    sendResponse({ success: true });
+  } else if (request.action === 'getBatchTaskState') {
+    sendResponse(getBatchTaskState());
+  }
+});
