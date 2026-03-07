@@ -1322,19 +1322,122 @@ async function syncFromFeishu() {
       throw new Error(data.msg || '获取飞书表格数据失败');
     }
 
-    // 解析数据
-    batchUrls = (data.data?.items || []).map((item, index) => {
+    // 字段类型验证和错误收集
+    const fieldErrors = [];
+    const validItems = [];
+    const allItems = data.data?.items || [];
+
+    allItems.forEach((item, index) => {
       const fields = item.fields || {};
-      return {
-        record_id: item.record_id,
-        url: fields['外链 URL'] || fields.url || fields.link_url || '',
-        type: fields['类型'] || fields.type || '其他',
-        status: fields['提交状态'] || fields.status || fields.submit_status || '待提交',
-        remark: fields['备注'] || fields.remark || fields.note || '',
-        index: index,
-        selected: false
-      };
-    }).filter(item => item.url);
+      const rowNum = index + 1;
+      const itemErrors = [];
+
+      // 验证 URL 字段
+      let urlValue = fields['外链 URL'] || fields.url || fields.link_url;
+      if (urlValue === undefined || urlValue === null || urlValue === '') {
+        itemErrors.push('URL字段为空');
+      } else if (typeof urlValue === 'object') {
+        // 飞书链接字段返回对象 {link: "url", text: "显示文本"}
+        if (urlValue.link || urlValue.url) {
+          urlValue = urlValue.link || urlValue.url;
+        } else {
+          itemErrors.push(`URL字段类型错误(对象缺少link属性): ${JSON.stringify(urlValue)}`);
+        }
+      } else if (typeof urlValue !== 'string') {
+        itemErrors.push(`URL字段类型错误: 期望字符串, 实际为 ${typeof urlValue}`);
+      }
+
+      // 验证类型字段（可选，但如果有值需要是字符串）
+      const typeValue = fields['类型'] || fields.type;
+      if (typeValue !== undefined && typeValue !== null && typeof typeValue !== 'string') {
+        if (Array.isArray(typeValue)) {
+          // 飞书多选字段返回数组
+          if (typeValue.length > 0 && typeof typeValue[0] !== 'string') {
+            itemErrors.push(`类型字段格式异常: ${JSON.stringify(typeValue)}`);
+          }
+        } else {
+          itemErrors.push(`类型字段类型错误: 期望字符串, 实际为 ${typeof typeValue}`);
+        }
+      }
+
+      // 验证状态字段（可选，但如果有值需要是字符串）
+      const statusValue = fields['提交状态'] || fields.status || fields.submit_status;
+      if (statusValue !== undefined && statusValue !== null && typeof statusValue !== 'string') {
+        if (Array.isArray(statusValue)) {
+          if (statusValue.length > 0 && typeof statusValue[0] !== 'string') {
+            itemErrors.push(`状态字段格式异常: ${JSON.stringify(statusValue)}`);
+          }
+        } else {
+          itemErrors.push(`状态字段类型错误: 期望字符串, 实际为 ${typeof statusValue}`);
+        }
+      }
+
+      // 验证备注字段
+      const remarkValue = fields['备注'] || fields.remark || fields.note;
+      if (remarkValue !== undefined && remarkValue !== null && typeof remarkValue !== 'string') {
+        itemErrors.push(`备注字段类型错误: 期望字符串, 实际为 ${typeof remarkValue}`);
+      }
+
+      if (itemErrors.length > 0) {
+        fieldErrors.push({
+          row: rowNum,
+          record_id: item.record_id,
+          errors: itemErrors,
+          rawFields: fields
+        });
+      } else {
+        // 验证通过，添加到有效列表
+        urlValue = String(urlValue || '').trim();
+        if (urlValue) {
+          // 处理类型字段
+          let finalType = typeValue;
+          if (Array.isArray(typeValue)) {
+            finalType = typeValue.join(', ') || '其他';
+          }
+          finalType = String(finalType || '其他');
+
+          // 处理状态字段
+          let finalStatus = statusValue;
+          if (Array.isArray(statusValue)) {
+            finalStatus = statusValue[0] || '待提交';
+          }
+          finalStatus = String(finalStatus || '待提交');
+
+          validItems.push({
+            record_id: item.record_id,
+            url: urlValue,
+            type: finalType,
+            status: finalStatus,
+            remark: String(remarkValue || ''),
+            index: validItems.length,
+            selected: false
+          });
+        }
+      }
+    });
+
+    // 如果有字段错误，记录日志并提示用户
+    if (fieldErrors.length > 0) {
+      console.warn('[SidePanel] 飞书字段验证警告:', fieldErrors);
+      addBatchLog(`发现 ${fieldErrors.length} 条记录存在字段问题`, 'warning');
+
+      // 构建详细的错误消息
+      const errorDetails = fieldErrors.slice(0, 5).map(e =>
+        `第${e.row}行: ${e.errors.join('; ')}`
+      ).join('\n');
+
+      const moreCount = fieldErrors.length > 5 ? ` (还有 ${fieldErrors.length - 5} 条...)` : '';
+
+      showBatchMessage(
+        `同步完成: ${validItems.length} 条有效, ${fieldErrors.length} 条有字段问题${moreCount}`,
+        fieldErrors.length > 0 ? 'warning' : 'success'
+      );
+
+      // 在控制台输出完整错误信息
+      console.log('[SidePanel] 字段错误详情:\n' + errorDetails + moreCount);
+    }
+
+    batchUrls = validItems;
 
     // 保存到本地
     await chrome.storage.local.set({
@@ -1344,8 +1447,11 @@ async function syncFromFeishu() {
 
     updateSyncStatus('synced', new Date().toISOString());
     renderBatchUrlList();
-    showBatchMessage(`已从飞书同步 ${batchUrls.length} 条记录`, 'success');
-    addBatchLog(`从飞书同步 ${batchUrls.length} 条记录`, 'info');
+
+    if (fieldErrors.length === 0) {
+      showBatchMessage(`已从飞书同步 ${batchUrls.length} 条记录`, 'success');
+      addBatchLog(`从飞书同步 ${batchUrls.length} 条记录`, 'info');
+    }
 
   } catch (error) {
     console.error('[SidePanel] Failed to sync from Feishu:', error);
@@ -1453,6 +1559,10 @@ function getStatusKey(status) {
 }
 
 function truncateUrl(url, maxLen) {
+  // 确保 url 是字符串类型
+  if (typeof url !== 'string') {
+    url = url?.link || url?.url || String(url || '');
+  }
   if (!url || url.length <= maxLen) return url || '';
   return url.slice(0, maxLen - 3) + '...';
 }
