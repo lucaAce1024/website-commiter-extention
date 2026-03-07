@@ -22,12 +22,92 @@
 
     <!-- Mode Tabs -->
     <nav class="mode-tabs">
-      <button type="button" class="mode-tab active" data-mode="blog">Blog 评论</button>
+      <button type="button" class="mode-tab active" data-mode="nav">导航站</button>
+      <button type="button" class="mode-tab" data-mode="blog">Blog 评论</button>
       <button type="button" class="mode-tab" data-mode="batch">批量提交</button>
     </nav>
 
+    <!-- ========== 导航站模式 ========== -->
+    <div id="panel-nav" class="mode-panel">
+      <!-- 站点选择 -->
+      <section class="section">
+        <div class="section-header">
+          <label for="navSiteSelect" class="label">当前站点</label>
+        </div>
+        <select id="navSiteSelect" class="select">
+          <option value="">-- 请选择站点 --</option>
+        </select>
+        <div id="navCurrentSiteUrl" class="current-site-url hidden"></div>
+        <div id="navNoSitesHint" class="hint hidden">还没有站点，<a href="#" id="navAddSiteLink">添加一个</a></div>
+      </section>
+
+      <!-- 当前页面 -->
+      <section class="section">
+        <div class="section-header">
+          <span class="label">当前页面</span>
+          <span id="navPageDomain" class="page-domain"></span>
+        </div>
+        <div id="navFormStatus" class="form-status">
+          <div class="status-row">
+            <span class="status-label">表单识别:</span>
+            <span id="navRecognitionStatus" class="status-value">检测中...</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">可填字段:</span>
+            <span id="navFieldCount" class="status-value">-</span>
+          </div>
+        </div>
+        <div id="navNoFormHint" class="hint hidden">未在当前页面检测到提交表单</div>
+        <button id="navClearCacheBtn" class="btn-link btn-link-subtle" type="button" title="识别不准或漏填时，清除本页缓存后重新点「自动识别并填充」">
+          清除本页识别缓存
+        </button>
+
+        <!-- 按字段填充 -->
+        <div id="navFieldFillSection" class="field-fill-section hidden">
+          <div class="section-header">
+            <span class="label">按字段填充</span>
+          </div>
+          <p id="navFieldFillHint" class="field-fill-hint">点击某一项可只填充该字段</p>
+          <ul id="navFieldFillList" class="field-fill-list"></ul>
+        </div>
+        <p id="navFieldFillNoData" class="field-fill-hint hidden">识别表单后可在此按字段填充</p>
+      </section>
+
+      <!-- 操作按钮 -->
+      <section class="section actions">
+        <button id="navFillFormBtn" class="btn btn-primary" disabled>
+          <span class="btn-icon">✏️</span>
+          自动识别并填充
+        </button>
+        <button id="navAiFillFormBtn" class="btn btn-secondary" disabled title="使用 AI 智能识别表单字段（需在设置中配置 GLM API Key）">
+          <span class="btn-icon">🤖</span>
+          AI 智能识别
+        </button>
+      </section>
+
+      <!-- 快捷操作 -->
+      <section class="section">
+        <div class="section-header"><span class="label">快捷操作</span></div>
+        <div class="quick-links">
+          <button id="openNavSitesBtn" class="btn-link">📚 导航站列表</button>
+          <button id="navOpenOptionsBtn" class="btn-link">⚙️ 设置</button>
+        </div>
+      </section>
+
+      <!-- 其他设置 -->
+      <section class="section section-other">
+        <div class="section-header"><span class="label">其他设置</span></div>
+        <label for="navAutoSubmit" class="checkbox-label">
+          <input type="checkbox" id="navAutoSubmit">
+          允许自动提交（慎用）
+        </label>
+        <p class="hint hint-other">开启后将在填充完成后自动点击提交。建议仅在熟悉的站点使用。</p>
+      </section>
+    </div>
+    <!-- /panel-nav -->
+
     <!-- ========== Blog 评论模式 ========== -->
-    <div id="panel-blog" class="mode-panel">
+    <div id="panel-blog" class="mode-panel hidden">
       <!-- 站点选择 -->
       <section class="section">
         <div class="section-header">
