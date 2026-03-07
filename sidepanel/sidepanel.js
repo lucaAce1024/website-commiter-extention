@@ -1185,12 +1185,14 @@ function setupEventListeners() {
 
   // 全选/取消全选
   elements.selectAllBtn?.addEventListener('click', () => {
+    batchUrls.forEach(item => item.selected = true);
     const checkboxes = elements.batchUrlList?.querySelectorAll('input[type="checkbox"]');
     checkboxes?.forEach(cb => cb.checked = true);
     updateBatchStartButton();
   });
 
   elements.deselectAllBtn?.addEventListener('click', () => {
+    batchUrls.forEach(item => item.selected = false);
     const checkboxes = elements.batchUrlList?.querySelectorAll('input[type="checkbox"]');
     checkboxes?.forEach(cb => cb.checked = false);
     updateBatchStartButton();
@@ -1536,6 +1538,7 @@ function renderBatchUrlList() {
     });
   });
 
+  updateBatchStartButton();
   updateBatchProgress();
 }
 
