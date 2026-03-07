@@ -109,38 +109,18 @@
     </div>
     <!-- /panel-blog -->
 
-    <!-- ========== 批量提交模式 ========== -->
-    <div id="panel-batch" class="mode-panel hidden">
-      <!-- 飞书凭证配置 -->
+      <!-- 麾书同步状态 -->
       <section class="section">
         <div class="section-header">
-          <span class="label">飞书配置</span>
-          <span id="feishuSyncStatus" class="sync-status">未同步</span>
-        </div>
-        <div class="feishu-config-form">
-          <div class="form-group">
-            <label for="feishuAppId" class="form-label">App ID</label>
-            <input type="text" id="feishuAppId" class="input" placeholder="飞书应用 App ID">
-          </div>
-          <div class="form-group">
-            <label for="feishuAppSecret" class="form-label">App Secret</label>
-            <input type="password" id="feishuAppSecret" class="input" placeholder="飞书应用 App Secret">
-          </div>
-          <div class="form-group">
-            <label for="feishuAppToken" class="form-label">App Token</label>
-            <input type="text" id="feishuAppToken" class="input" placeholder="多维表格 App Token">
-          </div>
-          <div class="form-group">
-            <label for="feishuTableId" class="form-label">Table ID</label>
-            <input type="text" id="feishuTableId" class="input" placeholder="数据表 ID">
-          </div>
-          <div class="form-actions">
-            <button id="saveFeishuCredentialsBtn" class="btn btn-secondary btn-sm">保存凭证</button>
-            <button id="syncFromFeishuBtn" class="btn btn-primary btn-sm" disabled>从飞书同步</button>
-          </div>
+          <span class="label">同步状态</span>
+          <button type="button" class="btn btn-primary btn-sm" id="syncFromFeishuBtn" disabled>
+            <span class="btn-icon">📥</span>从飞书同步
+          </button>
           <div id="feishuLastSyncTime" class="sync-time hidden"></div>
         </div>
-      </section>
+
+      <!-- 批量任务控制 -->
+      <section class="section">
 
       <!-- 批量任务控制 -->
       <section class="section">

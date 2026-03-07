@@ -43,6 +43,10 @@
         <span class="tab-icon">⚙️</span>
         设置
       </button>
+      <button class="tab" data-tab="feishu">
+        <span class="tab-icon">📊</span>
+        飞书配置
+      </button>
     </nav>
 
     <!-- Tab Contents -->
@@ -281,6 +285,115 @@
             <span class="btn-icon">💾</span>
             保存设置
           </button>
+        </div>
+      </section>
+
+      <!-- Feishu Tab -->
+      <section id="tab-feishu" class="tab-content">
+        <div class="content-header">
+          <h2>飞书配置</h2>
+          <p class="section-desc">配置飞书多维表格凭证，用于批量提交功能的数据源</p>
+        </div>
+
+        <div class="feishu-config-section">
+          <div class="config-card">
+            <h3 class="card-title">飞书应用凭证</h3>
+            <p class="card-desc">在 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建应用并获取以下凭证</p>
+
+            <div class="form-group">
+              <label for="feishuAppId">App ID</label>
+              <input type="text" id="feishuAppId" class="input" placeholder="飞书应用 App ID">
+            </div>
+
+            <div class="form-group">
+              <label for="feishuAppSecret">App Secret</label>
+              <div class="input-with-eye">
+                <input type="password" id="feishuAppSecret" class="input" placeholder="飞书应用 App Secret">
+                <button type="button" id="toggleFeishuSecretBtn" class="input-eye-btn" title="显示 Secret">👁</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-card">
+            <h3 class="card-title">多维表格配置</h3>
+            <p class="card-desc">从飞书多维表格 URL 或设置中获取以下信息</p>
+
+            <div class="form-group">
+              <label for="feishuAppToken">App Token</label>
+              <input type="text" id="feishuAppToken" class="input" placeholder="多维表格 App Token（从表格 URL 获取）">
+              <p class="field-hint">多维表格 URL 格式：https://xxx.feishu.cn/base/<strong>AppToken</strong>?table=TableId</p>
+            </div>
+
+            <div class="form-group">
+              <label for="feishuTableId">Table ID</label>
+              <input type="text" id="feishuTableId" class="input" placeholder="数据表 ID">
+              <p class="field-hint">可在多维表格 URL 的 table 参数中找到，或点击表格右上角「...」→ 获取链接</p>
+            </div>
+          </div>
+
+          <div class="config-card">
+            <h3 class="card-title">表格字段约定</h3>
+            <p class="card-desc">飞书多维表格需包含以下字段（列名必须一致）</p>
+
+            <table class="field-table">
+              <thead>
+                <tr>
+                  <th>列名</th>
+                  <th>类型</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>外链 URL</code></td>
+                  <td>文本</td>
+                  <td>待提交的页面 URL（必填）</td>
+                </tr>
+                <tr>
+                  <td><code>类型</code></td>
+                  <td>单选/文本</td>
+                  <td>Blog 评论站 / 导航站 / 其他</td>
+                </tr>
+                <tr>
+                  <td><code>提交状态</code></td>
+                  <td>文本</td>
+                  <td>待提交 / 检测成功 / 检测失败 等</td>
+                </tr>
+                <tr>
+                  <td><code>最后更新时间</code></td>
+                  <td>文本</td>
+                  <td>最后状态变更时间（可选）</td>
+                </tr>
+                <tr>
+                  <td><code>备注</code></td>
+                  <td>文本</td>
+                  <td>人工备注（可选）</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="sync-status-section">
+            <div class="sync-info">
+              <span class="sync-label">同步状态：</span>
+              <span id="feishuSyncStatusText" class="sync-status-badge">未配置</span>
+            </div>
+            <div class="sync-info">
+              <span class="sync-label">最近同步：</span>
+              <span id="feishuLastSyncTimeText">-</span>
+            </div>
+          </div>
+
+          <div class="feishu-actions">
+            <button class="btn btn-secondary" id="saveFeishuBtn">
+              <span class="btn-icon">💾</span>
+              保存飞书配置
+            </button>
+            <button class="btn btn-primary" id="testFeishuBtn" disabled>
+              <span class="btn-icon">🔗</span>
+              测试连接
+            </button>
+          </div>
         </div>
       </section>
     </main>

@@ -44,13 +44,7 @@ const elements = {
   blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn'),
   autoSubmit: document.getElementById('autoSubmit'),
 
-  // 批量提交模式 - 飞书配置
-  feishuSyncStatus: document.getElementById('feishuSyncStatus'),
-  feishuAppId: document.getElementById('feishuAppId'),
-  feishuAppSecret: document.getElementById('feishuAppSecret'),
-  feishuAppToken: document.getElementById('feishuAppToken'),
-  feishuTableId: document.getElementById('feishuTableId'),
-  saveFeishuCredentialsBtn: document.getElementById('saveFeishuCredentialsBtn'),
+  // 批量提交模式 - 飞书同步
   syncFromFeishuBtn: document.getElementById('syncFromFeishuBtn'),
   feishuLastSyncTime: document.getElementById('feishuLastSyncTime'),
 
@@ -746,31 +740,32 @@ function setupEventListeners() {
 
 async function loadFeishuCredentials() {
   try {
-    const result = await chrome.storage.local.get(['feishuCredentials', 'feishuLastSyncTime']);
-    const credentials = result.feishuCredentials || {};
+    const result = await chrome.storage.local.get(['feishuConfig']);
+    const config = result.feishuConfig || {};
 
-    if (elements.feishuAppId) elements.feishuAppId.value = credentials.feishuAppId || '';
-    if (elements.feishuAppSecret) elements.feishuAppSecret.value = credentials.feishuAppSecret || '';
-    if (elements.feishuAppToken) elements.feishuAppToken.value = credentials.feishuAppToken || '';
-    if (elements.feishuTableId) elements.feishuTableId.value = credentials.feishuTableId || '';
-
-    // 更新同步状态
-    if (credentials.feishuAppId && credentials.feishuAppSecret) {
+    // 更新同步按钮状态
+    if (config.appId && config.appSecret && config.appToken && config.tableId) {
       if (elements.syncFromFeishuBtn) elements.syncFromFeishuBtn.disabled = false;
-      if (result.feishuLastSyncTime) {
-        updateSyncStatus('synced', result.feishuLastSyncTime);
+      if (elements.feishuLastSyncTime) {
+        elements.feishuLastSyncTime.textContent = config.lastSyncTime || '';
+        elements.feishuLastSyncTime.classList.remove('hidden');
+      } else {
+        elements.feishuLastSyncTime.classList.add('hidden');
       }
+    } else {
+      if (elements.syncFromFeishuBtn) elements.syncFromFeishuBtn.disabled = true;
+      showToast('请先在设置页面配置飞书凭证', 'warning');
     }
   } catch (error) {
-    console.error('[SidePanel] Failed to load Feishu credentials:', error);
+    console.error('[SidePanel] Failed to load Feishu config:', error);
   }
 }
 
 async function getFeishuAccessToken() {
-  const result = await chrome.storage.local.get(['feishuCredentials']);
-  const credentials = result.feishuCredentials || {};
+  const result = await chrome.storage.local.get(['feishuConfig']);
+  const config = result.feishuConfig || {};
 
-  if (!credentials.feishuAppId || !credentials.feishuAppSecret) {
+  if (!config.appId || !config.appSecret) {
     throw new Error('请先配置飞书凭证');
   }
 
@@ -779,8 +774,8 @@ async function getFeishuAccessToken() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      app_id: credentials.feishuAppId,
-      app_secret: credentials.feishuAppSecret
+      app_id: config.appId,
+      app_secret: config.appSecret
     })
   });
 
@@ -799,10 +794,10 @@ async function syncFromFeishu() {
       elements.syncFromFeishuBtn.innerHTML = '同步中...';
     }
 
-    const result = await chrome.storage.local.get(['feishuCredentials']);
-    const credentials = result.feishuCredentials || {};
+    const result = await chrome.storage.local.get(['feishuConfig']);
+    const config = result.feishuConfig || {};
 
-    if (!credentials.feishuAppToken || !credentials.feishuTableId) {
+    if (!config.appToken || !config.tableId) {
       showBatchMessage('请先配置飞书 App Token 和 Table ID', 'warning');
       return;
     }
@@ -811,7 +806,7 @@ async function syncFromFeishu() {
 
     // 获取表格记录
     const response = await fetch(
-      `https://open.feishu.cn/open-apis/bitable/v1/apps/${credentials.feishuAppToken}/tables/${credentials.feishuTableId}/records`,
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${config.appToken}/tables/${config.tableId}/records`,
       {
         method: 'GET',
         headers: {

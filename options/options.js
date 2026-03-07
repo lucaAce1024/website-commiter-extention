@@ -10,6 +10,7 @@ let navSites = [];
 let blogCommentSites = [];
 let fieldMappings = {};
 let settings = {};
+let feishuConfig = {};
 /** 当前编辑中待保存的 Logo 图片（data URL），用于文件上传类表单项 */
 let pendingLogoDataUrl = null;
 /** 当前编辑中待保存的界面截图（data URL），对应 App Image 等上传框 */
@@ -179,6 +180,17 @@ function cacheElements() {
   // Toast
   elements.toast = document.getElementById('toast');
   elements.toastMessage = document.getElementById('toastMessage');
+
+  // Feishu Config
+  elements.feishuAppId = document.getElementById('feishuAppId');
+  elements.feishuAppSecret = document.getElementById('feishuAppSecret');
+  elements.feishuAppToken = document.getElementById('feishuAppToken');
+  elements.feishuTableId = document.getElementById('feishuTableId');
+  elements.feishuSyncStatusText = document.getElementById('feishuSyncStatusText');
+  elements.feishuLastSyncTimeText = document.getElementById('feishuLastSyncTimeText');
+  elements.toggleFeishuSecretBtn = document.getElementById('toggleFeishuSecretBtn');
+  elements.saveFeishuBtn = document.getElementById('saveFeishuBtn');
+  elements.testFeishuBtn = document.getElementById('testFeishuBtn');
 }
 
 /**
@@ -235,6 +247,19 @@ function setupEventListeners() {
     elements.toggleApiKeyBtn.setAttribute('aria-label', elements.toggleApiKeyBtn.title);
   });
 
+  // Feishu Config
+  elements.toggleFeishuSecretBtn?.addEventListener('click', () => {
+    const input = elements.feishuAppSecret;
+    if (!input) return;
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    elements.toggleFeishuSecretBtn.textContent = isPassword ? '🙈' : '👁';
+    elements.toggleFeishuSecretBtn.title = isPassword ? '隐藏 Secret' : '显示 Secret';
+    elements.toggleFeishuSecretBtn.setAttribute('aria-label', elements.toggleFeishuSecretBtn.title);
+  });
+  elements.saveFeishuBtn?.addEventListener('click', saveFeishuConfig);
+  elements.testFeishuBtn?.addEventListener('click', testFeishuConnection);
+
   // Modal
   elements.modalCloseBtn?.addEventListener('click', closeModal);
   elements.modalOverlay?.addEventListener('click', closeModal);
@@ -254,6 +279,7 @@ async function loadData() {
     llmConfig: { enabled: false, endpoint: '', apiKey: '', model: '' },
     autoSubmit: false
   };
+  feishuConfig = result.feishuConfig || {};
 
   // Update backup summary
   elements.summarySites.textContent = sites.length;
@@ -307,6 +333,9 @@ function renderCurrentTab() {
       break;
     case 'settings':
       renderSettingsTab();
+      break;
+    case 'feishu':
+      renderFeishuTab();
       break;
   }
 }
@@ -1432,6 +1461,146 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+/**
+ * Render Feishu tab
+ */
+function renderFeishuTab() {
+  // Load feishu config from storage if not already loaded
+  if (!feishuConfig) {
+    feishuConfig = {};
+  }
+
+  // Fill in form fields
+  if (elements.feishuAppId) {
+    elements.feishuAppId.value = feishuConfig.appId || '';
+  }
+  if (elements.feishuAppSecret) {
+    elements.feishuAppSecret.value = feishuConfig.appSecret || '';
+  }
+  if (elements.feishuAppToken) {
+    elements.feishuAppToken.value = feishuConfig.appToken || '';
+  }
+  if (elements.feishuTableId) {
+    elements.feishuTableId.value = feishuConfig.tableId || '';
+  }
+
+  // Update sync status
+  updateFeishuSyncStatus();
+}
+
+/**
+ * Update Feishu sync status display
+ */
+function updateFeishuSyncStatus() {
+  const hasConfig = feishuConfig?.appId && feishuConfig?.appSecret && feishuConfig?.appToken && feishuConfig?.tableId;
+
+  if (elements.feishuSyncStatusText) {
+    if (hasConfig) {
+      elements.feishuSyncStatusText.textContent = '已配置';
+      elements.feishuSyncStatusText.className = 'sync-status-badge synced';
+    } else {
+      elements.feishuSyncStatusText.textContent = '未配置';
+      elements.feishuSyncStatusText.className = 'sync-status-badge';
+    }
+  }
+
+  // Enable/disable test button
+  if (elements.testFeishuBtn) {
+    elements.testFeishuBtn.disabled = !hasConfig;
+  }
+
+  // Update last sync time
+  if (elements.feishuLastSyncTimeText && feishuConfig?.lastSyncTime) {
+    elements.feishuLastSyncTimeText.textContent = feishuConfig.lastSyncTime;
+  } else if (elements.feishuLastSyncTimeText) {
+    elements.feishuLastSyncTimeText.textContent = '-';
+  }
+}
+
+/**
+ * Save Feishu config
+ */
+async function saveFeishuConfig() {
+  try {
+    const newConfig = {
+      appId: elements.feishuAppId?.value?.trim() || '',
+      appSecret: elements.feishuAppSecret?.value?.trim() || '',
+      appToken: elements.feishuAppToken?.value?.trim() || '',
+      tableId: elements.feishuTableId?.value?.trim() || '',
+      lastSyncTime: feishuConfig?.lastSyncTime || null
+    };
+
+    await chrome.storage.local.set({ feishuConfig: newConfig });
+    feishuConfig = newConfig;
+    updateFeishuSyncStatus();
+    showToast('飞书配置已保存', 'success');
+  } catch (error) {
+    showToast('保存失败: ' + error.message, 'error');
+  }
+}
+
+/**
+ * Test Feishu connection
+ */
+async function testFeishuConnection() {
+  const appId = elements.feishuAppId?.value?.trim();
+  const appSecret = elements.feishuAppSecret?.value?.trim();
+  const appToken = elements.feishuAppToken?.value?.trim();
+  const tableId = elements.feishuTableId?.value?.trim();
+
+  if (!appId || !appSecret || !appToken || !tableId) {
+    showToast('请先填写完整的飞书配置', 'warning');
+    return;
+  }
+
+  elements.testFeishuBtn.disabled = true;
+  elements.testFeishuBtn.innerHTML = '<span class="btn-icon">⏳</span> 测试中...';
+
+  try {
+    // Get tenant access token
+    const tokenResponse = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        app_id: appId,
+        app_secret: appSecret
+      })
+    });
+
+    const tokenData = await tokenResponse.json();
+
+    if (tokenData.code !== 0) {
+      showToast('认证失败: ' + (tokenData.msg || '未知错误'), 'error');
+      return;
+    }
+
+    const tenantAccessToken = tokenData.tenant_access_token;
+
+    // Test access to bitable
+    const bitableResponse = await fetch(`https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records?page_size=1`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${tenantAccessToken}`
+      }
+    });
+
+    const bitableData = await bitableResponse.json();
+
+    if (bitableResponse.ok && (bitableData.code === 0 || bitableData.code === 99991663)) {
+      showToast('连接成功！', 'success');
+    } else {
+      showToast('访问多维表格失败: ' + (bitableData.msg || '请检查 App Token 和 Table ID'), 'error');
+    }
+  } catch (error) {
+    showToast('连接失败: ' + error.message, 'error');
+  } finally {
+    elements.testFeishuBtn.disabled = false;
+    elements.testFeishuBtn.innerHTML = '<span class="btn-icon">🔗</span> 测试连接';
+  }
 }
 
 // Initialize on load
