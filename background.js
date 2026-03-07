@@ -168,7 +168,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.warn('[Background] sendResponse 已关闭:', e.message);
       }
     };
-    handleGenerateBlogComment(request.title, request.description, request.h1)
+    handleGenerateBlogComment(request.title, request.description, request.h1, request.siteUrl)
       .then(text => safeSend({ success: true, comment: text }))
       .catch(error => safeSend({ success: false, error: error.message }));
     return true;
@@ -593,8 +593,8 @@ function parseAIResponse(content, formMetadata) {
 }
 
 // ---------- Blog Comment: 评论内容生成 ----------
-const BLOG_COMMENT_SYSTEM = 'You write natural blog comments. Use the SAME language as the page content (title, description, H1): if they are in English, write in English; if in Slovenian, write in Slovenian; if in Chinese, write in Chinese; etc. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation. Comment length: at least 500 characters, at most 600 characters (strict).';
-const BLOG_COMMENT_USER_PREFIX = 'Write one natural, friendly comment in the SAME language as the Title, Description, and H1 below (match their language). Comment length: at least 500 characters, at most 600 characters (strict). Only output the single line of comment.\n\nTitle: ';
+const BLOG_COMMENT_SYSTEM = 'You write natural blog comments. Use the SAME language as the page content (title, description, H1): if they are in English, write in English; if in Slovenian, write in Slovenian; if in Chinese, write in Chinese; etc. Reply with exactly one line: the comment text only. No quotes, no markdown, no explanation. Comment length: at least 200 characters, at most 300 characters (strict).';
+const BLOG_COMMENT_USER_PREFIX = 'Write one natural, friendly comment in the SAME language as the Title, Description, and H1 below (match their language). Comment length: at least 200 characters, at most 300 characters (strict). Only output the single line of comment.\n\nTitle: ';
 const BLOG_COMMENT_USER_SUFFIX = '\n\nDescription: ';
 
 /**
@@ -606,43 +606,43 @@ function extractCommentFromReasoning(reasoningContent) {
   const text = reasoningContent.trim();
   if (!text) return '';
 
-  // 1. 匹配 "…" (N characters) 形式（允许中间有单引号如 I've），评论长度约 500–600 字符
-  const withLen = text.match(/"\s*([^"]{400,700}?)\s*"\s*\(\d+\s*characters?\)/i);
+  // 1. 匹配 "…" (N characters) 形式（允许中间有单引号如 I've），评论长度约 200–300 字符
+  const withLen = text.match(/"\s*([^"]{150,400}?)\s*"\s*\(\d+\s*characters?\)/i);
   if (withLen && withLen[1]) return withLen[1].trim();
 
-  // 2. 匹配任意双引号内 400~700 字（取最长的一段作为评论）
-  const allQuoted = text.match(/"([^"]{400,700})"/g);
+  // 2. 匹配任意双引号内 150~400 字（取最长的一段作为评论）
+  const allQuoted = text.match(/"([^"]{150,400})"/g);
   if (allQuoted && allQuoted.length > 0) {
     let best = '';
     for (const m of allQuoted) {
       const inner = m.slice(1, -1).trim();
-      if (inner.length > best.length && inner.length >= 400) best = inner;
+      if (inner.length > best.length && inner.length >= 150) best = inner;
     }
     if (best) return best;
   }
 
-  // 3. 取末尾连续一段“像评论”的文本（GLM 常把最终结论放在 reasoning 末尾，可能无引号或被截断）
+  // 3. 取末尾连续一段"像评论"的文本（GLM 常把最终结论放在 reasoning 末尾，可能无引号或被截断）
   const noStructure = text.replace(/\*\*[^*]+\*\*/g, '').replace(/^\s*\d+\.\s+/gm, '');
-  const tail = noStructure.slice(-800).trim();
+  const tail = noStructure.slice(-500).trim();
   const tailLines = tail.split(/\n/).map(s => s.trim()).filter(Boolean);
   const lastChunk = tailLines.slice(-5).join(' ').trim();
-  if (lastChunk.length >= 400 && lastChunk.length <= 700 && !/^[\*#\d]/.test(lastChunk)) {
+  if (lastChunk.length >= 150 && lastChunk.length <= 400 && !/^[\*#\d]/.test(lastChunk)) {
     return lastChunk;
   }
   if (tailLines.length > 0) {
     for (let i = tailLines.length - 1; i >= 0; i--) {
       const line = tailLines[i];
-      if (line.length >= 400 && line.length <= 700 && !/^[\*#\d\s]/.test(line) && !/^(Analyze|Topic|Constraints|Drafting|Refining|Idea\s*\d)/i.test(line)) {
+      if (line.length >= 150 && line.length <= 400 && !/^[\*#\d\s]/.test(line) && !/^(Analyze|Topic|Constraints|Drafting|Refining|Idea\s*\d)/i.test(line)) {
         return line;
       }
     }
   }
 
-  // 4. 任意非空行 400~700 字且不像标题/列表
+  // 4. 任意非空行 150~400 字且不像标题/列表
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line.length >= 400 && line.length <= 700 && !/^\s*[\*#\d]/.test(line) && !/^(Analyze|Topic|Constraints|Idea\s*\d)/i.test(line)) {
+    if (line.length >= 150 && line.length <= 400 && !/^\s*[\*#\d]/.test(line) && !/^(Analyze|Topic|Constraints|Idea\s*\d)/i.test(line)) {
       return line;
     }
   }
@@ -671,14 +671,15 @@ function parseBlogCommentResponse(data) {
 }
 
 /**
- * 根据页面 title、description、h1 调用 LLM 生成 500–600 字符英文评论
+ * 根据页面 title、description、h1 调用 LLM 生成 200–300 字符评论
  * 控制台会打印请求/响应日志，便于调试（扩展 Service Worker 控制台）
  * @param {string} title - document.title
  * @param {string} description - meta description
  * @param {string} [h1] - 本页第一个 h1 标签的文本
+ * @param {string} [siteUrl] - 当前站点 URL，用于在评论末尾追加
  * @returns {Promise<string>} 评论文本
  */
-async function handleGenerateBlogComment(title, description, h1 = '') {
+async function handleGenerateBlogComment(title, description, h1 = '', siteUrl = '') {
   const log = (...a) => console.log('[Background][BlogComment]', ...a);
   const logWarn = (...a) => console.warn('[Background][BlogComment]', ...a);
   const logErr = (...a) => console.error('[Background][BlogComment]', ...a);
@@ -703,7 +704,7 @@ async function handleGenerateBlogComment(title, description, h1 = '') {
     ],
     stream: false,
     temperature: 0.7,
-    max_tokens: 800
+    max_tokens: 500
   };
   if (llmConfig.disableThinking !== false) {
     requestBody.thinking = { type: 'disabled' };
@@ -745,13 +746,19 @@ async function handleGenerateBlogComment(title, description, h1 = '') {
       usage: data?.usage || null
     });
 
-    const comment = parseBlogCommentResponse(data);
+    let comment = parseBlogCommentResponse(data);
     if (!comment) {
       logErr('解析结果为空. content 长度:', contentLen, 'reasoning_content 长度:', reasoningLen);
       const rc = data?.choices?.[0]?.message?.reasoning_content || '';
       logErr('reasoning_content 前 500 字:', rc.slice(0, 500));
       logErr('reasoning_content 后 300 字:', rc.slice(-300));
       throw new Error('API 返回内容为空或无法从响应中解析出评论');
+    }
+
+    // 如果提供了 siteUrl，在评论末尾追加网站 URL
+    if (siteUrl && siteUrl.trim()) {
+      comment = comment + '\n\n' + siteUrl.trim();
+      log('已追加网站 URL 到评论末尾，最终评论长度:', comment.length);
     }
 
     log('解析得到评论长度:', comment.length, '预览:', comment.slice(0, 80) + (comment.length > 80 ? '…' : ''));
@@ -836,7 +843,7 @@ function buildBlogCommentOneShotPrompt(formDescription, formMetadata, title, des
     : `Form fields (index, type, name, label, placeholder):\n${formDescription}\n\nMultilingual: ${multiLangInstruction}\n\nMap each to one of: ${standardList}. Also identify which field index is the submit button (e.g. "Post comment", "Objavi komentar", "Submit").`;
 
   const h1Text = h1 && h1.trim() ? h1.trim() : '(no h1)';
-  const commentPart = `Also, based on the following page title, description, and H1 heading, write one natural, friendly comment. Comment length: at least 500 characters, at most 600 characters (strict). Use the SAME language as the title/description/H1: if they are in English, write in English; if in another language (e.g. Slovenian, Czech, Chinese), write in that language. Only the comment text, no quotes or explanation.
+  const commentPart = `Also, based on the following page title, description, and H1 heading, write one natural, friendly comment. Comment length: at least 200 characters, at most 300 characters (strict). Use the SAME language as the title/description/H1: if they are in English, write in English; if in another language (e.g. Slovenian, Czech, Chinese), write in that language. Only the comment text, no quotes or explanation.
 
 Title: ${title || '(no title)'}
 Description: ${description || '(no description)'}
@@ -902,7 +909,7 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
   const requestBody = {
     model: llmConfig.model || 'gpt-3.5-turbo',
     messages: [
-      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language. Map form fields to standard types (comment, commentName, commentEmail, commentWebsite), identify the submit button index, and generate one blog comment in the SAME language as the page title/description/H1. The comment in your JSON must be at least 500 characters and at most 600 characters (strict). Respond only with a single JSON object.' },
+      { role: 'system', content: 'You are a helpful assistant. You understand form labels in any language. Map form fields to standard types (comment, commentName, commentEmail, commentWebsite), identify the submit button index, and generate one blog comment in the SAME language as the page title/description/H1. The comment in your JSON must be at least 200 characters and at most 300 characters (strict). Respond only with a single JSON object.' },
       { role: 'user', content: userContent }
     ],
     stream: false,

@@ -189,7 +189,21 @@
     </div>
     <!-- /panel-blog -->
 
-      <!-- 麾书同步状态 -->
+    <!-- ========== 批量提交模式 ========== -->
+    <div id="panel-batch" class="mode-panel hidden">
+      <!-- 站点选择 -->
+      <section class="section">
+        <div class="section-header">
+          <label for="batchSiteSelect" class="label">当前站点</label>
+        </div>
+        <select id="batchSiteSelect" class="select">
+          <option value="">-- 请选择站点 --</option>
+        </select>
+        <div id="batchCurrentSiteUrl" class="current-site-url hidden"></div>
+        <div id="batchNoSitesHint" class="hint hidden">还没有站点，<a href="#" id="batchAddSiteLink">添加一个</a></div>
+      </section>
+
+      <!-- 飞书同步状态 -->
       <section class="section">
         <div class="section-header">
           <span class="label">同步状态</span>
@@ -199,8 +213,25 @@
           <div id="feishuLastSyncTime" class="sync-time hidden"></div>
         </div>
 
-      <!-- 批量任务控制 -->
-      <section class="section">
+        <!-- 同步条数限制 -->
+        <div class="sync-limit-row">
+          <label for="feishuSyncLimit" class="label-sm">同步条数:</label>
+          <select id="feishuSyncLimit" class="select select-sm">
+            <option value="5">5 条</option>
+            <option value="10" selected>10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+          </select>
+        </div>
+
+        <!-- 同步状态消息 -->
+        <div id="feishuStatusMessage" class="status-message hidden">
+          <span id="feishuStatusText"></span>
+        </div>
+
+        <!-- 运行状态栏 -->
+        <div id="batchStatusLine" class="batch-status-line hidden" title="运行状态"></div>
+      </section>
 
       <!-- 批量任务控制 -->
       <section class="section">
@@ -210,8 +241,9 @@
         </div>
 
         <!-- 任务状态消息 -->
-        <div id="batchStatusMessage" class="status-message hidden">
+        <div id="batchStatusMessage" class="status-message status-message-above-actions hidden">
           <span id="batchStatusText"></span>
+          <button id="batchCloseStatusBtn" class="close-btn" type="button" title="关闭">×</button>
         </div>
 
         <!-- URL 列表 -->

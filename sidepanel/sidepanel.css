@@ -494,6 +494,27 @@ body {
   display: none;
 }
 
+/* Batch 状态栏 */
+.batch-status-line {
+  margin-top: 6px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  min-height: 1.5em;
+}
+
+.batch-status-line.hidden {
+  display: none;
+}
+
 /* Actions */
 .actions {
   display: flex;
@@ -660,6 +681,21 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 4px;
+}
+
+/* 同步条数限制行 */
+.sync-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.label-sm {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* 批量进度 */

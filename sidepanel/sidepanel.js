@@ -81,14 +81,25 @@ const elements = {
   blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn'),
   autoSubmit: document.getElementById('autoSubmit'),
 
+  // 批量提交模式 - 站点选择
+  batchSiteSelect: document.getElementById('batchSiteSelect'),
+  batchCurrentSiteUrl: document.getElementById('batchCurrentSiteUrl'),
+  batchNoSitesHint: document.getElementById('batchNoSitesHint'),
+  batchAddSiteLink: document.getElementById('batchAddSiteLink'),
+
   // 批量提交模式 - 飞书同步
   syncFromFeishuBtn: document.getElementById('syncFromFeishuBtn'),
   feishuLastSyncTime: document.getElementById('feishuLastSyncTime'),
+  feishuStatusMessage: document.getElementById('feishuStatusMessage'),
+  feishuStatusText: document.getElementById('feishuStatusText'),
+  feishuSyncLimit: document.getElementById('feishuSyncLimit'),
 
   // 批量提交模式 - 任务控制
   batchProgress: document.getElementById('batchProgress'),
+  batchStatusLine: document.getElementById('batchStatusLine'),
   batchStatusMessage: document.getElementById('batchStatusMessage'),
   batchStatusText: document.getElementById('batchStatusText'),
+  batchCloseStatusBtn: document.getElementById('batchCloseStatusBtn'),
   batchUrlList: document.getElementById('batchUrlList'),
   batchTypeFilter: document.getElementById('batchTypeFilter'),
   batchStatusFilter: document.getElementById('batchStatusFilter'),
@@ -112,6 +123,7 @@ let commentPageState = null;
 let batchUrls = [];
 let batchRunning = false;
 let batchPaused = false;
+let feishuSyncLimit = 10; // 默认同步 10 条
 
 // ========== 初始化 ==========
 async function init() {
@@ -120,6 +132,15 @@ async function init() {
 
   // 加载站点
   await loadSites();
+
+  // 加载飞书同步条数限制
+  const storage = await chrome.storage.local.get(['feishuSyncLimit']);
+  if (storage.feishuSyncLimit) {
+    feishuSyncLimit = storage.feishuSyncLimit;
+    if (elements.feishuSyncLimit) {
+      elements.feishuSyncLimit.value = String(feishuSyncLimit);
+    }
+  }
 
   // 根据当前模式获取页面状态
   if (currentMode === 'nav') {
@@ -229,6 +250,7 @@ async function loadSites() {
     // 更新站点下拉框
     syncNavSiteSelect();
     syncBlogSiteSelect();
+    syncBatchSiteSelect();
 
     // 显示/隐藏无站点提示
     if (sites.length === 0) {
@@ -273,6 +295,38 @@ function syncBlogSiteSelect() {
   if (currentSiteId) elements.blogSiteSelect.value = currentSiteId;
 }
 
+function syncBatchSiteSelect() {
+  if (!elements.batchSiteSelect) return;
+  elements.batchSiteSelect.innerHTML = '<option value="">-- 请选择站点 --</option>';
+  sites.forEach((site) => {
+    const opt = document.createElement('option');
+    opt.value = site.id;
+    opt.textContent = site.siteName || site.siteUrl || 'Unnamed';
+    elements.batchSiteSelect.appendChild(opt);
+  });
+  if (currentSiteId) elements.batchSiteSelect.value = currentSiteId;
+  updateBatchSiteUrlDisplay();
+}
+
+function updateBatchSiteUrlDisplay() {
+  const site = currentSiteId ? sites.find(s => s.id === currentSiteId) : null;
+  const url = site?.siteUrl?.trim() || '';
+
+  if (elements.batchCurrentSiteUrl) {
+    if (url) {
+      elements.batchCurrentSiteUrl.textContent = url;
+      elements.batchCurrentSiteUrl.classList.remove('hidden');
+    } else {
+      elements.batchCurrentSiteUrl.classList.add('hidden');
+    }
+  }
+
+  // 更新提示
+  if (elements.batchNoSitesHint) {
+    elements.batchNoSitesHint.classList.toggle('hidden', sites.length > 0);
+  }
+}
+
 function updateCurrentSiteUrlDisplay() {
   const site = currentSiteId ? sites.find(s => s.id === currentSiteId) : null;
   const url = site?.siteUrl?.trim() || '';
@@ -312,7 +366,39 @@ function showModePanel(mode) {
     getCommentPageState();
     restoreBlogPopupState();
     tryShowLastVerifyResult();
+  } else if (mode === 'batch') {
+    // 切换到批量提交 tab 时，如果还没有数据则自动触发飞书同步
+    autoSyncIfNeeded();
   }
+}
+
+// 自动飞书同步（仅在数据为空或上次同步超过5分钟时）
+async function autoSyncIfNeeded() {
+  // 如果已有数据且是本次会话中同步的，不自动同步
+  if (batchUrls.length > 0) {
+    return;
+  }
+
+  // 检查是否配置了飞书
+  const result = await chrome.storage.local.get(['feishuConfig', 'feishuLastSyncTime']);
+  const config = result.feishuConfig || {};
+  if (!config.appToken || !config.tableId) {
+    return; // 没有配置飞书，不自动同步
+  }
+
+  // 检查上次同步时间，避免频繁同步（5分钟内不重复同步）
+  const lastSyncTime = result.feishuLastSyncTime;
+  if (lastSyncTime) {
+    const lastSync = new Date(lastSyncTime);
+    const now = new Date();
+    const minutesSinceSync = (now - lastSync) / 1000 / 60;
+    if (minutesSinceSync < 5 && batchUrls.length > 0) {
+      return;
+    }
+  }
+
+  // 执行自动同步
+  await syncFromFeishu();
 }
 
 // ========== 导航站功能 ==========
@@ -713,6 +799,41 @@ function setBlogStatusLine(text) {
   saveBlogPopupState();
 }
 
+// ========== Batch 消息展示 ==========
+
+function showBatchMessage(message, type = 'info') {
+  if (!elements.batchStatusText || !elements.batchStatusMessage) return;
+  elements.batchStatusText.textContent = message;
+  elements.batchStatusMessage.className = 'status-message status-message-above-actions ' + type;
+  elements.batchStatusMessage.classList.remove('hidden');
+  if (type === 'success' || type === 'warning') {
+    setTimeout(hideBatchMessage, 5000);
+  }
+}
+
+function hideBatchMessage() {
+  if (elements.batchStatusMessage) elements.batchStatusMessage.classList.add('hidden');
+}
+
+function setBatchStatusLine(text) {
+  if (!elements.batchStatusLine) return;
+  elements.batchStatusLine.textContent = text || '';
+  elements.batchStatusLine.classList.toggle('hidden', !text);
+  if (text) elements.batchStatusLine.scrollLeft = 0;
+}
+
+function showFeishuMessage(message, type = 'info') {
+  if (!elements.feishuStatusText || !elements.feishuStatusMessage) return;
+  elements.feishuStatusText.textContent = message;
+  elements.feishuStatusMessage.className = 'status-message ' + type;
+  elements.feishuStatusMessage.classList.remove('hidden');
+  if (type === 'success' || type === 'warning') {
+    setTimeout(() => {
+      if (elements.feishuStatusMessage) elements.feishuStatusMessage.classList.add('hidden');
+    }, 5000);
+  }
+}
+
 // ========== 事件监听设置 ==========
 
 function setupEventListeners() {
@@ -965,6 +1086,26 @@ function setupEventListeners() {
     updateBlogFormStatus();
   });
 
+  // ========== 批量提交模式事件 ==========
+
+  // 批量提交站点选择
+  elements.batchSiteSelect?.addEventListener('change', async () => {
+    const newId = elements.batchSiteSelect?.value || null;
+    const result = await chrome.storage.local.get(['settings']);
+    const settings = result.settings || {};
+    settings.currentSiteId = newId;
+    await chrome.storage.local.set({ settings });
+    currentSiteId = newId;
+    updateBatchSiteUrlDisplay();
+    updateBatchStartButton();
+  });
+
+  // 添加站点链接（批量提交）
+  elements.batchAddSiteLink?.addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
+  });
+
   // 管理站点按钮
   elements.blogManageSitesBtn?.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
@@ -1165,18 +1306,25 @@ function setupEventListeners() {
     };
 
     if (!credentials.feishuAppId || !credentials.feishuAppSecret || !credentials.feishuAppToken || !credentials.feishuTableId) {
-      showBatchMessage('请填写所有飞书凭证字段', 'warning');
+      showFeishuMessage('请填写所有飞书凭证字段', 'warning');
       return;
     }
 
     await chrome.storage.local.set({ feishuCredentials: credentials });
-    showBatchMessage('飞书凭证已保存', 'success');
+    showFeishuMessage('飞书凭证已保存', 'success');
     elements.syncFromFeishuBtn.disabled = false;
   });
 
   // 从飞书同步
   elements.syncFromFeishuBtn?.addEventListener('click', async () => {
     await syncFromFeishu();
+  });
+
+  // 同步条数限制变化
+  elements.feishuSyncLimit?.addEventListener('change', async () => {
+    feishuSyncLimit = parseInt(elements.feishuSyncLimit?.value || '10', 10);
+    // 保存到存储
+    await chrome.storage.local.set({ feishuSyncLimit });
   });
 
   // 筛选器变化
@@ -1224,6 +1372,11 @@ function setupEventListeners() {
     if (elements.batchLogContainer) {
       elements.batchLogContainer.innerHTML = '<div class="empty-log-hint">暂无日志</div>';
     }
+  });
+
+  // 关闭状态消息
+  elements.batchCloseStatusBtn?.addEventListener('click', () => {
+    hideBatchMessage();
   });
 
   // 监听 storage 变更
@@ -1301,15 +1454,16 @@ async function syncFromFeishu() {
     const config = result.feishuConfig || {};
 
     if (!config.appToken || !config.tableId) {
-      showBatchMessage('请先配置飞书 App Token 和 Table ID', 'warning');
+      showFeishuMessage('请先配置飞书 App Token 和 Table ID', 'warning');
       return;
     }
 
     const accessToken = await getFeishuAccessToken();
 
-    // 获取表格记录
+    // 获取表格记录（限制条数）
+    const limit = feishuSyncLimit || 10;
     const response = await fetch(
-      `https://open.feishu.cn/open-apis/bitable/v1/apps/${config.appToken}/tables/${config.tableId}/records`,
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${config.appToken}/tables/${config.tableId}/records?limit=${limit}`,
       {
         method: 'GET',
         headers: {
@@ -1329,7 +1483,10 @@ async function syncFromFeishu() {
     const validItems = [];
     const allItems = data.data?.items || [];
 
-    allItems.forEach((item, index) => {
+    // 强制限制处理的条数（即使API返回更多，也只处理指定的条数）
+    const itemsToProcess = allItems.slice(0, limit);
+
+    itemsToProcess.forEach((item, index) => {
       const fields = item.fields || {};
       const rowNum = index + 1;
       const itemErrors = [];
@@ -1451,14 +1608,19 @@ async function syncFromFeishu() {
     renderBatchUrlList();
 
     if (fieldErrors.length === 0) {
-      showBatchMessage(`已从飞书同步 ${batchUrls.length} 条记录`, 'success');
-      addBatchLog(`从飞书同步 ${batchUrls.length} 条记录`, 'info');
+      const syncedCount = batchUrls.length;
+      const totalAvailable = allItems.length;
+      const message = totalAvailable > syncedCount
+        ? `已同步 ${syncedCount} 条记录（表格共 ${totalAvailable} 条，已按同步条数限制配置处理）`
+        : `已从飞书同步 ${syncedCount} 条记录`;
+      showFeishuMessage(message, 'success');
+      addBatchLog(`从飞书同步 ${syncedCount} 条记录${totalAvailable > syncedCount ? `（表格共 ${totalAvailable} 条）` : ''}`, 'info');
     }
 
   } catch (error) {
     console.error('[SidePanel] Failed to sync from Feishu:', error);
     updateSyncStatus('failed');
-    showBatchMessage(error.message || '同步失败', 'error');
+    showFeishuMessage(error.message || '同步失败', 'error');
     addBatchLog(`同步失败: ${error.message}`, 'error');
   } finally {
     if (elements.syncFromFeishuBtn) {
@@ -1611,16 +1773,6 @@ function updateBatchControls(running) {
     elements.stopBatchBtn.classList.toggle('hidden', !running);
     elements.stopBatchBtn.disabled = !running;
   }
-}
-
-function showBatchMessage(message, type = 'info') {
-  if (!elements.batchStatusMessage || !elements.batchStatusText) return;
-  elements.batchStatusText.textContent = message;
-  elements.batchStatusMessage.className = `status-message ${type}`;
-  elements.batchStatusMessage.classList.remove('hidden');
-  setTimeout(() => {
-    elements.batchStatusMessage.classList.add('hidden');
-  }, 5000);
 }
 
 function addBatchLog(message, type = 'info') {
@@ -1805,14 +1957,14 @@ async function verifySubmission(tabId, siteUrl) {
 async function updateFeishuRecord(item) {
   try {
     const accessToken = await getFeishuAccessToken();
-    const result = await chrome.storage.local.get(['feishuCredentials']);
-    const credentials = result.feishuCredentials || {};
+    const result = await chrome.storage.local.get(['feishuConfig']);
+    const config = result.feishuConfig || {};
 
     const now = new Date();
     const updatedAt = `${now.getFullYear()}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getDate().toString().padStart(2, '0')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
 
     const response = await fetch(
-      `https://open.feishu.cn/open-apis/bitable/v1/apps/${credentials.feishuAppToken}/tables/${credentials.feishuTableId}/records/${item.record_id}`,
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${config.feishuAppToken}/tables/${config.feishuTableId}/records/${item.record_id}`,
       {
         method: 'PUT',
         headers: {
@@ -1861,6 +2013,16 @@ function handleBatchProgress(data) {
     elements.batchProgress.classList.toggle('hidden', !progress);
   }
 
+  // 更新运行状态栏（一行显示）
+  if (data.url && data.status) {
+    const statusText = data.status === 'running'
+      ? `正在处理 ${data.currentIndex + 1}/${data.total}: ${truncateUrl(data.url, 30)}`
+      : data.status === 'success'
+        ? `✓ 成功 ${data.currentIndex + 1}/${data.total}: ${truncateUrl(data.url, 30)}`
+        : `✗ 失败 ${data.currentIndex + 1}/${data.total}: ${truncateUrl(data.url, 30)}`;
+    setBatchStatusLine(statusText);
+  }
+
   // 更新状态消息
   if (data.url && data.status) {
     const statusText = data.status === 'running'
@@ -1900,6 +2062,9 @@ function handleBatchComplete(data) {
   batchRunning = false;
   batchPaused = false;
   updateBatchControls(false);
+
+  // 清除运行状态栏
+  setBatchStatusLine('');
 
   if (data.error) {
     showBatchMessage(`批量任务失败: ${data.error}`, 'error');
