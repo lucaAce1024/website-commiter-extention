@@ -1,6 +1,8 @@
 // Background service worker for Navigation Site Auto Submitter
 // Handles extension lifecycle and cross-tab communication
 
+importScripts('lib/fullAiAgent.js');
+
 const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
 /** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
 let pendingVerifyByTab = {};
@@ -170,7 +172,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     };
     handleGenerateBlogComment(request.title, request.description, request.h1, request.siteUrl)
       .then(text => safeSend({ success: true, comment: text }))
-      .catch(error => safeSend({ success: false, error: error.message }));
+      .catch(error => {
+        console.error('[Background][BlogComment] 流程失败:', error?.message);
+        safeSend({ success: false, error: error.message });
+      });
     return true;
   } else if (request.action === 'aiRecognizeCommentForm') {
     // 评论表单 AI 识别：4 个标准字段 + 提交按钮
@@ -216,6 +221,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false });
     }
     return false;
+  } else if (request.action === 'fullAiRunTask') {
+    const { tabId, siteUrl, generatedComment, siteId } = request;
+    if (!tabId || !siteUrl || !generatedComment) {
+      sendResponse({ success: false, error: '缺少 tabId、siteUrl 或 generatedComment' });
+      return false;
+    }
+    let responded = false;
+    const safeSend = (payload) => {
+      if (responded) return;
+      responded = true;
+      try {
+        sendResponse(payload);
+      } catch (e) {
+        console.warn('[Background] sendResponse 已关闭:', e.message);
+      }
+    };
+    const logFn = (msg) => {
+      console.log('[完全AI识别模式]', msg);
+      aiLogToPage(tabId, 'log', '[完全AI识别模式]', msg);
+    };
+    const runTask = async () => {
+      let profileData = null;
+      if (siteId) {
+        const storage = await chrome.storage.local.get(['sites']);
+        const sites = storage.sites || [];
+        const site = sites.find((s) => s.id === siteId);
+        if (site) {
+          profileData = {
+            commentName: site.siteName || '',
+            commentEmail: site.email || '',
+            commentWebsite: site.siteUrl || ''
+          };
+        }
+      }
+      return fullAiAgent.runFullAiTask(tabId, siteUrl, generatedComment, fetchLlmWithRetry, logFn, profileData);
+    };
+    runTask()
+      .then(result => safeSend(result))
+      .catch(err => {
+        console.error('[完全AI识别模式] 任务结束（异常）:', err?.message);
+        safeSend({ success: false, error: err?.message || '完全 AI 识别任务异常' });
+      });
+    return true;
   } else if (request.action === 'blogCommentFlowComplete') {
     // 流程在 content 结束时同步状态到 storage，popup 关闭后再打开也能看到最终状态
     const tabId = sender.tab?.id;
@@ -312,10 +360,16 @@ async function fetchLlmWithRetry(url, init, opts = {}) {
         await new Promise(r => setTimeout(r, retryDelayMs));
         continue;
       }
+      console.error('[Background] AI API 请求失败:', response?.status, errText?.slice(0, 300));
       throw lastError;
     } catch (e) {
       clearTimeout(timeoutId);
       lastError = e;
+      if (e?.name === 'AbortError') {
+        console.error('[Background] AI API 请求超时');
+      } else {
+        console.error('[Background] AI API 请求异常:', e?.message);
+      }
       if (attempt <= maxRetries) {
         if (onRetry) {
           try {
@@ -330,6 +384,7 @@ async function fetchLlmWithRetry(url, init, opts = {}) {
   const msg = isTimeout
     ? `AI 请求超时（${timeoutMs / 1000} 秒），已重试 ${maxRetries} 次均失败，请检查 AI 接口是否正常`
     : `AI 请求失败，已重试 ${maxRetries} 次：${lastError?.message || lastError}。请检查 AI 接口是否正常`;
+  console.error('[Background] AI API 最终失败（已用尽重试）:', msg);
   throw new Error(msg);
 }
 
@@ -732,8 +787,10 @@ async function handleGenerateBlogComment(title, description, h1 = '', siteUrl = 
 
     if (!response.ok) {
       const errorText = await response.text();
-      logErr('API 错误 body:', errorText);
-      throw new Error(`API 错误 ${response.status}: ${errorText}`);
+      const errMsg = `API 错误 ${response.status}: ${errorText.slice(0, 500)}`;
+      console.error('[Background][BlogComment] API 返回错误:', response.status, errorText.slice(0, 500));
+      logErr('API 错误:', errMsg);
+      throw new Error(errMsg);
     }
 
     const data = await response.json();
@@ -764,7 +821,8 @@ async function handleGenerateBlogComment(title, description, h1 = '', siteUrl = 
     log('解析得到评论长度:', comment.length, '预览:', comment.slice(0, 80) + (comment.length > 80 ? '…' : ''));
     return comment;
   } catch (error) {
-    logErr('异常:', error.message);
+    console.error('[Background][BlogComment] 异常:', error?.message, error);
+    logErr('异常:', error?.message);
     throw error;
   }
 }

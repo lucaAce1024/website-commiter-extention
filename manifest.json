@@ -36,7 +36,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/formHandler.js"],
+      "js": ["content/formHandler.js", "content/fullAiContent.js"],
       "run_at": "document_idle"
     }
   ],

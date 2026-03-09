@@ -143,6 +143,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const h1El = document.querySelector('h1');
     const h1 = (h1El && h1El.textContent && h1El.textContent.trim()) || '';
     sendResponse({ success: true, title, description, h1 });
+  } else if (request.action === 'fullAiPrepareForComment') {
+    handleFullAiPrepareForComment().then(sendResponse);
+    return true;
   }
 });
 
@@ -1321,6 +1324,53 @@ function scrollPageToBottomAndWait() {
 const SCROLL_TO_BOTTOM_WAIT_MS = 1200;
 /** 最多滚动次数：先识别，识别不到再滚动并重试，超过此次数仍未找到 form 则退出 */
 const MAX_SCROLL_ATTEMPTS = 3;
+
+/**
+ * 完全 AI 模式：预滚动 + 表单检测，返回 formRootSelector 与 hintText 供 Snapshot 缩小范围与 prompt 提示
+ * @returns {Promise<{ hasForm: boolean, formRootSelector?: string, hintText?: string }>}
+ */
+async function handleFullAiPrepareForComment() {
+  document.querySelectorAll('[data-wce-scope-root]').forEach((el) => el.removeAttribute('data-wce-scope-root'));
+
+  let formMetadata = getCommentFormMetadata();
+  let scrollCount = 0;
+  while (!formMetadata.hasForm || !formMetadata.fields?.length) {
+    if (scrollCount >= MAX_SCROLL_ATTEMPTS) {
+      return { hasForm: false };
+    }
+    scrollPageToBottomAndWait();
+    await new Promise((r) => setTimeout(r, SCROLL_TO_BOTTOM_WAIT_MS));
+    scrollCount++;
+    formMetadata = getCommentFormMetadata();
+  }
+
+  let formRootSelector = null;
+  const commentLike = /comment|留言|message|reply|回复|评论/i;
+  const commentField = formMetadata.fields.find(
+    (f) =>
+      (f.isTextarea || f.type === 'textarea') &&
+      commentLike.test([f.label, f.placeholder, f.name, f.ariaLabel].filter(Boolean).join(' '))
+  );
+  const fieldToUse = commentField || formMetadata.fields[0];
+  if (fieldToUse?.locator) {
+    const el = findElementByLocator(fieldToUse.locator);
+    const form = el?.closest?.('form');
+    if (form) {
+      form.setAttribute('data-wce-scope-root', '1');
+      formRootSelector = '[data-wce-scope-root="1"]';
+    }
+  }
+
+  const labels = formMetadata.fields
+    .slice(0, 8)
+    .map((f) => (f.label || f.placeholder || f.name || f.ariaLabel || '').slice(0, 30))
+    .filter(Boolean);
+  const hintText = labels.length
+    ? `表单检测发现 ${formMetadata.fields.length} 个字段，标签示例: ${labels.join(', ')}。请优先查找含 comment/留言/message 的 textarea 和含 submit/post/comment 的 button。`
+    : '';
+
+  return { hasForm: true, formRootSelector, hintText };
+}
 
 /**
  * 评论表单识别（优先缓存 → AI → 关键词）

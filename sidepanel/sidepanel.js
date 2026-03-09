@@ -79,6 +79,7 @@ const elements = {
   blogVerifySubmitBtn: document.getElementById('blogVerifySubmitBtn'),
   openBlogSitesBtn: document.getElementById('openBlogSitesBtn'),
   blogOpenOptionsBtn: document.getElementById('blogOpenOptionsBtn'),
+  useFullAi: document.getElementById('useFullAi'),
   autoSubmit: document.getElementById('autoSubmit'),
 
   // 批量提交模式 - 站点选择
@@ -241,6 +242,9 @@ async function loadSites() {
     }
     if (elements.autoSubmit) {
       elements.autoSubmit.checked = result.settings?.autoSubmit ?? false;
+    }
+    if (elements.useFullAi) {
+      elements.useFullAi.checked = result.settings?.useFullAi ?? false;
     }
 
     // 检查 LLM 是否启用
@@ -1125,12 +1129,25 @@ function setupEventListeners() {
     await chrome.storage.local.set({ settings });
   });
 
+  elements.useFullAi?.addEventListener('change', async () => {
+    const result = await chrome.storage.local.get(['settings']);
+    const settings = result.settings || {};
+    settings.useFullAi = elements.useFullAi.checked;
+    await chrome.storage.local.set({ settings });
+  });
+
   // 生成评论并填充
   elements.blogGenerateAndFillBtn?.addEventListener('click', async () => {
     if (!currentSiteId || !currentTab?.id) {
       showBlogMessage('请先选择当前站点', 'warning');
       return;
     }
+    const useFullAi = elements.useFullAi?.checked ?? false;
+    if (useFullAi && !llmEnabled) {
+      showBlogMessage('完全 AI 识别需要先配置 LLM API', 'warning');
+      return;
+    }
+
     elements.blogGenerateAndFillBtn.disabled = true;
     elements.blogGenerateAndFillBtn.innerHTML = '<span class="btn-icon">⏳</span> 生成中...';
     setBlogStatusLine('');
@@ -1140,11 +1157,44 @@ function setupEventListeners() {
       const title = metaRes?.title ?? '';
       const description = metaRes?.description ?? '';
       const h1 = metaRes?.h1 ?? '';
+      const site = sites.find((s) => s.id === currentSiteId);
+
+      if (useFullAi) {
+        setBlogStatusLine('完全 AI 识别：生成评论中...');
+        const genRes = await chrome.runtime.sendMessage({
+          action: 'generateBlogComment',
+          title,
+          description,
+          h1,
+          siteUrl: site?.siteUrl
+        });
+        if (!genRes?.success || !genRes?.comment) {
+          showBlogMessage(genRes?.error || '评论生成失败', 'error');
+          setBlogStatusLine(`失败 · 已耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+          return;
+        }
+        setBlogStatusLine('完全 AI 识别：多轮决策执行中...');
+        const res = await chrome.runtime.sendMessage({
+          action: 'fullAiRunTask',
+          tabId: currentTab.id,
+          siteUrl: site?.siteUrl || '',
+          generatedComment: genRes.comment,
+          siteId: currentSiteId
+        });
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+        if (!res?.success) {
+          showBlogMessage(res?.error || '完全 AI 识别失败', 'error');
+          setBlogStatusLine(`失败 · 已耗时 ${elapsed}s`);
+          return;
+        }
+        setBlogStatusLine(`耗时 ${elapsed}s (完全AI) · ${res.reason || '已完成'}`);
+        showBlogMessage(res.reason || '完全 AI 识别已完成', 'success');
+        return;
+      }
 
       const statusHint = llmEnabled ? 'AI 评论生成与表单识别中...' : '评论生成与表单识别中...';
       setBlogStatusLine(statusHint);
 
-      const site = sites.find((s) => s.id === currentSiteId);
       const res = await chrome.tabs.sendMessage(currentTab.id, {
         action: 'blogCommentGenerateAndFill',
         title,
