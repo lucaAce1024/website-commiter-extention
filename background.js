@@ -2,6 +2,7 @@
 // Handles extension lifecycle and cross-tab communication
 
 importScripts('lib/fullAiAgent.js');
+importScripts('lib/credentialCache.js');
 
 const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
 /** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
@@ -1148,6 +1149,152 @@ chrome.action.onClicked.addListener(async (tab) => {
 // 允许在所有页面使用 Side Panel
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
+// ========== 登录重定向处理 ==========
+
+/**
+ * 提交后检测是否发生了 URL 跳转（如登录页），若是则尝试自动登录
+ * @param {number} tabId
+ * @param {string} initialUrl - 提交前的 URL
+ * @param {Function} log
+ * @returns {Promise<{ redirected: boolean, loggedIn?: boolean, error?: string }>}
+ */
+async function handleLoginRedirect(tabId, initialUrl, log) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const currentUrl = tab.url || '';
+
+    const initialDomain = credentialCache.extractDomain(initialUrl);
+    const currentDomain = credentialCache.extractDomain(currentUrl);
+
+    const urlChanged = currentUrl && currentUrl !== initialUrl &&
+      new URL(currentUrl).pathname !== new URL(initialUrl).pathname;
+
+    if (!urlChanged) {
+      return { redirected: false };
+    }
+
+    log(`检测到 URL 变化: ${initialUrl} → ${currentUrl}`);
+
+    // 二次 Snapshot 判断是否为登录页
+    const snapRes = await chrome.tabs.sendMessage(tabId, {
+      action: 'fullAiTakeSnapshot',
+      scopeRootSelector: null
+    }).catch(() => null);
+
+    if (!snapRes?.success || !snapRes.snapshotText) {
+      return { redirected: true, loggedIn: false, error: 'Snapshot 失败' };
+    }
+
+    const snapshotLower = snapRes.snapshotText.toLowerCase();
+    const loginIndicators = ['log in', 'login', 'sign in', 'signin', 'password', '登录', '密码', 'パスワード'];
+    const isLoginPage = loginIndicators.some(kw => snapshotLower.includes(kw));
+
+    if (!isLoginPage) {
+      log('跳转页面不是登录页，跳过登录处理');
+      return { redirected: true, loggedIn: false, error: '非登录页跳转' };
+    }
+
+    log('检测到登录页面，查找凭据...');
+    const cred = await credentialCache.findCredentialByDomain(currentUrl);
+
+    if (!cred) {
+      const domain = credentialCache.extractDomain(currentUrl);
+      log(`未找到 ${domain} 的登录凭据，需用户补充`);
+      return {
+        redirected: true,
+        loggedIn: false,
+        error: `该站点 (${domain}) 无登录凭据，请补充到飞书表格或手动注册`
+      };
+    }
+
+    log(`找到凭据: platform=${cred.platform}, email=${cred.email || '-'}, username=${cred.username || '-'}`);
+
+    // 使用 Agent Loop 或启发式填充登录表单
+    const idToNode = snapRes.snapshotResult?.idToNode || {};
+    const nodes = Object.values(idToNode);
+    const inputRoles = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton']);
+    const inputs = nodes.filter(n => n && n.id && inputRoles.has(n.role));
+    const buttons = nodes.filter(n => n && n.id && (n.role === 'button' || n.role === 'link'));
+
+    const loginSteps = [];
+    let emailFilled = false;
+    let usernameFilled = false;
+    let passwordFilled = false;
+
+    const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+    for (const n of inputs) {
+      const combined = norm([n.name, n.placeholder, n.labelText].filter(Boolean).join(' '));
+      const isPassword = n.inputType === 'password';
+      const isEmail = n.inputType === 'email' ||
+        /email|e-mail|邮箱|メール/.test(combined);
+      const isUsername = /user\s*name|用户名|login|account|アカウント|帐号|账号/.test(combined);
+
+      if (isPassword && !passwordFilled && cred.password) {
+        loginSteps.push({ op: 'fill', uid: n.id, value: cred.password });
+        passwordFilled = true;
+      } else if (isEmail && !emailFilled && cred.email) {
+        loginSteps.push({ op: 'fill', uid: n.id, value: cred.email });
+        emailFilled = true;
+      } else if (isUsername && !usernameFilled) {
+        const val = cred.email || cred.username;
+        if (val) {
+          loginSteps.push({ op: 'fill', uid: n.id, value: val });
+          usernameFilled = true;
+        }
+      }
+    }
+
+    // 如果有 email/username 输入框但没匹配到，尝试第一个 text input
+    if (!emailFilled && !usernameFilled) {
+      const firstTextInput = inputs.find(n => n.inputType !== 'password' && n.inputType !== 'hidden');
+      if (firstTextInput && (cred.email || cred.username)) {
+        loginSteps.push({ op: 'fill', uid: firstTextInput.id, value: cred.email || cred.username });
+      }
+    }
+
+    // 查找登录按钮
+    const loginKeywords = ['log in', 'login', 'sign in', 'signin', 'submit', '登录', 'ログイン', '로그인', 'войти'];
+    let loginBtn = null;
+    for (const n of buttons) {
+      const btnText = norm(n.name || '');
+      if (loginKeywords.some(kw => btnText.includes(kw))) {
+        loginBtn = n;
+        break;
+      }
+    }
+    if (!loginBtn) {
+      loginBtn = buttons.find(n => n.inputType === 'submit') || null;
+    }
+    if (loginBtn) {
+      loginSteps.push({ op: 'click', uid: loginBtn.id });
+    }
+
+    if (loginSteps.length === 0) {
+      log('未能识别登录表单字段');
+      return { redirected: true, loggedIn: false, error: '未识别到登录表单' };
+    }
+
+    log(`登录步骤: ${loginSteps.length} 个 (email=${emailFilled}, user=${usernameFilled}, pwd=${passwordFilled})`);
+    const execRes = await chrome.tabs.sendMessage(tabId, {
+      action: 'fullAiExecute', steps: loginSteps
+    }).catch(() => ({ success: false }));
+
+    if (execRes?.success) {
+      log('登录操作执行成功，等待页面加载...');
+      await sleep(3000);
+      return { redirected: true, loggedIn: true };
+    } else {
+      const failedSteps = (execRes?.results || []).filter(r => !r.ok);
+      log(`登录执行部分失败: ${failedSteps.map(r => `${r.op}(${r.uid}): ${r.error}`).join('; ')}`);
+      return { redirected: true, loggedIn: false, error: '登录执行失败' };
+    }
+  } catch (e) {
+    log(`登录重定向处理异常: ${e?.message}`);
+    return { redirected: false, error: e?.message };
+  }
+}
+
 // ========== 批量提交：Background 驱动的自动化流程 ==========
 
 /**
@@ -1203,6 +1350,18 @@ async function startBatchTask(urls, options = {}) {
  */
 async function executeBatchTask() {
   const { urls, options } = batchTaskState;
+
+  // 批量任务启动前自动同步凭据
+  try {
+    const syncRes = await credentialCache.syncCredentialsFromFeishu(
+      (msg) => console.log('[批量-凭据同步]', msg)
+    );
+    if (syncRes.success) {
+      console.log(`[批量-凭据同步] 已同步 ${syncRes.count} 条凭据`);
+    }
+  } catch (e) {
+    console.log('[批量-凭据同步] 同步失败，继续执行:', e?.message);
+  }
 
   // 获取站点信息
   const storage = await chrome.storage.local.get(['sites', 'settings']);
@@ -1273,9 +1432,30 @@ async function executeBatchTask() {
       if (fillRes?.success) {
         const r = fillRes.result;
 
-        // 等待页面刷新后验证
         if (r.clickedSubmit) {
           await sleep(3000);
+
+          // 登录重定向检测：提交后 URL 变化则尝试自动登录
+          const batchLog = (msg) => console.log(`[批量-登录重定向][${urlItem.url}]`, msg);
+          const loginResult = await handleLoginRedirect(tab.id, urlItem.url, batchLog);
+          if (loginResult.redirected && loginResult.loggedIn) {
+            batchLog('登录成功，等待页面稳定后重新验证...');
+            await sleep(3000);
+          } else if (loginResult.redirected && !loginResult.loggedIn) {
+            result = {
+              url: urlItem.url,
+              record_id: urlItem.record_id,
+              success: false,
+              status: '需登录',
+              message: loginResult.error || '需要登录但无法自动完成'
+            };
+            batchTaskState.results.push(result);
+            notifyBatchProgress({ url: urlItem.url, index: i, status: 'failed', result });
+            await chrome.tabs.remove(tab.id).catch(() => {});
+            if (i < urls.length - 1 && batchTaskState.running) await sleep(options.interval);
+            continue;
+          }
+
           const verifyRes = await chrome.tabs.sendMessage(tab.id, {
             action: 'verifyCommentSubmission',
             siteUrl: site.siteUrl
@@ -1294,8 +1474,8 @@ async function executeBatchTask() {
               url: urlItem.url,
               record_id: urlItem.record_id,
               success: false,
-              status: '检测失败',
-              message: verifyRes?.result?.message || '未在页面中找到站点链接'
+              status: '提交未验证',
+              message: verifyRes?.result?.message || '已点击提交但未在页面中验证到站点链接'
             };
           }
         } else if (r.hasSpamVerification) {
@@ -1304,7 +1484,7 @@ async function executeBatchTask() {
             record_id: urlItem.record_id,
             success: false,
             status: '需人工验证',
-            message: '检测到验证项'
+            message: '检测到验证项，未提交'
           };
         } else {
           result = {
@@ -1312,7 +1492,7 @@ async function executeBatchTask() {
             record_id: urlItem.record_id,
             success: false,
             status: '未提交',
-            message: `已填充 ${r.filledCount} 个字段`
+            message: `已填充 ${r.filledCount} 个字段但未点击提交，不视为完成`
           };
         }
       } else {
@@ -1333,16 +1513,25 @@ async function executeBatchTask() {
             );
             if (agentRes?.success) {
               await sleep(3000);
+
+              // Agent Loop 完成后也检测登录重定向
+              const agentLoginResult = await handleLoginRedirect(tab.id, urlItem.url, logFn);
+              if (agentLoginResult.redirected && agentLoginResult.loggedIn) {
+                logFn('Agent 提交后登录成功，等待页面稳定...');
+                await sleep(3000);
+              }
+
               const verifyRes = await chrome.tabs.sendMessage(tab.id, {
                 action: 'verifyCommentSubmission',
                 siteUrl: site.siteUrl
               }).catch(() => null);
+              const agentVerified = !!(verifyRes?.success && verifyRes?.result?.success);
               result = {
                 url: urlItem.url,
                 record_id: urlItem.record_id,
-                success: !!(verifyRes?.success && verifyRes?.result?.success),
-                status: verifyRes?.result?.success ? '检测成功' : 'Agent完成-待验证',
-                message: verifyRes?.result?.message || agentRes.reason || 'Agent Loop 完成',
+                success: agentVerified,
+                status: agentVerified ? '检测成功' : '提交未验证',
+                message: verifyRes?.result?.message || agentRes.reason || 'Agent Loop 完成但未验证到站点链接',
                 agentRounds: agentRes.agentRounds || 0
               };
             } else {

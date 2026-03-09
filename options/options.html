@@ -394,6 +394,67 @@
               测试连接
             </button>
           </div>
+
+          <hr class="section-divider">
+
+          <div class="config-card">
+            <h3 class="card-title">发外链登录账号</h3>
+            <p class="card-desc">配置飞书表格中「媒体账号统计」数据源，自动同步各站点登录凭据。复用上方的 App ID / App Secret 进行鉴权。</p>
+
+            <div class="form-group">
+              <label for="credSpreadsheetToken">电子表格 Token</label>
+              <input type="text" id="credSpreadsheetToken" class="input" placeholder="从飞书表格链接提取" value="FgWhsDQdNhWfVot4787ceNMXnDd">
+              <p class="field-hint">飞书表格链接格式：https://my.feishu.cn/sheets/<strong>SpreadsheetToken</strong></p>
+            </div>
+
+            <div class="form-group">
+              <label for="credSheetName">工作表名称</label>
+              <input type="text" id="credSheetName" class="input" placeholder="飞书表格中的工作表（sheet tab）名称" value="媒体账号统计">
+              <p class="field-hint">表格需包含列：平台、账号名、登录密码、登录邮箱、网址</p>
+            </div>
+
+            <div class="cred-sync-bar">
+              <div class="cred-sync-info">
+                <span class="sync-label">凭据数量：</span>
+                <span id="credCountText" class="sync-status-badge">0</span>
+                <span class="sync-label" style="margin-left:16px">最近同步：</span>
+                <span id="credLastSyncText">-</span>
+              </div>
+              <div class="cred-sync-actions">
+                <button class="btn btn-secondary" id="saveCredConfigBtn">
+                  <span class="btn-icon">💾</span>
+                  保存配置
+                </button>
+                <button class="btn btn-primary" id="syncCredBtn">
+                  <span class="btn-icon">🔄</span>
+                  从飞书同步
+                </button>
+                <button class="btn btn-secondary" id="clearCredBtn">
+                  <span class="btn-icon">🗑️</span>
+                  清空
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-card" id="credPreviewCard" style="display:none">
+            <h3 class="card-title">凭据预览</h3>
+            <div class="cred-table-wrap">
+              <table class="cred-table" id="credPreviewTable">
+                <thead>
+                  <tr>
+                    <th>平台</th>
+                    <th>域名</th>
+                    <th>登录邮箱</th>
+                    <th>账号名</th>
+                    <th>登录密码 <button type="button" class="cred-toggle-pwd-btn" id="credTogglePwdBtn" title="显示/隐藏密码">👁</button></th>
+                  </tr>
+                </thead>
+                <tbody id="credPreviewBody">
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
     </main>

@@ -907,3 +907,102 @@ body {
   gap: 12px;
   justify-content: flex-end;
 }
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 28px 0 24px;
+}
+
+/* Credential sync bar */
+.cred-sync-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.cred-sync-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.cred-sync-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Credential preview table */
+.cred-table-wrap {
+  overflow-x: auto;
+}
+
+.cred-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cred-table th,
+.cred-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.cred-table th {
+  background: var(--card-bg);
+  font-weight: 500;
+  color: var(--text-secondary);
+  position: sticky;
+  top: 0;
+}
+
+.cred-table td {
+  color: var(--text-primary);
+}
+
+.cred-table td code {
+  background: var(--bg-color);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--primary-color);
+}
+
+.cred-table tr:last-child td {
+  border-bottom: none;
+}
+
+.cred-table tr:hover td {
+  background: var(--bg-color);
+}
+
+.cred-pwd-cell {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.cred-toggle-pwd-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  vertical-align: middle;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  margin-left: 4px;
+}
+
+.cred-toggle-pwd-btn:hover {
+  background: var(--bg-color);
+}

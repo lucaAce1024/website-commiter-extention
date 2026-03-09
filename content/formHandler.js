@@ -1699,7 +1699,8 @@ async function verifyCommentSubmission(siteUrl) {
   const normalizedSite = normalizeUrlForCompare(siteUrl);
   if (!normalizedSite) return { success: false, message: '无效的站点 URL' };
 
-  const links = document.querySelectorAll('a[href]');
+  // 从底部向上查找：新评论通常出现在评论列表底部
+  const links = Array.from(document.querySelectorAll('a[href]')).reverse();
   for (const a of links) {
     const href = (a.getAttribute('href') || '').trim();
     if (!href) continue;

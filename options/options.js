@@ -11,6 +11,8 @@ let blogCommentSites = [];
 let fieldMappings = {};
 let settings = {};
 let feishuConfig = {};
+let credConfig = {};
+let siteCredentials = [];
 /** 当前编辑中待保存的 Logo 图片（data URL），用于文件上传类表单项 */
 let pendingLogoDataUrl = null;
 /** 当前编辑中待保存的界面截图（data URL），对应 App Image 等上传框 */
@@ -191,6 +193,18 @@ function cacheElements() {
   elements.toggleFeishuSecretBtn = document.getElementById('toggleFeishuSecretBtn');
   elements.saveFeishuBtn = document.getElementById('saveFeishuBtn');
   elements.testFeishuBtn = document.getElementById('testFeishuBtn');
+
+  // Credential Sync
+  elements.credSpreadsheetToken = document.getElementById('credSpreadsheetToken');
+  elements.credSheetName = document.getElementById('credSheetName');
+  elements.credCountText = document.getElementById('credCountText');
+  elements.credLastSyncText = document.getElementById('credLastSyncText');
+  elements.saveCredConfigBtn = document.getElementById('saveCredConfigBtn');
+  elements.syncCredBtn = document.getElementById('syncCredBtn');
+  elements.clearCredBtn = document.getElementById('clearCredBtn');
+  elements.credPreviewCard = document.getElementById('credPreviewCard');
+  elements.credPreviewBody = document.getElementById('credPreviewBody');
+  elements.credTogglePwdBtn = document.getElementById('credTogglePwdBtn');
 }
 
 /**
@@ -260,6 +274,12 @@ function setupEventListeners() {
   elements.saveFeishuBtn?.addEventListener('click', saveFeishuConfig);
   elements.testFeishuBtn?.addEventListener('click', testFeishuConnection);
 
+  // Credential Sync
+  elements.saveCredConfigBtn?.addEventListener('click', saveCredConfig);
+  elements.syncCredBtn?.addEventListener('click', syncCredentials);
+  elements.clearCredBtn?.addEventListener('click', clearCredentials);
+  elements.credTogglePwdBtn?.addEventListener('click', toggleCredPasswords);
+
   // Modal
   elements.modalCloseBtn?.addEventListener('click', closeModal);
   elements.modalOverlay?.addEventListener('click', closeModal);
@@ -280,6 +300,8 @@ async function loadData() {
     autoSubmit: false
   };
   feishuConfig = result.feishuConfig || {};
+  credConfig = result.credConfig || { spreadsheetToken: 'FgWhsDQdNhWfVot4787ceNMXnDd', sheetName: '媒体账号统计' };
+  siteCredentials = result.siteCredentials || [];
 
   // Update backup summary
   elements.summarySites.textContent = sites.length;
@@ -1467,27 +1489,19 @@ function escapeHtml(str) {
  * Render Feishu tab
  */
 function renderFeishuTab() {
-  // Load feishu config from storage if not already loaded
-  if (!feishuConfig) {
-    feishuConfig = {};
-  }
+  if (!feishuConfig) feishuConfig = {};
 
-  // Fill in form fields
-  if (elements.feishuAppId) {
-    elements.feishuAppId.value = feishuConfig.appId || '';
-  }
-  if (elements.feishuAppSecret) {
-    elements.feishuAppSecret.value = feishuConfig.appSecret || '';
-  }
-  if (elements.feishuAppToken) {
-    elements.feishuAppToken.value = feishuConfig.appToken || '';
-  }
-  if (elements.feishuTableId) {
-    elements.feishuTableId.value = feishuConfig.tableId || '';
-  }
+  if (elements.feishuAppId) elements.feishuAppId.value = feishuConfig.appId || '';
+  if (elements.feishuAppSecret) elements.feishuAppSecret.value = feishuConfig.appSecret || '';
+  if (elements.feishuAppToken) elements.feishuAppToken.value = feishuConfig.appToken || '';
+  if (elements.feishuTableId) elements.feishuTableId.value = feishuConfig.tableId || '';
 
-  // Update sync status
   updateFeishuSyncStatus();
+
+  if (elements.credSpreadsheetToken) elements.credSpreadsheetToken.value = credConfig.spreadsheetToken || 'FgWhsDQdNhWfVot4787ceNMXnDd';
+  if (elements.credSheetName) elements.credSheetName.value = credConfig.sheetName || '媒体账号统计';
+
+  renderCredPreview();
 }
 
 /**
@@ -1601,6 +1615,249 @@ async function testFeishuConnection() {
     elements.testFeishuBtn.disabled = false;
     elements.testFeishuBtn.innerHTML = '<span class="btn-icon">🔗</span> 测试连接';
   }
+}
+
+/**
+ * 从 URL 中提取去 www 的域名
+ */
+function extractDomain(urlString) {
+  try {
+    const u = new URL(urlString.startsWith('http') ? urlString : 'https://' + urlString);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return urlString.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+  }
+}
+
+/**
+ * 保存凭据配置
+ */
+async function saveCredConfig() {
+  try {
+    const newConfig = {
+      spreadsheetToken: elements.credSpreadsheetToken?.value?.trim() || '',
+      sheetName: elements.credSheetName?.value?.trim() || '媒体账号统计',
+      lastSyncTime: credConfig.lastSyncTime || null
+    };
+    await chrome.storage.local.set({ credConfig: newConfig });
+    credConfig = newConfig;
+    showToast('凭据配置已保存', 'success');
+  } catch (error) {
+    showToast('保存失败: ' + error.message, 'error');
+  }
+}
+
+/**
+ * 从飞书电子表格同步凭据：复用飞书配置中的 App ID / App Secret
+ * API 链路：tenant_access_token → 查询工作表列表 → 按名称找 sheetId → 读取全部数据
+ */
+async function syncCredentials() {
+  const appId = elements.feishuAppId?.value?.trim() || feishuConfig.appId;
+  const appSecret = elements.feishuAppSecret?.value?.trim() || feishuConfig.appSecret;
+  const spreadsheetToken = elements.credSpreadsheetToken?.value?.trim();
+  const sheetName = elements.credSheetName?.value?.trim();
+
+  if (!appId || !appSecret) {
+    showToast('请先在上方配置飞书 App ID 和 App Secret', 'warning');
+    return;
+  }
+  if (!spreadsheetToken) {
+    showToast('请填写电子表格 Token', 'warning');
+    return;
+  }
+
+  elements.syncCredBtn.disabled = true;
+  elements.syncCredBtn.innerHTML = '<span class="btn-icon">⏳</span> 同步中...';
+
+  try {
+    // 1. 获取 tenant_access_token
+    const tokenResp = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+    });
+    const tokenData = await tokenResp.json();
+    if (tokenData.code !== 0) {
+      showToast('飞书认证失败: ' + (tokenData.msg || '请检查 App ID / Secret'), 'error');
+      return;
+    }
+    const token = tokenData.tenant_access_token;
+
+    // 2. 查询工作表列表，按名称找到目标 sheetId
+    const sheetsResp = await fetch(
+      `https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/query`,
+      { headers: { 'Authorization': `Bearer ${token}` } }
+    );
+    const sheetsData = await sheetsResp.json();
+    if (sheetsData.code !== 0) {
+      showToast('获取工作表失败: ' + (sheetsData.msg || '请检查表格 Token 和权限'), 'error');
+      return;
+    }
+    const sheets = sheetsData.data?.sheets || [];
+    const targetSheet = sheetName
+      ? sheets.find(s => s.title === sheetName)
+      : sheets[0];
+    if (!targetSheet) {
+      showToast(`未找到名为「${sheetName}」的工作表，现有: ${sheets.map(s => s.title).join(', ')}`, 'error');
+      return;
+    }
+    const sheetId = targetSheet.sheet_id;
+    const rowCount = targetSheet.grid_properties?.row_count || 500;
+
+    // 3. 读取全部数据（range = sheetId，读取整个工作表）
+    const range = `${sheetId}!A1:Z${rowCount}`;
+    const dataResp = await fetch(
+      `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encodeURIComponent(range)}`,
+      { headers: { 'Authorization': `Bearer ${token}` } }
+    );
+    const sheetResult = await dataResp.json();
+    if (sheetResult.code !== 0) {
+      showToast('读取数据失败: ' + (sheetResult.msg || ''), 'error');
+      return;
+    }
+    const rows = sheetResult.data?.valueRange?.values || [];
+    if (rows.length < 2) {
+      showToast('表格无数据行（仅有表头或为空）', 'warning');
+      return;
+    }
+
+    // 飞书单元格可能返回富文本对象，需递归提取纯文本
+    const cellToString = (val) => {
+      if (val == null) return '';
+      if (typeof val === 'string') return val.trim();
+      if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+      if (Array.isArray(val)) return val.map(cellToString).join('');
+      if (typeof val === 'object') {
+        if (val.text != null) return String(val.text).trim();
+        if (val.link?.url) return String(val.link.url).trim();
+        if (val.value != null) return String(val.value).trim();
+        return Object.values(val).map(cellToString).join('');
+      }
+      return String(val).trim();
+    };
+
+    // 4. 解析表头，建立列名→索引映射
+    const headerRow = rows[0].map(h => cellToString(h));
+    const COL_ALIASES = {
+      platform: ['平台'],
+      username: ['账号名'],
+      password: ['登录密码'],
+      email: ['登录邮箱'],
+      url: ['网址']
+    };
+    const colIndex = {};
+    for (const [field, aliases] of Object.entries(COL_ALIASES)) {
+      const idx = headerRow.findIndex(h => aliases.some(a => h.includes(a)));
+      if (idx >= 0) colIndex[field] = idx;
+    }
+
+    if (colIndex.url == null && colIndex.platform == null) {
+      showToast('表头中未找到「平台」或「网址」列，请检查列名', 'error');
+      return;
+    }
+
+    // 5. 逐行解析
+    const credentials = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.every(c => !c)) continue;
+      const cell = (idx) => (idx != null && row[idx] != null) ? cellToString(row[idx]) : '';
+      const platform = cell(colIndex.platform);
+      const username = cell(colIndex.username);
+      const password = cell(colIndex.password);
+      const email = cell(colIndex.email);
+      const rawUrl = cell(colIndex.url);
+      if (!rawUrl && !platform) continue;
+      credentials.push({
+        platform,
+        username,
+        password,
+        email,
+        url: rawUrl,
+        domain: rawUrl ? extractDomain(rawUrl) : platform.toLowerCase()
+      });
+    }
+
+    siteCredentials = credentials;
+    const now = new Date().toLocaleString('zh-CN');
+    credConfig.lastSyncTime = now;
+    credConfig.spreadsheetToken = spreadsheetToken;
+    credConfig.sheetName = sheetName;
+    await chrome.storage.local.set({ siteCredentials: credentials, credConfig });
+
+    renderCredPreview();
+    showToast(`同步成功，共 ${credentials.length} 条凭据`, 'success');
+  } catch (error) {
+    showToast('同步失败: ' + error.message, 'error');
+  } finally {
+    elements.syncCredBtn.disabled = false;
+    elements.syncCredBtn.innerHTML = '<span class="btn-icon">🔄</span> 从飞书同步';
+  }
+}
+
+/**
+ * 清空已同步凭据
+ */
+async function clearCredentials() {
+  if (!confirm('确定要清空所有已同步的登录凭据吗？')) return;
+  try {
+    siteCredentials = [];
+    await chrome.storage.local.set({ siteCredentials: [] });
+    renderCredPreview();
+    showToast('凭据已清空', 'success');
+  } catch (error) {
+    showToast('清空失败: ' + error.message, 'error');
+  }
+}
+
+let credPwdVisible = false;
+
+/**
+ * 切换凭据预览表格中密码的显示/隐藏
+ */
+function toggleCredPasswords() {
+  credPwdVisible = !credPwdVisible;
+  if (elements.credTogglePwdBtn) {
+    elements.credTogglePwdBtn.textContent = credPwdVisible ? '🙈' : '👁';
+    elements.credTogglePwdBtn.title = credPwdVisible ? '隐藏密码' : '显示密码';
+  }
+  renderCredPreview();
+}
+
+function maskPassword(pwd) {
+  if (!pwd) return '-';
+  if (pwd.length <= 3) return '*'.repeat(pwd.length);
+  return pwd[0] + '*'.repeat(pwd.length - 2) + pwd[pwd.length - 1];
+}
+
+/**
+ * 渲染凭据预览表格
+ */
+function renderCredPreview() {
+  if (elements.credCountText) {
+    elements.credCountText.textContent = siteCredentials.length;
+  }
+  if (elements.credLastSyncText) {
+    elements.credLastSyncText.textContent = credConfig.lastSyncTime || '-';
+  }
+
+  if (!elements.credPreviewCard || !elements.credPreviewBody) return;
+
+  if (siteCredentials.length === 0) {
+    elements.credPreviewCard.style.display = 'none';
+    return;
+  }
+
+  elements.credPreviewCard.style.display = '';
+  elements.credPreviewBody.innerHTML = siteCredentials.map(c => `
+    <tr>
+      <td>${escapeHtml(c.platform)}</td>
+      <td><code>${escapeHtml(c.domain)}</code></td>
+      <td>${escapeHtml(c.email)}</td>
+      <td>${escapeHtml(c.username)}</td>
+      <td class="cred-pwd-cell">${credPwdVisible ? escapeHtml(c.password) : maskPassword(c.password)}</td>
+    </tr>
+  `).join('');
 }
 
 // Initialize on load

@@ -1729,7 +1729,7 @@ function renderBatchUrlList() {
     <div class="batch-url-item ${getItemStatusClass(item.status)}" data-index="${item.index}">
       <input type="checkbox" data-record-id="${item.record_id}" ${item.selected ? 'checked' : ''}>
       <div class="url-info">
-        <span class="url-text" title="${escapeHtml(item.url)}">${escapeHtml(truncateUrl(item.url, 50))}</span>
+        <a class="url-text" href="${escapeHtml(item.url)}" title="${escapeHtml(item.url)}" data-url="${escapeHtml(item.url)}">${escapeHtml(truncateUrl(item.url, 50))}</a>
         <div class="url-meta">
           <span class="url-type">${escapeHtml(item.type)}</span>
           <span class="url-status status-${getStatusKey(item.status)}">${escapeHtml(item.status)}</span>
@@ -1737,6 +1737,15 @@ function renderBatchUrlList() {
       </div>
     </div>
   `).join('');
+
+  // 绑定 URL 点击事件：在新 tab 中打开
+  elements.batchUrlList.querySelectorAll('a.url-text').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const url = e.currentTarget.dataset.url;
+      if (url) chrome.tabs.create({ url, active: true });
+    });
+  });
 
   // 绑定复选框事件
   elements.batchUrlList.querySelectorAll('input[type="checkbox"]').forEach(cb => {

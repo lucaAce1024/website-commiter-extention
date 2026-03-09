@@ -760,9 +760,17 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-primary);
+  color: var(--primary-color, #5b6abf);
   font-family: monospace;
   font-size: 11px;
+  text-decoration: none;
+  cursor: pointer;
+  display: block;
+}
+
+.batch-url-item .url-text:hover {
+  text-decoration: underline;
+  color: var(--primary-hover, #4a59a8);
 }
 
 .batch-url-item .url-meta {
