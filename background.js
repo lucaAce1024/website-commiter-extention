@@ -1316,13 +1316,63 @@ async function executeBatchTask() {
           };
         }
       } else {
-        result = {
-          url: urlItem.url,
-          record_id: urlItem.record_id,
-          success: false,
-          status: '识别失败',
-          message: fillRes?.error || '评论生成失败'
-        };
+        // 标准流程失败 → 尝试 Agent Loop 路径作为 fallback
+        const llmFallback = !!(llmConfig?.enabled && llmConfig?.apiKey);
+        if (llmFallback && fillRes?.error !== '评论生成失败') {
+          const logFn = (msg) => console.log(`[批量-AgentLoop][${urlItem.url}]`, msg);
+          logFn('标准流程失败，尝试 Agent Loop fallback...');
+          try {
+            const generatedComment = await handleGenerateBlogComment(title, description, h1, site.siteUrl);
+            const profileData = {
+              commentName: site.siteName || '',
+              commentEmail: site.email || '',
+              commentWebsite: site.siteUrl || ''
+            };
+            const agentRes = await fullAiAgent.runFullAiTask(
+              tab.id, site.siteUrl, generatedComment, fetchLlmWithRetry, logFn, profileData
+            );
+            if (agentRes?.success) {
+              await sleep(3000);
+              const verifyRes = await chrome.tabs.sendMessage(tab.id, {
+                action: 'verifyCommentSubmission',
+                siteUrl: site.siteUrl
+              }).catch(() => null);
+              result = {
+                url: urlItem.url,
+                record_id: urlItem.record_id,
+                success: !!(verifyRes?.success && verifyRes?.result?.success),
+                status: verifyRes?.result?.success ? '检测成功' : 'Agent完成-待验证',
+                message: verifyRes?.result?.message || agentRes.reason || 'Agent Loop 完成',
+                agentRounds: agentRes.agentRounds || 0
+              };
+            } else {
+              result = {
+                url: urlItem.url,
+                record_id: urlItem.record_id,
+                success: false,
+                status: 'Agent失败',
+                message: agentRes?.error || 'Agent Loop 失败',
+                agentRounds: agentRes?.agentRounds || 0
+              };
+            }
+          } catch (agentErr) {
+            result = {
+              url: urlItem.url,
+              record_id: urlItem.record_id,
+              success: false,
+              status: 'Agent异常',
+              message: agentErr?.message || 'Agent Loop 异常'
+            };
+          }
+        } else {
+          result = {
+            url: urlItem.url,
+            record_id: urlItem.record_id,
+            success: false,
+            status: '识别失败',
+            message: fillRes?.error || '评论生成失败'
+          };
+        }
       }
 
       batchTaskState.results.push(result);

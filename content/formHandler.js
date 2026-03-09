@@ -1332,6 +1332,10 @@ const MAX_SCROLL_ATTEMPTS = 3;
 async function handleFullAiPrepareForComment() {
   document.querySelectorAll('[data-wce-scope-root]').forEach((el) => el.removeAttribute('data-wce-scope-root'));
 
+  if (typeof window.__wce_dismissOverlays === 'function') {
+    await window.__wce_dismissOverlays(2);
+  }
+
   let formMetadata = getCommentFormMetadata();
   let scrollCount = 0;
   while (!formMetadata.hasForm || !formMetadata.fields?.length) {
@@ -1481,6 +1485,10 @@ async function blogCommentGenerateAndFill(opts) {
   commentFormState.domain = window.location.hostname;
 
   try {
+    if (typeof window.__wce_dismissOverlays === 'function') {
+      await window.__wce_dismissOverlays(2);
+    }
+
     let formMetadata = getCommentFormMetadata();
     let scrollCount = 0;
     while (!formMetadata.hasForm || !formMetadata.fields?.length) {

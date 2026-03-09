@@ -216,6 +216,11 @@
     }
     if (element instanceof HTMLAnchorElement) node.href = element.href;
 
+    if (element.id && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      const label = rootDocument.querySelector(`label[for="${cssEscape(element.id)}"]`);
+      if (label) node.labelText = normalizeTextContent(label.textContent);
+    }
+
     idToNode[nodeId] = node;
     return node;
   }
@@ -310,8 +315,10 @@
     attrs.push(`"${truncate(node.name || '', MAX_NAME_LENGTH)}"`);
     if (node.tagName) attrs.push(`<${node.tagName}>`);
     if (node.value !== undefined && node.value !== null) attrs.push(`value="${truncate(String(node.value), MAX_NAME_LENGTH)}"`);
+    if (node.inputType) attrs.push(`inputType="${node.inputType}"`);
     if (node.disabled) attrs.push('disabled');
     if (node.placeholder) attrs.push(`placeholder="${truncate(node.placeholder, 80)}"`);
+    if (node.labelText) attrs.push(`labelText="${truncate(node.labelText, 80)}"`);
 
     snapshotTextParts.push(indent + attrs.join(' '));
 
@@ -372,19 +379,12 @@
     return isHTMLElement(el) && el.isContentEditable === true;
   }
 
-  const TYPING_DELAY_MIN_MS = 50;
-  const TYPING_DELAY_MAX_MS = 200;
-  const TYPING_CHUNK_THRESHOLD = 200;
-  const FOCUS_BEFORE_TYPE_DELAY_MS = 120;
-  const POST_STEP_DELAY_MIN_MS = 280;
-  const POST_STEP_DELAY_MAX_MS = 500;
-
   function randomDelayMs() {
     return TYPING_DELAY_MIN_MS + Math.floor(Math.random() * (TYPING_DELAY_MAX_MS - TYPING_DELAY_MIN_MS + 1));
   }
 
   function randomPostStepDelayMs() {
-    return POST_STEP_DELAY_MIN_MS + Math.floor(Math.random() * (POST_STEP_DELAY_MAX_MS - POST_STEP_DELAY_MIN_MS + 1));
+    return STEP_DELAY_MIN_MS + Math.floor(Math.random() * (STEP_DELAY_MAX_MS - STEP_DELAY_MIN_MS + 1));
   }
 
   function simulateClick(el, useCoordinates = false) {
@@ -408,7 +408,7 @@
     simulateClick(input, true);
     input.focus();
     input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-    await new Promise((r) => setTimeout(r, FOCUS_BEFORE_TYPE_DELAY_MS));
+    await new Promise((r) => setTimeout(r, FOCUS_BEFORE_TYPE_MS));
 
     const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
     const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -511,7 +511,120 @@
     return { success: allOk, results };
   }
 
+  // ─── 弹窗预处理（Cookie/GDPR/隐私同意弹窗） ───
+
+  const OVERLAY_SELECTORS = [
+    '[class*="cookie"] button[class*="accept"]',
+    '[class*="cookie"] button[class*="agree"]',
+    '[id*="cookie"] button[class*="accept"]',
+    '[id*="cookie"] button[class*="agree"]',
+    '[class*="consent"] button[class*="accept"]',
+    '.cc-compliance .cc-btn',
+    '#onetrust-accept-btn-handler',
+    '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+    '[data-testid*="cookie-accept"]',
+    '[class*="gdpr"] button[class*="accept"]',
+    '[class*="privacy"] button[class*="accept"]',
+    '[role="dialog"] button[class*="accept"]',
+    '[role="dialog"] button[class*="agree"]',
+    '.cookie-notice .cookie-notice-accept',
+    '#cookie-law-info-bar .cli-plugin-button',
+    '.cmplz-btn.cmplz-accept',
+  ];
+
+  const OVERLAY_BUTTON_TEXT = [
+    /accept\s*(all)?/i, /agree/i, /allow\s*(all)?/i,
+    /got\s*it/i, /i\s*understand/i, /^ok(ay)?$/i,
+    /同意/i, /接受/i, /允许/i, /确定/i, /我知道了/i,
+    /akzeptieren/i, /zustimmen/i, /alle akzeptieren/i,
+    /accepter/i, /aceptar/i, /accetta/i,
+    /承諾/i, /同意する/i, /수락/i, /принять/i,
+  ];
+
+  function isElementVisibleForOverlay(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findOverlayButtonBySelector() {
+    for (const sel of OVERLAY_SELECTORS) {
+      try {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          if (isElementVisibleForOverlay(el)) return el;
+        }
+      } catch (_) { /* invalid selector */ }
+    }
+    return null;
+  }
+
+  function findOverlayButtonInFixedElements() {
+    const allEls = document.querySelectorAll('*');
+    const fixedContainers = [];
+    for (const el of allEls) {
+      if (!(el instanceof HTMLElement)) continue;
+      const style = window.getComputedStyle(el);
+      const pos = style.position;
+      if (pos !== 'fixed' && pos !== 'sticky') continue;
+      const z = parseInt(style.zIndex, 10);
+      if (isNaN(z) || z < 100) continue;
+      if (!isElementVisibleForOverlay(el)) continue;
+      fixedContainers.push(el);
+    }
+
+    for (const container of fixedContainers) {
+      const btns = container.querySelectorAll('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"]');
+      for (const btn of btns) {
+        if (!isElementVisibleForOverlay(btn)) continue;
+        const text = (btn.textContent || btn.value || '').trim();
+        if (!text || text.length > 50) continue;
+        for (const pattern of OVERLAY_BUTTON_TEXT) {
+          if (pattern.test(text)) return btn;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function dismissOverlays(maxRounds = 2) {
+    const result = { dismissed: false, rounds: 0, clickedSelectors: [] };
+    for (let round = 0; round < maxRounds; round++) {
+      let btn = findOverlayButtonBySelector();
+      let source = 'selector';
+      if (!btn) {
+        btn = findOverlayButtonInFixedElements();
+        source = 'fixed-text';
+      }
+      if (!btn) break;
+
+      const desc = btn.id || btn.className?.toString().slice(0, 40) || btn.textContent?.trim().slice(0, 20) || 'unknown';
+      try {
+        btn.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        btn.click();
+        result.dismissed = true;
+        result.rounds = round + 1;
+        result.clickedSelectors.push(`${source}:${desc}`);
+      } catch (_) { break; }
+
+      await new Promise(r => setTimeout(r, 800));
+
+      if (!isElementVisibleForOverlay(btn) || !document.body.contains(btn)) {
+        continue;
+      }
+    }
+    return result;
+  }
+
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+    if (request.action === 'dismissOverlays') {
+      dismissOverlays(request.maxRounds || 2)
+        .then(sendResponse)
+        .catch(() => sendResponse({ dismissed: false, error: '弹窗处理异常' }));
+      return true;
+    }
     if (request.action === 'fullAiTakeSnapshot') {
       const result = takeSnapshot(request.scopeRootSelector);
       sendResponse(result);
@@ -524,4 +637,8 @@
       return true;
     }
   });
+
+  if (typeof window !== 'undefined') {
+    window.__wce_dismissOverlays = dismissOverlays;
+  }
 })();
