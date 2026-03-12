@@ -33,6 +33,7 @@ const elements = {
   panelNav: document.getElementById('panel-nav'),
   panelBlog: document.getElementById('panel-blog'),
   panelBatch: document.getElementById('panel-batch'),
+  panelExplore: document.getElementById('panel-explore'),
 
   // 导航站模式
   navSiteSelect: document.getElementById('navSiteSelect'),
@@ -110,7 +111,27 @@ const elements = {
   pauseBatchBtn: document.getElementById('pauseBatchBtn'),
   stopBatchBtn: document.getElementById('stopBatchBtn'),
   clearBatchLogBtn: document.getElementById('clearBatchLogBtn'),
-  batchLogContainer: document.getElementById('batchLogContainer')
+  batchLogContainer: document.getElementById('batchLogContainer'),
+
+  // 外链采集模式
+  exploreBatchId: document.getElementById('exploreBatchId'),
+  exploreBatchStatus: document.getElementById('exploreBatchStatus'),
+  exploreCommentPageUrl: document.getElementById('exploreCommentPageUrl'),
+  exploreExtractCommentUrlsBtn: document.getElementById('exploreExtractCommentUrlsBtn'),
+  exploreAhrefsDomain: document.getElementById('exploreAhrefsDomain'),
+  exploreFetchBacklinksBtn: document.getElementById('exploreFetchBacklinksBtn'),
+  exploreUrlList: document.getElementById('exploreUrlList'),
+  exploreStartTraverseBtn: document.getElementById('exploreStartTraverseBtn'),
+  explorePauseBtn: document.getElementById('explorePauseBtn'),
+  exploreResumeBtn: document.getElementById('exploreResumeBtn'),
+  exploreStopBtn: document.getElementById('exploreStopBtn'),
+  exploreDiscoveredList: document.getElementById('exploreDiscoveredList'),
+  exploreFeishuConfigBtn: document.getElementById('exploreFeishuConfigBtn'),
+  exploreWriteFeishuBtn: document.getElementById('exploreWriteFeishuBtn'),
+  exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
+  exploreAddDugToAhrefsBtn: document.getElementById('exploreAddDugToAhrefsBtn'),
+  exploreAddDugToUrlListBtn: document.getElementById('exploreAddDugToUrlListBtn'),
+  exploreExcludeDomains: document.getElementById('exploreExcludeDomains')
 };
 
 // ========== State ==========
@@ -125,6 +146,8 @@ let batchUrls = [];
 let batchRunning = false;
 let batchPaused = false;
 let feishuSyncLimit = 10; // 默认同步 10 条
+
+let exploreCurrentBatch = null;
 
 // ========== 初始化 ==========
 async function init() {
@@ -145,7 +168,7 @@ async function init() {
 
   // 根据当前模式获取页面状态
   if (currentMode === 'nav') {
-    await getPageState();
+    await getNavPageState();
   } else if (currentMode === 'blog') {
     await getCommentPageState();
   }
@@ -232,7 +255,7 @@ async function loadSites() {
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
 
-    if (result.sidePanelMode === 'nav' || result.sidePanelMode === 'blog' || result.sidePanelMode === 'batch') {
+    if (result.sidePanelMode === 'nav' || result.sidePanelMode === 'blog' || result.sidePanelMode === 'batch' || result.sidePanelMode === 'explore') {
       currentMode = result.sidePanelMode;
     }
 
@@ -363,6 +386,7 @@ function showModePanel(mode) {
   if (elements.panelNav) elements.panelNav.classList.toggle('hidden', mode !== 'nav');
   if (elements.panelBlog) elements.panelBlog.classList.toggle('hidden', mode !== 'blog');
   if (elements.panelBatch) elements.panelBatch.classList.toggle('hidden', mode !== 'batch');
+  if (elements.panelExplore) elements.panelExplore.classList.toggle('hidden', mode !== 'explore');
 
   if (mode === 'nav') {
     getNavPageState();
@@ -373,7 +397,96 @@ function showModePanel(mode) {
   } else if (mode === 'batch') {
     // 切换到批量提交 tab 时，如果还没有数据则自动触发飞书同步
     autoSyncIfNeeded();
+  } else if (mode === 'explore') {
+    loadExploreState();
   }
+}
+
+function showExploreMessage(message, type) {
+  if (typeof showToast === 'function') {
+    showToast(message, type || 'info');
+  } else {
+    console.log('[Explore]', type, message);
+  }
+}
+
+function updateExploreControls(status) {
+  const running = status === 'running';
+  const paused = status === 'paused';
+  const stopped = status === 'stopped';
+  const canResume = paused || stopped;
+  if (elements.explorePauseBtn) {
+    elements.explorePauseBtn.classList.toggle('hidden', !running);
+    elements.explorePauseBtn.disabled = !running;
+  }
+  if (elements.exploreResumeBtn) {
+    elements.exploreResumeBtn.classList.toggle('hidden', !canResume);
+    elements.exploreResumeBtn.disabled = !canResume;
+  }
+  if (elements.exploreStopBtn) {
+    elements.exploreStopBtn.classList.toggle('hidden', !running);
+    elements.exploreStopBtn.disabled = !running;
+  }
+  if (elements.exploreBatchStatus) {
+    elements.exploreBatchStatus.textContent = (status || '—') + (exploreCurrentBatch?.phase ? ' · ' + exploreCurrentBatch.phase : '');
+  }
+}
+
+async function loadExploreState() {
+  if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
+  if (elements.exploreBatchStatus) {
+    elements.exploreBatchStatus.classList.add('hidden');
+  }
+  try {
+    const st = await chrome.storage.local.get(['exploreExcludeDomains']);
+    if (elements.exploreExcludeDomains) elements.exploreExcludeDomains.value = st.exploreExcludeDomains || '';
+  } catch (_) {}
+  if (typeof listBatches === 'function') {
+    try {
+      const batches = await listBatches();
+      const runningOrPaused = batches.find(b => b.status === 'running' || b.status === 'paused');
+      if (runningOrPaused && elements.exploreBatchId) {
+        exploreCurrentBatch = runningOrPaused;
+        elements.exploreBatchId.textContent = runningOrPaused.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = `${runningOrPaused.status} · ${runningOrPaused.phase || 'idle'}`;
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(runningOrPaused.status);
+      } else {
+        updateExploreControls(null);
+      }
+    } catch (e) {
+      console.warn('[Explore] loadExploreState listBatches:', e);
+    }
+  }
+}
+
+async function saveExploreBatchWithExcludeFilter(batch) {
+  if (!batch || typeof saveBatch !== 'function') return;
+  const exclude = await getExploreExcludeDomainsForFilter();
+  if (exclude && typeof filterUrlsExcludingDomains === 'function' && typeof filterDomainsExcludingDomains === 'function') {
+    const b = { ...batch };
+    b.urlList = filterUrlsExcludingDomains(b.urlList || [], exclude);
+    b.dugDomains = filterDomainsExcludingDomains(b.dugDomains || [], exclude);
+    if (Array.isArray(b.discoveredSites) && typeof normalizeDomain === 'function' && typeof getExcludeDomainSet === 'function') {
+      const set = getExcludeDomainSet(exclude);
+      b.discoveredSites = b.discoveredSites.filter(s => {
+        const url = (s && s.url) || s;
+        const host = normalizeDomain(url);
+        return !host || !set.has(host);
+      });
+    }
+    await saveBatch(b);
+    if (exploreCurrentBatch && exploreCurrentBatch.batchId === b.batchId) exploreCurrentBatch = b;
+  } else {
+    await saveBatch(batch);
+  }
+}
+
+async function getExploreExcludeDomainsForFilter() {
+  const r = await chrome.storage.local.get(['exploreExcludeDomains']);
+  return r.exploreExcludeDomains || '';
 }
 
 // 自动飞书同步（仅在数据为空或上次同步超过5分钟时）
@@ -1427,6 +1540,109 @@ function setupEventListeners() {
   // 关闭状态消息
   elements.batchCloseStatusBtn?.addEventListener('click', () => {
     hideBatchMessage();
+  });
+
+  // ========== 外链采集模式事件 ==========
+  elements.exploreExtractCommentUrlsBtn?.addEventListener('click', () => {
+    if (currentMode !== 'explore') return;
+    showExploreMessage('评论区提取功能待实现（步骤 5）', 'info');
+  });
+  elements.exploreFetchBacklinksBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function') return;
+    const domain = elements.exploreAhrefsDomain?.value?.trim() || '';
+    if (!domain) {
+      showExploreMessage('请先输入要查询的域名，例如 new.web.cafe', 'warning');
+      return;
+    }
+    try {
+      const batchId = await generateBatchId();
+      const batch = createBatch(batchId, { type: 'ahrefs', domain });
+      exploreCurrentBatch = batch;
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (elements.exploreBatchId) elements.exploreBatchId.textContent = batchId;
+      if (elements.exploreBatchStatus) {
+        elements.exploreBatchStatus.textContent = `${batch.status} · ${batch.phase}`;
+        elements.exploreBatchStatus.classList.remove('hidden');
+      }
+      updateExploreControls(batch.status);
+      showExploreMessage('已创建批次 ' + batchId + '，Ahrefs 拉取待实现（步骤 6）', 'info');
+    } catch (e) {
+      showExploreMessage('创建批次失败: ' + (e.message || e), 'error');
+    }
+  });
+  elements.exploreStartTraverseBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function') return;
+    try {
+      const batchId = exploreCurrentBatch?.batchId || await generateBatchId();
+      const batch = exploreCurrentBatch || createBatch(batchId, { type: 'traverse' });
+      exploreCurrentBatch = batch;
+      batch.status = 'running';
+      batch.phase = 'traverse_check';
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+      if (elements.exploreBatchStatus) {
+        elements.exploreBatchStatus.textContent = batch.status + ' · ' + batch.phase;
+        elements.exploreBatchStatus.classList.remove('hidden');
+      }
+      updateExploreControls(batch.status);
+      showExploreMessage('遍历检测待实现（步骤 7）', 'info');
+    } catch (e) {
+      showExploreMessage('启动失败: ' + (e.message || e), 'error');
+    }
+  });
+  elements.explorePauseBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
+    if (typeof saveBatch !== 'function') return;
+    exploreCurrentBatch.status = 'paused';
+    exploreCurrentBatch.updatedAt = new Date().toISOString();
+    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    updateExploreControls('paused');
+    showExploreMessage('已暂停，进度已保存', 'success');
+  });
+  elements.exploreResumeBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
+    if (typeof loadBatch !== 'function' || typeof saveBatch !== 'function') return;
+    try {
+      const loaded = await loadBatch(exploreCurrentBatch.batchId);
+      if (loaded) exploreCurrentBatch = loaded;
+      exploreCurrentBatch.status = 'running';
+      await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+      updateExploreControls('running');
+      showExploreMessage('已继续', 'success');
+    } catch (e) {
+      showExploreMessage('继续失败: ' + (e.message || e), 'error');
+    }
+  });
+  elements.exploreStopBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
+    if (typeof saveBatch !== 'function') return;
+    exploreCurrentBatch.status = 'stopped';
+    exploreCurrentBatch.updatedAt = new Date().toISOString();
+    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    updateExploreControls('stopped');
+    showExploreMessage('已停止，进度已保存', 'success');
+  });
+  elements.exploreFeishuConfigBtn?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
+  });
+  elements.exploreWriteFeishuBtn?.addEventListener('click', () => {
+    showExploreMessage('写入飞书待实现（步骤 8）', 'info');
+  });
+  elements.exploreAddDugToAhrefsBtn?.addEventListener('click', () => {
+    showExploreMessage('加入 Ahrefs 输入待实现（步骤 10）', 'info');
+  });
+  elements.exploreAddDugToUrlListBtn?.addEventListener('click', () => {
+    showExploreMessage('加入待检测待实现（步骤 10）', 'info');
+  });
+  elements.exploreExcludeDomains?.addEventListener('change', async () => {
+    const val = elements.exploreExcludeDomains?.value?.trim() || '';
+    await chrome.storage.local.set({ exploreExcludeDomains: val });
+  });
+  elements.exploreExcludeDomains?.addEventListener('blur', async () => {
+    const val = elements.exploreExcludeDomains?.value?.trim() || '';
+    await chrome.storage.local.set({ exploreExcludeDomains: val });
   });
 
   // 监听 storage 变更

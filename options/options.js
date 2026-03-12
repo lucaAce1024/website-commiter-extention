@@ -1235,6 +1235,14 @@ async function clearMapping(domain) {
  */
 async function createBackup() {
   try {
+    const feishuResult = await chrome.storage.local.get([
+      'feishuConfig',
+      'feishuCredentials',
+      'feishuSyncLimit',
+      'feishuLastSyncTime',
+      'exploreExcludeDomains'
+    ]);
+
     const data = {
       version: '1.0.0',
       backupDate: new Date().toISOString(),
@@ -1243,7 +1251,12 @@ async function createBackup() {
       blogCommentSites,
       fieldMappings: elements.includeMappings.checked ? fieldMappings : {},
       blogCommentFieldMappings: elements.includeMappings.checked ? (await chrome.storage.local.get(['blogCommentFieldMappings'])).blogCommentFieldMappings || {} : {},
-      settings
+      settings,
+      feishuConfig: feishuResult.feishuConfig || null,
+      feishuCredentials: feishuResult.feishuCredentials || null,
+      feishuSyncLimit: feishuResult.feishuSyncLimit ?? null,
+      feishuLastSyncTime: feishuResult.feishuLastSyncTime || null,
+      exploreExcludeDomains: feishuResult.exploreExcludeDomains ?? null
     };
 
     if (elements.includeRecords.checked) {
@@ -1292,7 +1305,7 @@ async function restoreBackup() {
     if (elements.restoreMode.value === 'replace') {
       // Replace all data
       await chrome.storage.local.clear();
-      await chrome.storage.local.set({
+      const replacePayload = {
         sites: data.sites || [],
         navSites: data.navSites || [],
         blogCommentSites: data.blogCommentSites || [],
@@ -1301,7 +1314,13 @@ async function restoreBackup() {
         settings: data.settings || {},
         submissionRecords: data.submissionRecords || {},
         blogCommentRecords: data.blogCommentRecords || {}
-      });
+      };
+      if (data.feishuConfig != null) replacePayload.feishuConfig = data.feishuConfig;
+      if (data.feishuCredentials != null) replacePayload.feishuCredentials = data.feishuCredentials;
+      if (data.feishuSyncLimit != null) replacePayload.feishuSyncLimit = data.feishuSyncLimit;
+      if (data.feishuLastSyncTime != null) replacePayload.feishuLastSyncTime = data.feishuLastSyncTime;
+      if (data.exploreExcludeDomains != null) replacePayload.exploreExcludeDomains = data.exploreExcludeDomains;
+      await chrome.storage.local.set(replacePayload);
     } else {
       // Merge data
       const existing = await chrome.storage.local.get(null);
@@ -1310,15 +1329,21 @@ async function restoreBackup() {
       const mergedNavSites = mergeById(existing.navSites || [], data.navSites || []);
       const mergedBlogSites = mergeById(existing.blogCommentSites || [], data.blogCommentSites || []);
 
-      await chrome.storage.local.set({
+      const mergePayload = {
         sites: mergedSites,
         navSites: mergedNavSites,
         blogCommentSites: mergedBlogSites,
-        fieldMappings: { ...existing.fieldMappings, ...data.fieldMappings },
+        fieldMappings: { ...existing.fieldMappings, ...(data.fieldMappings || {}) },
         blogCommentFieldMappings: { ...existing.blogCommentFieldMappings, ...(data.blogCommentFieldMappings || {}) },
         submissionRecords: { ...existing.submissionRecords, ...(data.submissionRecords || {}) },
         blogCommentRecords: { ...existing.blogCommentRecords, ...(data.blogCommentRecords || {}) }
-      });
+      };
+      if (data.feishuConfig != null) mergePayload.feishuConfig = data.feishuConfig;
+      if (data.feishuCredentials != null) mergePayload.feishuCredentials = data.feishuCredentials;
+      if (data.feishuSyncLimit != null) mergePayload.feishuSyncLimit = data.feishuSyncLimit;
+      if (data.feishuLastSyncTime != null) mergePayload.feishuLastSyncTime = data.feishuLastSyncTime;
+      if (data.exploreExcludeDomains != null) mergePayload.exploreExcludeDomains = data.exploreExcludeDomains;
+      await chrome.storage.local.set(mergePayload);
     }
 
     await loadData();

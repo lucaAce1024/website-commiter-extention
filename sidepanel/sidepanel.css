@@ -914,3 +914,35 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
 }
+
+/* 外链采集面板 */
+.explore-batch-id {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+
+.explore-batch-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.explore-url-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+
+.explore-url-list .empty-list-hint {
+  padding: 16px;
+}
+
+.explore-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

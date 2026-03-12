@@ -25,6 +25,7 @@
       <button type="button" class="mode-tab active" data-mode="nav">导航站</button>
       <button type="button" class="mode-tab" data-mode="blog">Blog 评论</button>
       <button type="button" class="mode-tab" data-mode="batch">批量提交</button>
+      <button type="button" class="mode-tab" data-mode="explore">外链采集</button>
     </nav>
 
     <!-- ========== 导航站模式 ========== -->
@@ -305,8 +306,76 @@
       </section>
     </div>
     <!-- /panel-batch -->
+
+    <!-- ========== 外链采集模式 ========== -->
+    <div id="panel-explore" class="mode-panel hidden">
+      <section class="section">
+        <div class="section-header">
+          <span class="label">任务批次</span>
+          <span id="exploreBatchId" class="explore-batch-id">—</span>
+        </div>
+        <div id="exploreBatchStatus" class="explore-batch-status hidden">—</div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">排除域名（本站等）</span></div>
+        <input type="text" id="exploreExcludeDomains" class="input" placeholder="多个用逗号分隔，如: myblog.com, www.mysite.com">
+        <p class="section-desc">采集到的外链 URL / 挖到的域名中，将自动过滤掉此处列出的域名。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">外链 URL（评论区提取）</span></div>
+        <input type="text" id="exploreCommentPageUrl" class="input" placeholder="输入含评论的博客文章 URL">
+        <button type="button" id="exploreExtractCommentUrlsBtn" class="btn btn-secondary btn-sm">从评论区提取 URL</button>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">Ahrefs 反链</span></div>
+        <input type="text" id="exploreAhrefsDomain" class="input" placeholder="输入域名，如 new.web.cafe">
+        <button type="button" id="exploreFetchBacklinksBtn" class="btn btn-secondary btn-sm">拉取反链</button>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">待检测 URL 列表</span>
+        </div>
+        <div id="exploreUrlList" class="explore-url-list">
+          <div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>
+        </div>
+        <button type="button" id="exploreStartTraverseBtn" class="btn btn-primary btn-sm" disabled>遍历检测可评论站点</button>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">任务控制</span></div>
+        <div class="explore-controls">
+          <button type="button" id="explorePauseBtn" class="btn btn-secondary btn-sm hidden" disabled>暂停</button>
+          <button type="button" id="exploreResumeBtn" class="btn btn-secondary btn-sm hidden" disabled>继续</button>
+          <button type="button" id="exploreStopBtn" class="btn btn-danger btn-sm hidden" disabled>停止</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">已发现可评论站</span></div>
+        <div id="exploreDiscoveredList" class="explore-url-list">
+          <div class="empty-list-hint">暂无</div>
+        </div>
+        <button type="button" id="exploreFeishuConfigBtn" class="btn-link btn-sm">飞书表格配置</button>
+        <button type="button" id="exploreWriteFeishuBtn" class="btn btn-secondary btn-sm" disabled>写入飞书</button>
+      </section>
+
+      <section class="section">
+        <div class="section-header"><span class="label">评论区挖到的域名</span></div>
+        <div id="exploreDugDomainsList" class="explore-url-list">
+          <div class="empty-list-hint">暂无</div>
+        </div>
+        <button type="button" id="exploreAddDugToAhrefsBtn" class="btn-link btn-sm" disabled>加入 Ahrefs 输入</button>
+        <button type="button" id="exploreAddDugToUrlListBtn" class="btn-link btn-sm" disabled>加入待检测</button>
+      </section>
+    </div>
+    <!-- /panel-explore -->
   </div>
 
+  <script src="../lib/backlinkExplore.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>
