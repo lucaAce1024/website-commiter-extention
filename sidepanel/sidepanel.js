@@ -432,6 +432,18 @@ function updateExploreControls(status) {
   }
 }
 
+function renderExploreUrlList() {
+  const listEl = elements.exploreUrlList;
+  if (!listEl) return;
+  const urls = exploreCurrentBatch?.urlList || [];
+  if (urls.length === 0) {
+    listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>';
+  } else {
+    listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${u}" target="_blank" rel="noopener">${u}</a></div>`).join('');
+  }
+  if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = urls.length === 0;
+}
+
 async function loadExploreState() {
   if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
   if (elements.exploreBatchStatus) {
@@ -460,6 +472,7 @@ async function loadExploreState() {
       console.warn('[Explore] loadExploreState listBatches:', e);
     }
   }
+  renderExploreUrlList();
 }
 
 async function saveExploreBatchWithExcludeFilter(batch) {
@@ -1543,9 +1556,74 @@ function setupEventListeners() {
   });
 
   // ========== 外链采集模式事件 ==========
-  elements.exploreExtractCommentUrlsBtn?.addEventListener('click', () => {
+  elements.exploreExtractCommentUrlsBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
-    showExploreMessage('评论区提取功能待实现（步骤 5）', 'info');
+    const pageUrl = elements.exploreCommentPageUrl?.value?.trim() || '';
+    if (!pageUrl) {
+      showExploreMessage('请输入含评论的博客文章 URL', 'warning');
+      return;
+    }
+    let targetUrl = pageUrl;
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) targetUrl = 'https://' + targetUrl;
+    try {
+      new URL(targetUrl);
+    } catch (_) {
+      showExploreMessage('URL 格式无效', 'error');
+      return;
+    }
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof dedupeUrls !== 'function') return;
+    try {
+      showExploreMessage('正在打开页面并提取评论区链接…', 'info');
+      const tab = await new Promise((resolve) => {
+        chrome.tabs.create({ url: targetUrl }, resolve);
+      });
+      const tabId = tab.id;
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(listener);
+          reject(new Error('页面加载超时'));
+        }, 20000);
+        const listener = (id, changeInfo) => {
+          if (id === tabId && changeInfo.status === 'complete') {
+            clearTimeout(timeout);
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+      const response = await chrome.tabs.sendMessage(tabId, { action: 'extractCommentUrls' }).catch((e) => ({ success: false, error: e?.message || '无法与页面通信' }));
+      if (!response || !response.success) {
+        showExploreMessage(response?.error || '提取失败', 'error');
+        return;
+      }
+      const rawUrls = response.urls || [];
+      const exclude = await getExploreExcludeDomainsForFilter();
+      const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(rawUrls, exclude) : rawUrls;
+      let batch = exploreCurrentBatch;
+      if (!batch) {
+        const batchId = await generateBatchId();
+        batch = createBatch(batchId, { type: 'comment_extract', sourceUrl: targetUrl });
+        exploreCurrentBatch = batch;
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
+      }
+      const prevLen = (batch.urlList || []).length;
+      const merged = dedupeUrls([...(batch.urlList || []), ...filtered]);
+      batch.urlList = merged;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+      renderExploreUrlList();
+      const addedCount = merged.length - prevLen;
+      showExploreMessage(`已提取 ${rawUrls.length} 条链接，新增 ${addedCount} 条至待检测列表（共 ${merged.length} 条）`, 'success');
+    } catch (e) {
+      showExploreMessage(e?.message || '提取失败', 'error');
+    }
   });
   elements.exploreFetchBacklinksBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;

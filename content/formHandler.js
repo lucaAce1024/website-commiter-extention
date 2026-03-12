@@ -48,6 +48,87 @@ document.addEventListener('contextmenu', (e) => {
   lastContextMenuTarget = getEditableElementFromTarget(e.target);
 }, true);
 
+/** 评论区常见容器选择器（按优先级尝试） */
+const COMMENT_AREA_SELECTORS = [
+  '#comments', '#comment', '.comments', '.comment-list', '.comment-list-wrapper',
+  '[id*="comment"]', '[class*="comment"]', '.comment-area', 'section.comments',
+  '.post-comments', '.article-comments', '[data-comments]', '.respond'
+];
+
+/** 论坛/主内容区选择器（无评论区时尝试，避免整页链接过多时直接放弃） */
+const MAIN_CONTENT_SELECTORS = [
+  'main', '[role="main"]', '#content', '.content', '.page-content', '.main-content',
+  '.forum-content', '.topic-posts', '.post-list', '.posts', 'article', '.post-body'
+];
+
+/** 全页扫描时最多处理的链接数，避免大页卡顿 */
+const EXTRACT_LINKS_CAP = 2500;
+
+/** 常见社交/站内/无效链接 host 片段，出现则排除 */
+const COMMENT_LINK_SKIP_HOSTS = [
+  'twitter.com', 'facebook.com', 'instagram.com', 'linkedin.com', 'youtube.com',
+  't.co', 'bit.ly', 'goo.gl', 'gravatar.com', 'wordpress.com', 'google.com',
+  'wikipedia.org', 'amazon.', 'apple.com', 'play.google', 'apps.apple'
+];
+
+/**
+ * 从当前页评论区提取评论者留下的网站 URL（外链采集 FR-2）
+ * 先匹配评论区，再匹配论坛/主内容区，最后回退到 body（大页限制处理数量）。
+ * @returns {Promise<string[]>} 原始 href 列表，由 sidepanel 做标准化与去重
+ */
+function extractCommentUrlsFromPage() {
+  const pageHost = window.location.hostname.toLowerCase();
+  const seen = new Set();
+  const out = [];
+
+  let root = null;
+  for (const sel of COMMENT_AREA_SELECTORS) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && el.querySelectorAll('a[href]').length > 0) {
+        root = el;
+        break;
+      }
+    } catch (_) {}
+  }
+  if (!root) {
+    for (const sel of MAIN_CONTENT_SELECTORS) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && el.querySelectorAll('a[href]').length > 0) {
+          root = el;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+  if (!root) root = document.body;
+
+  const allInRoot = root.querySelectorAll('a[href]');
+  const links = allInRoot.length > EXTRACT_LINKS_CAP
+    ? Array.from(allInRoot).slice(0, EXTRACT_LINKS_CAP)
+    : allInRoot;
+
+  for (const a of links) {
+    const href = (a.getAttribute('href') || '').trim();
+    if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) continue;
+    if (!href.startsWith('http://') && !href.startsWith('https://')) continue;
+    try {
+      const u = new URL(href);
+      const host = u.hostname.toLowerCase();
+      if (host === pageHost) continue;
+      if (COMMENT_LINK_SKIP_HOSTS.some((h) => host.includes(h))) continue;
+      const key = host + (u.pathname || '');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(href);
+    } catch (_) {}
+  }
+  const rootLabel = root.id ? `#${root.id}` : (root.className && typeof root.className === 'string' ? root.className.split(/\s+/)[0] : root.tagName || 'body');
+  console.log(TAG, 'extractCommentUrls:', { root: rootLabel, scanned: links.length, extracted: out.length });
+  return Promise.resolve(out);
+}
+
 // Listen for messages from popup/background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'detectForm') {
@@ -145,6 +226,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true, title, description, h1 });
   } else if (request.action === 'fullAiPrepareForComment') {
     handleFullAiPrepareForComment().then(sendResponse);
+    return true;
+  } else if (request.action === 'extractCommentUrls') {
+    extractCommentUrlsFromPage()
+      .then((urls) => sendResponse({ success: true, urls }))
+      .catch((err) => sendResponse({ success: false, error: err?.message || '提取失败', urls: [] }));
     return true;
   }
 });

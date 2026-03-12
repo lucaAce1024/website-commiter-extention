@@ -941,6 +941,21 @@ body {
   padding: 16px;
 }
 
+.explore-url-list .explore-url-item {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+}
+
+.explore-url-list .explore-url-item:last-child {
+  border-bottom: none;
+}
+
+.explore-url-list .explore-url-item a {
+  color: var(--link-color, var(--primary-color));
+  word-break: break-all;
+}
+
 .explore-controls {
   display: flex;
   gap: 8px;
