@@ -122,6 +122,8 @@ const elements = {
   exploreAhrefsDomain: document.getElementById('exploreAhrefsDomain'),
   exploreFetchBacklinksBtn: document.getElementById('exploreFetchBacklinksBtn'),
   exploreAhrefsProgress: document.getElementById('exploreAhrefsProgress'),
+  exploreAhrefsOverview: document.getElementById('exploreAhrefsOverview'),
+  exploreUrlListViewToggle: document.getElementById('exploreUrlListViewToggle'),
   exploreUrlList: document.getElementById('exploreUrlList'),
   exploreStartTraverseBtn: document.getElementById('exploreStartTraverseBtn'),
   explorePauseBtn: document.getElementById('explorePauseBtn'),
@@ -153,11 +155,10 @@ let exploreCurrentBatch = null;
 
 /**
  * 通过 CapSolver + Ahrefs 未公开 API 直接获取反链列表，无需打开页面。
- * 流程：CapSolver 解 Turnstile → stGetFreeBacklinksOverview 获取签名 → stGetFreeBacklinksList 获取反链。
- * @param {string} domain - 要查询的域名
- * @param {number} idx - 当前域名索引
- * @param {number} total - 域名总数
- * @returns {Promise<string[]>} urlFrom 列表
+ * @param {string} domain
+ * @param {number} idx
+ * @param {number} total
+ * @returns {Promise<{urlFromList: string[], backlinks: object[], overview: object}>}
  */
 async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
   showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：正在通过 API 获取反链…`, 'info');
@@ -168,13 +169,17 @@ async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
     });
     if (resp?.success && Array.isArray(resp.urlFromList)) {
       showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
-      return resp.urlFromList;
+      return {
+        urlFromList: resp.urlFromList,
+        backlinks: resp.backlinks || [],
+        overview: resp.overview || {}
+      };
     }
     showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链失败: ${resp?.error || '未知错误'}`, 'error');
-    return [];
+    return { urlFromList: [], backlinks: [], overview: {} };
   } catch (e) {
     showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链异常: ${e?.message || e}`, 'error');
-    return [];
+    return { urlFromList: [], backlinks: [], overview: {} };
   }
 }
 
@@ -473,14 +478,78 @@ function updateExploreControls(status) {
   }
 }
 
+let exploreUrlListDetailView = false;
+
+function renderAhrefsOverview(overview, domains) {
+  const el = elements.exploreAhrefsOverview;
+  if (!el) return;
+  if (!overview || overview.domainRating === undefined) {
+    el.classList.add('hidden');
+    return;
+  }
+  const domainLabel = domains && domains.length === 1 ? domains[0] : `${domains?.length || '?'} 个域名`;
+  el.innerHTML = `
+    <div class="overview-title">${domainLabel} — Ahrefs 概览</div>
+    <div class="overview-grid">
+      <div class="overview-item"><span class="overview-label">DR</span><span class="overview-value">${overview.domainRating}</span></div>
+      <div class="overview-item"><span class="overview-label">总反链</span><span class="overview-value">${overview.backlinks ?? '—'}</span></div>
+      <div class="overview-item"><span class="overview-label">引用域名</span><span class="overview-value">${overview.refdomains ?? '—'}</span></div>
+      <div class="overview-item"><span class="overview-label">Dofollow 反链</span><span class="overview-value">${overview.dofollowBacklinks ?? '—'}</span></div>
+      <div class="overview-item"><span class="overview-label">Dofollow 域名</span><span class="overview-value">${overview.dofollowRefdomains ?? '—'}</span></div>
+    </div>`;
+  el.classList.remove('hidden');
+}
+
+function drBadgeClass(dr) {
+  if (dr >= 50) return 'dr-high';
+  if (dr >= 20) return 'dr-mid';
+  return 'dr-low';
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 function renderExploreUrlList() {
   const listEl = elements.exploreUrlList;
   if (!listEl) return;
   const urls = exploreCurrentBatch?.urlList || [];
+  const details = exploreCurrentBatch?.backlinkDetails || [];
+  const hasDetails = details.length > 0;
+
+  if (elements.exploreUrlListViewToggle) {
+    if (hasDetails) {
+      elements.exploreUrlListViewToggle.classList.remove('hidden');
+      elements.exploreUrlListViewToggle.textContent = exploreUrlListDetailView ? '简略' : '详情';
+    } else {
+      elements.exploreUrlListViewToggle.classList.add('hidden');
+    }
+  }
+
   if (urls.length === 0) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>';
+  } else if (exploreUrlListDetailView && hasDetails) {
+    const detailMap = new Map();
+    for (const bl of details) {
+      if (bl.urlFrom) detailMap.set(bl.urlFrom, bl);
+    }
+    listEl.innerHTML = urls.map((u) => {
+      const bl = detailMap.get(u);
+      if (bl) {
+        const drClass = drBadgeClass(bl.domainRating);
+        return `<div class="explore-url-item rich">
+          <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
+          <div class="backlink-meta">
+            <span class="dr-badge ${drClass}">DR ${bl.domainRating}</span>
+            <span class="anchor-text" title="锚文本: ${escHtml(bl.anchor)}">${escHtml(bl.anchor || '—')}</span>
+            <span class="page-title" title="${escHtml(bl.title)}">${escHtml(bl.title || '')}</span>
+          </div>
+        </div>`;
+      }
+      return `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`;
+    }).join('');
   } else {
-    listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${u}" target="_blank" rel="noopener">${u}</a></div>`).join('');
+    listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`).join('');
   }
   if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = urls.length === 0;
 }
@@ -1735,6 +1804,11 @@ function setupEventListeners() {
     }
   });
 
+  elements.exploreUrlListViewToggle?.addEventListener('click', () => {
+    exploreUrlListDetailView = !exploreUrlListDetailView;
+    renderExploreUrlList();
+  });
+
   elements.exploreFetchBacklinksBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
     if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function' ||
@@ -1767,6 +1841,8 @@ function setupEventListeners() {
       await saveExploreBatchWithExcludeFilter(batch);
       const exclude = await getExploreExcludeDomainsForFilter();
       const allUrlFrom = [];
+      const allBacklinks = [];
+      let lastOverview = {};
       for (let i = 0; i < domains.length; i++) {
         if (i > 0) {
           const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
@@ -1774,15 +1850,20 @@ function setupEventListeners() {
           await new Promise(r => setTimeout(r, interDomainDelay));
         }
         const d = domains[i];
-        const urlFromList = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
-        if (urlFromList.length) allUrlFrom.push(...urlFromList);
+        const result = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
+        if (result.urlFromList.length) allUrlFrom.push(...result.urlFromList);
+        if (result.backlinks.length) allBacklinks.push(...result.backlinks);
+        if (result.overview && result.overview.domainRating !== undefined) lastOverview = result.overview;
       }
       const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(allUrlFrom, exclude) : allUrlFrom;
       batch.urlList = dedupeUrls(filtered);
+      batch.backlinkDetails = allBacklinks;
+      batch.ahrefsOverview = lastOverview;
       batch.phase = 'idle';
       batch.updatedAt = new Date().toISOString();
       await saveExploreBatchWithExcludeFilter(batch);
       if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+      renderAhrefsOverview(lastOverview, domains);
       renderExploreUrlList();
       showExploreMessage(`已拉取反链：共 ${batch.urlList.length} 条待检测 URL（来自 ${domains.length} 个域名）`, 'success');
     } catch (e) {
@@ -1923,8 +2004,8 @@ function setupEventListeners() {
             await new Promise(r => setTimeout(r, interDomainDelay));
           }
           const d = domains[idx];
-          const urlFromList = await fetchAhrefsBacklinksForDomain(d, idx, domains.length);
-          if (urlFromList.length) allUrlFrom.push(...urlFromList);
+          const result = await fetchAhrefsBacklinksForDomain(d, idx, domains.length);
+          if (result.urlFromList.length) allUrlFrom.push(...result.urlFromList);
         }
         const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(allUrlFrom, exclude) : allUrlFrom;
         traverseList = dedupeUrls(filtered);

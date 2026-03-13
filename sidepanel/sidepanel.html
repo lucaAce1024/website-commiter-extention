@@ -339,11 +339,13 @@
         <input type="text" id="exploreAhrefsDomain" class="input" placeholder="输入域名，如 new.web.cafe">
         <button type="button" id="exploreFetchBacklinksBtn" class="btn btn-secondary btn-sm">拉取反链</button>
         <div id="exploreAhrefsProgress" class="explore-ahrefs-progress hidden"></div>
+        <div id="exploreAhrefsOverview" class="ahrefs-overview hidden"></div>
       </section>
 
       <section class="section">
         <div class="section-header">
           <span class="label">待检测 URL 列表</span>
+          <span id="exploreUrlListViewToggle" class="label-action hidden" title="切换详情/简略视图">详情</span>
         </div>
         <div id="exploreUrlList" class="explore-url-list">
           <div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>
