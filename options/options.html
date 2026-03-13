@@ -280,6 +280,19 @@
           </div>
         </div>
 
+        <div class="settings-section">
+          <h3>CapSolver 配置（Ahrefs 反链拉取）</h3>
+          <p class="section-desc">配置 <a href="https://www.capsolver.com/products/cloudflare" target="_blank">CapSolver</a> API Key，用于自动解决 Ahrefs 的 Cloudflare Turnstile 验证，实现直接 API 调用获取反链数据。约 $1.2 / 1000 次请求。</p>
+
+          <div class="form-group">
+            <label for="capsolverApiKey">CapSolver API Key</label>
+            <div class="input-with-eye">
+              <input type="password" id="capsolverApiKey" class="input" placeholder="CAP-XXXXXXXXXXXXXX">
+              <button type="button" id="toggleCapsolverKeyBtn" class="input-eye-btn" title="显示 Key">👁</button>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-actions">
           <button class="btn btn-primary" id="saveSettingsBtn">
             <span class="btn-icon">💾</span>

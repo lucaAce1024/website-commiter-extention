@@ -118,8 +118,10 @@ const elements = {
   exploreBatchStatus: document.getElementById('exploreBatchStatus'),
   exploreCommentPageUrl: document.getElementById('exploreCommentPageUrl'),
   exploreExtractCommentUrlsBtn: document.getElementById('exploreExtractCommentUrlsBtn'),
+  exploreExtractFromCurrentPageBtn: document.getElementById('exploreExtractFromCurrentPageBtn'),
   exploreAhrefsDomain: document.getElementById('exploreAhrefsDomain'),
   exploreFetchBacklinksBtn: document.getElementById('exploreFetchBacklinksBtn'),
+  exploreAhrefsProgress: document.getElementById('exploreAhrefsProgress'),
   exploreUrlList: document.getElementById('exploreUrlList'),
   exploreStartTraverseBtn: document.getElementById('exploreStartTraverseBtn'),
   explorePauseBtn: document.getElementById('explorePauseBtn'),
@@ -131,7 +133,7 @@ const elements = {
   exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
   exploreAddDugToAhrefsBtn: document.getElementById('exploreAddDugToAhrefsBtn'),
   exploreAddDugToUrlListBtn: document.getElementById('exploreAddDugToUrlListBtn'),
-  exploreExcludeDomains: document.getElementById('exploreExcludeDomains')
+  exploreExcludeFromBlogSites: document.getElementById('exploreExcludeFromBlogSites')
 };
 
 // ========== State ==========
@@ -148,6 +150,33 @@ let batchPaused = false;
 let feishuSyncLimit = 10; // 默认同步 10 条
 
 let exploreCurrentBatch = null;
+
+/**
+ * 通过 CapSolver + Ahrefs 未公开 API 直接获取反链列表，无需打开页面。
+ * 流程：CapSolver 解 Turnstile → stGetFreeBacklinksOverview 获取签名 → stGetFreeBacklinksList 获取反链。
+ * @param {string} domain - 要查询的域名
+ * @param {number} idx - 当前域名索引
+ * @param {number} total - 域名总数
+ * @returns {Promise<string[]>} urlFrom 列表
+ */
+async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
+  showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：正在通过 API 获取反链…`, 'info');
+
+  try {
+    const resp = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: 'ahrefsDirectBacklinks', domain }, resolve);
+    });
+    if (resp?.success && Array.isArray(resp.urlFromList)) {
+      showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
+      return resp.urlFromList;
+    }
+    showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链失败: ${resp?.error || '未知错误'}`, 'error');
+    return [];
+  } catch (e) {
+    showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链异常: ${e?.message || e}`, 'error');
+    return [];
+  }
+}
 
 // ========== 初始化 ==========
 async function init() {
@@ -402,6 +431,18 @@ function showModePanel(mode) {
   }
 }
 
+function updateAhrefsProgress(message, type) {
+  const el = elements.exploreAhrefsProgress;
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'explore-ahrefs-progress';
+  if (type && type !== 'info') el.classList.add('type-' + type);
+  el.classList.remove('hidden');
+  if (type === 'success' || type === 'error') {
+    setTimeout(() => el.classList.add('hidden'), 8000);
+  }
+}
+
 function showExploreMessage(message, type) {
   if (typeof showToast === 'function') {
     showToast(message, type || 'info');
@@ -444,14 +485,28 @@ function renderExploreUrlList() {
   if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = urls.length === 0;
 }
 
+function renderExploreDiscoveredList() {
+  const listEl = elements.exploreDiscoveredList;
+  if (!listEl) return;
+  const sites = exploreCurrentBatch?.discoveredSites || [];
+  if (sites.length === 0) {
+    listEl.innerHTML = '<div class="empty-list-hint">暂无</div>';
+  } else {
+    listEl.innerHTML = sites.map((s) => {
+      const u = (s && s.url) || s;
+      return `<div class="explore-url-item"><a href="${u}" target="_blank" rel="noopener">${u}</a></div>`;
+    }).join('');
+  }
+}
+
 async function loadExploreState() {
   if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
   if (elements.exploreBatchStatus) {
     elements.exploreBatchStatus.classList.add('hidden');
   }
   try {
-    const st = await chrome.storage.local.get(['exploreExcludeDomains']);
-    if (elements.exploreExcludeDomains) elements.exploreExcludeDomains.value = st.exploreExcludeDomains || '';
+    const st = await chrome.storage.local.get(['exploreExcludeFromBlogSites']);
+    if (elements.exploreExcludeFromBlogSites) elements.exploreExcludeFromBlogSites.checked = st.exploreExcludeFromBlogSites !== false;
   } catch (_) {}
   if (typeof listBatches === 'function') {
     try {
@@ -473,6 +528,7 @@ async function loadExploreState() {
     }
   }
   renderExploreUrlList();
+  renderExploreDiscoveredList();
 }
 
 async function saveExploreBatchWithExcludeFilter(batch) {
@@ -498,8 +554,13 @@ async function saveExploreBatchWithExcludeFilter(batch) {
 }
 
 async function getExploreExcludeDomainsForFilter() {
-  const r = await chrome.storage.local.get(['exploreExcludeDomains']);
-  return r.exploreExcludeDomains || '';
+  const r = await chrome.storage.local.get(['exploreExcludeFromBlogSites', 'blogCommentSites']);
+  if (r.exploreExcludeFromBlogSites === false) return '';
+  const sites = r.blogCommentSites || [];
+  if (!sites.length) return '';
+  if (typeof normalizeDomain !== 'function') return '';
+  const domains = [...new Set(sites.map((s) => (s && s.url) ? normalizeDomain(s.url) : '').filter(Boolean))];
+  return domains.join(',');
 }
 
 // 自动飞书同步（仅在数据为空或上次同步超过5分钟时）
@@ -1625,49 +1686,270 @@ function setupEventListeners() {
       showExploreMessage(e?.message || '提取失败', 'error');
     }
   });
+
+  elements.exploreExtractFromCurrentPageBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof dedupeUrls !== 'function') return;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id || !tab?.url) {
+        showExploreMessage('无法获取当前活动标签页', 'warning');
+        return;
+      }
+      if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+        showExploreMessage('当前页面不是 http/https，无法提取', 'warning');
+        return;
+      }
+      showExploreMessage('正在从当前页面提取评论区链接…', 'info');
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCommentUrls' }).catch((e) => ({ success: false, error: e?.message || '无法与页面通信' }));
+      if (!response || !response.success) {
+        showExploreMessage(response?.error || '提取失败（请刷新当前页后重试）', 'error');
+        return;
+      }
+      const rawUrls = response.urls || [];
+      const exclude = await getExploreExcludeDomainsForFilter();
+      const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(rawUrls, exclude) : rawUrls;
+      let batch = exploreCurrentBatch;
+      if (!batch) {
+        const batchId = await generateBatchId();
+        batch = createBatch(batchId, { type: 'comment_extract', sourceUrl: tab.url });
+        exploreCurrentBatch = batch;
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
+      }
+      const prevLen = (batch.urlList || []).length;
+      const merged = dedupeUrls([...(batch.urlList || []), ...filtered]);
+      batch.urlList = merged;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+      renderExploreUrlList();
+      const addedCount = merged.length - prevLen;
+      showExploreMessage(`已从当前页提取 ${rawUrls.length} 条链接，新增 ${addedCount} 条至待检测列表（共 ${merged.length} 条）`, 'success');
+    } catch (e) {
+      showExploreMessage(e?.message || '提取失败', 'error');
+    }
+  });
+
   elements.exploreFetchBacklinksBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
-    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function') return;
-    const domain = elements.exploreAhrefsDomain?.value?.trim() || '';
-    if (!domain) {
-      showExploreMessage('请先输入要查询的域名，例如 new.web.cafe', 'warning');
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function' ||
+        typeof dedupeUrls !== 'function' || typeof dedupeDomains !== 'function' || typeof normalizeDomain !== 'function') return;
+    const inputDomain = elements.exploreAhrefsDomain?.value?.trim() || '';
+    let domains = [];
+    if (inputDomain) {
+      domains = [normalizeDomain(inputDomain)].filter(Boolean);
+    } else if (exploreCurrentBatch?.urlList?.length) {
+      domains = dedupeDomains((exploreCurrentBatch.urlList || []).map(u => normalizeDomain(u)));
+    }
+    if (domains.length === 0) {
+      showExploreMessage('请输入要查询的域名，或先从评论区提取 URL 得到待查域名', 'warning');
       return;
     }
     try {
-      const batchId = await generateBatchId();
-      const batch = createBatch(batchId, { type: 'ahrefs', domain });
-      exploreCurrentBatch = batch;
-      await saveExploreBatchWithExcludeFilter(batch);
-      if (elements.exploreBatchId) elements.exploreBatchId.textContent = batchId;
-      if (elements.exploreBatchStatus) {
-        elements.exploreBatchStatus.textContent = `${batch.status} · ${batch.phase}`;
-        elements.exploreBatchStatus.classList.remove('hidden');
+      let batch = exploreCurrentBatch;
+      if (!batch) {
+        const batchId = await generateBatchId();
+        batch = createBatch(batchId, { type: 'ahrefs', domains });
+        exploreCurrentBatch = batch;
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
       }
-      updateExploreControls(batch.status);
-      showExploreMessage('已创建批次 ' + batchId + '，Ahrefs 拉取待实现（步骤 6）', 'info');
+      batch.phase = 'ahrefs_fetch';
+      await saveExploreBatchWithExcludeFilter(batch);
+      const exclude = await getExploreExcludeDomainsForFilter();
+      const allUrlFrom = [];
+      for (let i = 0; i < domains.length; i++) {
+        if (i > 0) {
+          const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
+          showExploreMessage(`域名间随机等待 ${(interDomainDelay / 1000).toFixed(1)} 秒，避免触发反爬…`, 'info');
+          await new Promise(r => setTimeout(r, interDomainDelay));
+        }
+        const d = domains[i];
+        const urlFromList = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
+        if (urlFromList.length) allUrlFrom.push(...urlFromList);
+      }
+      const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(allUrlFrom, exclude) : allUrlFrom;
+      batch.urlList = dedupeUrls(filtered);
+      batch.phase = 'idle';
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+      renderExploreUrlList();
+      showExploreMessage(`已拉取反链：共 ${batch.urlList.length} 条待检测 URL（来自 ${domains.length} 个域名）`, 'success');
     } catch (e) {
-      showExploreMessage('创建批次失败: ' + (e.message || e), 'error');
+      showExploreMessage(e?.message || '拉取反链失败', 'error');
     }
   });
+
+  async function runTraverseLoopOnly(currentBatchId) {
+    const TRAVERSE_DELAY_MS = 800;
+    let batch = await loadBatch(currentBatchId);
+    if (!batch || !batch.traverseBacklinkList || batch.traverseBacklinkList.length === 0) return;
+    const traverseList = batch.traverseBacklinkList;
+    for (let i = batch.lastProcessedIndex || 0; i < traverseList.length; i++) {
+      const loaded = await loadBatch(currentBatchId);
+      if (loaded && (loaded.status === 'paused' || loaded.status === 'stopped')) {
+        exploreCurrentBatch = loaded;
+        updateExploreControls(loaded.status);
+        showExploreMessage(loaded.status === 'stopped' ? '已停止' : '已暂停', 'info');
+        return;
+      }
+      if (loaded) batch = loaded;
+      const url = traverseList[i];
+      const urlNorm = normalizeUrl(url);
+      showExploreMessage(`检测可评论 (${i + 1}/${traverseList.length}): ${urlNorm.slice(0, 50)}…`, 'info');
+      let tab;
+      try {
+        tab = await new Promise((resolve) => chrome.tabs.create({ url: urlNorm || url }, resolve));
+      } catch (e) {
+        batch.urlProgress = batch.urlProgress || {};
+        batch.urlProgress[urlNorm] = { commentable: false, error: e?.message };
+        batch.lastProcessedIndex = i + 1;
+        batch.updatedAt = new Date().toISOString();
+        await saveExploreBatchWithExcludeFilter(batch);
+        if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
+        continue;
+      }
+      const tabId = tab.id;
+      await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }, 12000);
+        const listener = (id, changeInfo) => {
+          if (id === tabId && changeInfo.status === 'complete') {
+            clearTimeout(timeout);
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+      await new Promise((r) => setTimeout(r, 1500));
+      const response = await chrome.tabs.sendMessage(tabId, { action: 'recognizeCommentForm', useLlm: false }).catch(() => null);
+      chrome.tabs.remove(tabId).catch(() => {});
+
+      const loadedAfter = await loadBatch(currentBatchId);
+      if (loadedAfter && (loadedAfter.status === 'paused' || loadedAfter.status === 'stopped')) {
+        exploreCurrentBatch = loadedAfter;
+        updateExploreControls(loadedAfter.status);
+        showExploreMessage(loadedAfter.status === 'stopped' ? '已停止' : '已暂停', 'info');
+        return;
+      }
+
+      const commentable = response?.success && response?.result?.status === 'success';
+      batch.urlProgress = batch.urlProgress || {};
+      batch.urlProgress[urlNorm] = { commentable };
+      if (commentable) {
+        batch.discoveredSites = batch.discoveredSites || [];
+        const exists = batch.discoveredSites.some((s) => normalizeUrl((s && s.url) || s) === urlNorm);
+        if (!exists) batch.discoveredSites.push({ url: urlNorm, discoveredAt: new Date().toISOString() });
+      }
+      batch.lastProcessedIndex = i + 1;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
+      renderExploreDiscoveredList();
+      await new Promise((r) => setTimeout(r, TRAVERSE_DELAY_MS));
+    }
+    batch.phase = 'idle';
+    batch.updatedAt = new Date().toISOString();
+    await saveExploreBatchWithExcludeFilter(batch);
+    if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
+    updateExploreControls(batch.status);
+    const total = (batch.discoveredSites || []).length;
+    showExploreMessage(`遍历结束：已发现 ${total} 个可评论站`, 'success');
+  }
+
   elements.exploreStartTraverseBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
-    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function') return;
+    if (typeof loadBatch !== 'function' || typeof saveBatch !== 'function' || typeof normalizeUrl !== 'function' ||
+        typeof dedupeDomains !== 'function' || typeof dedupeUrls !== 'function') return;
     try {
-      const batchId = exploreCurrentBatch?.batchId || await generateBatchId();
-      const batch = exploreCurrentBatch || createBatch(batchId, { type: 'traverse' });
-      exploreCurrentBatch = batch;
-      batch.status = 'running';
-      batch.phase = 'traverse_check';
-      await saveExploreBatchWithExcludeFilter(batch);
-      if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
-      if (elements.exploreBatchStatus) {
-        elements.exploreBatchStatus.textContent = batch.status + ' · ' + batch.phase;
-        elements.exploreBatchStatus.classList.remove('hidden');
+      let batch = exploreCurrentBatch;
+      if (!batch) {
+        if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function') return;
+        const batchId = await generateBatchId();
+        batch = createBatch(batchId, { type: 'traverse' });
+        exploreCurrentBatch = batch;
       }
-      updateExploreControls(batch.status);
-      showExploreMessage('遍历检测待实现（步骤 7）', 'info');
+      const currentBatchId = batch.batchId;
+      let traverseList = batch.traverseBacklinkList || [];
+      const lastIdx = batch.lastProcessedIndex || 0;
+      const isResuming = traverseList.length > 0 && lastIdx < traverseList.length;
+
+      if (!isResuming) {
+        const urlList = batch.urlList || [];
+        if (urlList.length === 0) {
+          showExploreMessage('待检测 URL 列表为空，请先从评论区提取或拉取反链得到域名来源', 'warning');
+          return;
+        }
+        const domains = dedupeDomains(urlList.map((u) => normalizeDomain(u)));
+        showExploreMessage(`从 ${urlList.length} 条 URL 解析出 ${domains.length} 个域名，正在从 Ahrefs 获取最佳外链…`, 'info');
+        batch.status = 'running';
+        batch.phase = 'ahrefs_fetch';
+        batch.urlProgress = batch.urlProgress || {};
+        batch.discoveredSites = batch.discoveredSites || [];
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + batch.phase;
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
+        await saveExploreBatchWithExcludeFilter(batch);
+
+        const exclude = await getExploreExcludeDomainsForFilter();
+        const allUrlFrom = [];
+        for (let idx = 0; idx < domains.length; idx++) {
+          const loaded = await loadBatch(currentBatchId);
+          if (loaded && (loaded.status === 'paused' || loaded.status === 'stopped')) {
+            exploreCurrentBatch = loaded;
+            updateExploreControls(loaded.status);
+            showExploreMessage('已暂停/停止', 'info');
+            return;
+          }
+          if (idx > 0) {
+            const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
+            showExploreMessage(`域名间随机等待 ${(interDomainDelay / 1000).toFixed(1)} 秒，避免触发反爬…`, 'info');
+            await new Promise(r => setTimeout(r, interDomainDelay));
+          }
+          const d = domains[idx];
+          const urlFromList = await fetchAhrefsBacklinksForDomain(d, idx, domains.length);
+          if (urlFromList.length) allUrlFrom.push(...urlFromList);
+        }
+        const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(allUrlFrom, exclude) : allUrlFrom;
+        traverseList = dedupeUrls(filtered);
+        batch.traverseBacklinkList = traverseList;
+        batch.lastProcessedIndex = 0;
+        batch.phase = 'traverse_check';
+        batch.updatedAt = new Date().toISOString();
+        await saveExploreBatchWithExcludeFilter(batch);
+        if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+        showExploreMessage(`已获取 ${traverseList.length} 条最佳外链，开始遍历检测可评论站点…`, 'info');
+      } else {
+        batch.status = 'running';
+        batch.phase = 'traverse_check';
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + batch.phase;
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
+        await saveExploreBatchWithExcludeFilter(batch);
+      }
+
+      await runTraverseLoopOnly(currentBatchId);
     } catch (e) {
-      showExploreMessage('启动失败: ' + (e.message || e), 'error');
+      showExploreMessage('遍历失败: ' + (e?.message || e), 'error');
     }
   });
   elements.explorePauseBtn?.addEventListener('click', async () => {
@@ -1685,10 +1967,18 @@ function setupEventListeners() {
     try {
       const loaded = await loadBatch(exploreCurrentBatch.batchId);
       if (loaded) exploreCurrentBatch = loaded;
+      const list = exploreCurrentBatch.traverseBacklinkList || [];
+      const lastIdx = exploreCurrentBatch.lastProcessedIndex || 0;
+      if (list.length === 0 || lastIdx >= list.length) {
+        showExploreMessage('当前批次无可继续的遍历任务', 'warning');
+        return;
+      }
       exploreCurrentBatch.status = 'running';
+      exploreCurrentBatch.phase = 'traverse_check';
       await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
       updateExploreControls('running');
-      showExploreMessage('已继续', 'success');
+      showExploreMessage('已继续，从第 ' + (lastIdx + 1) + ' 条开始遍历检测', 'success');
+      await runTraverseLoopOnly(exploreCurrentBatch.batchId);
     } catch (e) {
       showExploreMessage('继续失败: ' + (e.message || e), 'error');
     }
@@ -1714,13 +2004,9 @@ function setupEventListeners() {
   elements.exploreAddDugToUrlListBtn?.addEventListener('click', () => {
     showExploreMessage('加入待检测待实现（步骤 10）', 'info');
   });
-  elements.exploreExcludeDomains?.addEventListener('change', async () => {
-    const val = elements.exploreExcludeDomains?.value?.trim() || '';
-    await chrome.storage.local.set({ exploreExcludeDomains: val });
-  });
-  elements.exploreExcludeDomains?.addEventListener('blur', async () => {
-    const val = elements.exploreExcludeDomains?.value?.trim() || '';
-    await chrome.storage.local.set({ exploreExcludeDomains: val });
+  elements.exploreExcludeFromBlogSites?.addEventListener('change', async () => {
+    const checked = !!elements.exploreExcludeFromBlogSites?.checked;
+    await chrome.storage.local.set({ exploreExcludeFromBlogSites: checked });
   });
 
   // 监听 storage 变更
@@ -2341,6 +2627,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleBatchProgress(request.data);
   } else if (request.action === 'batchComplete') {
     handleBatchComplete(request.data);
+  } else if (request.action === 'ahrefsProgress') {
+    if (currentMode === 'explore') {
+      updateAhrefsProgress(request.message, request.type || 'info');
+    }
   }
 });
 

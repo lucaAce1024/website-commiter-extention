@@ -29,7 +29,10 @@
     "sidePanel",
     "tabs"
   ],
-  "host_permissions": [],
+  "host_permissions": [
+    "https://ahrefs.com/*",
+    "https://api.capsolver.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

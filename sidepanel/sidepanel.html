@@ -318,21 +318,27 @@
       </section>
 
       <section class="section">
-        <div class="section-header"><span class="label">排除域名（本站等）</span></div>
-        <input type="text" id="exploreExcludeDomains" class="input" placeholder="多个用逗号分隔，如: myblog.com, www.mysite.com">
-        <p class="section-desc">采集到的外链 URL / 挖到的域名中，将自动过滤掉此处列出的域名。</p>
+        <label class="checkbox-label">
+          <input type="checkbox" id="exploreExcludeFromBlogSites" checked>
+          <span class="label">排除 Blog 评论「当前站点」列表中的域名</span>
+        </label>
+        <p class="section-desc">勾选后，采集到的外链 / 挖到的域名将自动过滤掉 Blog 评论站点列表里各站点对应的域名（本站等）。</p>
       </section>
 
       <section class="section">
         <div class="section-header"><span class="label">外链 URL（评论区提取）</span></div>
         <input type="text" id="exploreCommentPageUrl" class="input" placeholder="输入含评论的博客文章 URL">
-        <button type="button" id="exploreExtractCommentUrlsBtn" class="btn btn-secondary btn-sm">从评论区提取 URL</button>
+        <div class="explore-extract-actions">
+          <button type="button" id="exploreExtractCommentUrlsBtn" class="btn btn-secondary btn-sm">从评论区提取 URL</button>
+          <button type="button" id="exploreExtractFromCurrentPageBtn" class="btn btn-secondary btn-sm">从当前活动页面提取</button>
+        </div>
       </section>
 
       <section class="section">
-        <div class="section-header"><span class="label">Ahrefs 反链</span></div>
+        <div class="section-header"><span class="label">Ahrefs 反链（纯 API）</span></div>
         <input type="text" id="exploreAhrefsDomain" class="input" placeholder="输入域名，如 new.web.cafe">
         <button type="button" id="exploreFetchBacklinksBtn" class="btn btn-secondary btn-sm">拉取反链</button>
+        <div id="exploreAhrefsProgress" class="explore-ahrefs-progress hidden"></div>
       </section>
 
       <section class="section">

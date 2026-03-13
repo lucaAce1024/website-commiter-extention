@@ -132,8 +132,173 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+// ========== Ahrefs 直接 API 调用（通过 CapSolver 绕过 Turnstile） ==========
+const AHREFS_TURNSTILE_SITE_KEY = '0x4AAAAAAAAzi9ITzSN9xKMi';
+const CAPSOLVER_CREATE_TASK = 'https://api.capsolver.com/createTask';
+const CAPSOLVER_GET_RESULT = 'https://api.capsolver.com/getTaskResult';
+const AHREFS_OVERVIEW_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksOverview';
+const AHREFS_BACKLINKS_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksList';
+
+async function ahrefsSolveTurnstile(capsolverKey, domain) {
+  const siteUrl = `https://ahrefs.com/backlink-checker/?input=${encodeURIComponent(domain)}&mode=subdomains`;
+  const createRes = await fetch(CAPSOLVER_CREATE_TASK, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientKey: capsolverKey,
+      task: {
+        type: 'AntiTurnstileTaskProxyLess',
+        websiteKey: AHREFS_TURNSTILE_SITE_KEY,
+        websiteURL: siteUrl,
+        metadata: { action: '' }
+      }
+    })
+  });
+  const createData = await createRes.json();
+  const taskId = createData.taskId;
+  if (!taskId) throw new Error('CapSolver createTask 失败: ' + (createData.errorDescription || JSON.stringify(createData)));
+  console.log('[Ahrefs API] CapSolver taskId:', taskId);
+
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const pollRes = await fetch(CAPSOLVER_GET_RESULT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientKey: capsolverKey, taskId })
+    });
+    const pollData = await pollRes.json();
+    if (pollData.status === 'ready') {
+      const token = pollData.solution?.token;
+      if (!token) throw new Error('CapSolver 返回 ready 但无 token');
+      console.log('[Ahrefs API] === Step 1: CapSolver 完成 ===');
+      console.log('[Ahrefs API] token 前 80 字符:', token.slice(0, 80));
+      console.log('[Ahrefs API] token 长度:', token.length);
+      console.log('[Ahrefs API] CapSolver 完整 solution:', JSON.stringify(pollData.solution, null, 2));
+      return token;
+    }
+    if (pollData.status === 'failed' || pollData.errorId) {
+      throw new Error('CapSolver 解题失败: ' + (pollData.errorDescription || JSON.stringify(pollData)));
+    }
+  }
+  throw new Error('CapSolver 解题超时（120s）');
+}
+
+async function ahrefsGetSignature(token, domain) {
+  const reqBody = { captcha: token, mode: 'subdomains', url: domain };
+  console.log('[Ahrefs API] === Step 2: stGetFreeBacklinksOverview ===');
+  console.log('[Ahrefs API] 请求 URL:', AHREFS_OVERVIEW_URL);
+  console.log('[Ahrefs API] 请求 body:', JSON.stringify(reqBody, null, 2));
+  const res = await fetch(AHREFS_OVERVIEW_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reqBody)
+  });
+  const resText = await res.text();
+  console.log('[Ahrefs API] Step 2 HTTP 状态:', res.status);
+  console.log('[Ahrefs API] Step 2 响应 body（前 1500 字）:', resText.slice(0, 1500));
+  if (!res.ok) {
+    throw new Error(`stGetFreeBacklinksOverview 失败: HTTP ${res.status} — ${resText.slice(0, 500)}`);
+  }
+  const data = JSON.parse(resText);
+  if (!Array.isArray(data) || data.length < 2 || !data[1]?.signedInput) {
+    throw new Error('stGetFreeBacklinksOverview 响应格式异常: ' + resText.slice(0, 500));
+  }
+  const signedInput = data[1].signedInput;
+  const signature = signedInput.signature;
+  const validUntil = signedInput.input?.validUntil;
+  console.log('[Ahrefs API] Step 2 成功');
+  console.log('[Ahrefs API] signature:', signature);
+  console.log('[Ahrefs API] validUntil:', validUntil);
+  console.log('[Ahrefs API] signedInput 完整结构:', JSON.stringify(signedInput, null, 2));
+  return { signature, validUntil, domain };
+}
+
+async function ahrefsGetBacklinks({ signature, validUntil, domain }) {
+  const urlWithSlash = domain.endsWith('/') ? domain : domain + '/';
+  const payload = {
+    reportType: ['TopBacklinks'],
+    signedInput: {
+      signature,
+      input: {
+        validUntil,
+        mode: 'subdomains',
+        url: urlWithSlash
+      }
+    }
+  };
+  const payloadJson = JSON.stringify(payload, null, 2);
+  console.log('[Ahrefs API] === Step 3: stGetFreeBacklinksList ===');
+  console.log('[Ahrefs API] 请求 URL:', AHREFS_BACKLINKS_URL);
+  console.log('[Ahrefs API] 请求 body 完整:', payloadJson);
+  const res = await fetch(AHREFS_BACKLINKS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const resText = await res.text();
+  console.log('[Ahrefs API] Step 3 HTTP 状态:', res.status);
+  console.log('[Ahrefs API] Step 3 响应 body（前 1500 字）:', resText.slice(0, 1500));
+  if (!res.ok) {
+    throw new Error(`stGetFreeBacklinksList 失败: HTTP ${res.status} — ${resText.slice(0, 500)}`);
+  }
+  const data = JSON.parse(resText);
+
+  let backlinks = [];
+  if (Array.isArray(data) && data.length >= 2) {
+    const obj = data[1];
+    if (obj?.topBacklinks?.backlinks) {
+      backlinks = obj.topBacklinks.backlinks;
+    } else if (obj?.backlinks) {
+      backlinks = obj.backlinks;
+    }
+  }
+  const urlFromList = backlinks.map(b => b.urlFrom).filter(Boolean);
+  console.log('[Ahrefs API] Step 3 成功, 反链数量:', urlFromList.length);
+  return urlFromList;
+}
+
+function ahrefsSendProgress(msg, type = 'info') {
+  chrome.runtime.sendMessage({ action: 'ahrefsProgress', message: msg, type }).catch(() => {});
+}
+
+async function handleAhrefsDirectBacklinks(domain) {
+  const storage = await chrome.storage.local.get(['settings']);
+  const capsolverKey = storage.settings?.capsolverApiKey;
+  if (!capsolverKey) throw new Error('未配置 CapSolver API Key，请在设置页面配置后重试');
+
+  console.log('[Ahrefs API] ====== 开始纯 API 方式获取反链 ======');
+  console.log('[Ahrefs API] 查询域名:', domain);
+
+  // Step 1: CapSolver 解决 Turnstile → 获取 token
+  ahrefsSendProgress(`步骤 1/3: 正在通过 CapSolver 解决 Turnstile 验证（约 3-10 秒）…`);
+  const token = await ahrefsSolveTurnstile(capsolverKey, domain);
+  console.log('[Ahrefs API] Step 1 完成, token 已获取');
+
+  // Step 2: 用 token 调用 stGetFreeBacklinksOverview → 获取 signature + validUntil
+  ahrefsSendProgress('步骤 2/3: 正在获取签名（signature + validUntil）…');
+  const sigData = await ahrefsGetSignature(token, domain);
+  console.log('[Ahrefs API] Step 2 完成, signature 已获取');
+
+  // Step 3: 用 signature + validUntil 调用 stGetFreeBacklinksList → 获取反链
+  ahrefsSendProgress('步骤 3/3: 正在获取反链数据…');
+  const urlFromList = await ahrefsGetBacklinks(sigData);
+
+  ahrefsSendProgress(`成功获取 ${urlFromList.length} 条反链`, 'success');
+  console.log('[Ahrefs API] 完成，共获取', urlFromList.length, '条反链');
+  return urlFromList;
+}
+
 // Handle messages from content scripts and popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'ahrefsDirectBacklinks') {
+    handleAhrefsDirectBacklinks(request.domain)
+      .then(urlFromList => sendResponse({ success: true, urlFromList }))
+      .catch(error => {
+        console.error('[Ahrefs API] 失败:', error?.message);
+        sendResponse({ success: false, error: error?.message || '拉取反链失败' });
+      });
+    return true;
+  }
   if (request.action === 'fillForm') {
     // Forward to content script if needed
     sendResponse({ success: true });

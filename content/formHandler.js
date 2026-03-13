@@ -232,6 +232,279 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then((urls) => sendResponse({ success: true, urls }))
       .catch((err) => sendResponse({ success: false, error: err?.message || '提取失败', urls: [] }));
     return true;
+  } else if (request.action === 'ahrefsPrepareAndCheck') {
+    const domain = (request.domain || '').trim();
+    const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+    const humanDelay = () => new Promise(r => setTimeout(r, randInt(800, 2000)));
+    const shortDelay = () => new Promise(r => setTimeout(r, randInt(300, 700)));
+
+    const simulateHumanClick = (el) => {
+      if (!el || !el.getBoundingClientRect) return;
+      const rect = el.getBoundingClientRect();
+      const maxOffsetX = Math.max(8, rect.width * 0.25);
+      const maxOffsetY = Math.max(5, rect.height * 0.3);
+      const ox = (Math.random() * 2 - 1) * maxOffsetX;
+      const oy = (Math.random() * 2 - 1) * maxOffsetY;
+      const cx = rect.left + rect.width / 2 + ox;
+      const cy = rect.top + rect.height / 2 + oy;
+      const approachX = cx + randInt(-30, -10);
+      const approachY = cy + randInt(-15, 15);
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: approachX, clientY: approachY, view: window }));
+      setTimeout(() => {
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy, view: window }));
+        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy, view: window }));
+        setTimeout(() => {
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window }));
+          setTimeout(() => {
+            const releaseX = cx + (Math.random() * 4 - 2);
+            const releaseY = cy + (Math.random() * 4 - 2);
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: releaseX, clientY: releaseY, view: window }));
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: releaseX, clientY: releaseY, view: window }));
+          }, randInt(60, 180));
+        }, randInt(100, 300));
+      }, randInt(50, 150));
+    };
+
+    const simulateHumanType = async (el, text) => {
+      el.focus();
+      await shortDelay();
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      for (let i = 0; i < text.length; i++) {
+        const partial = text.slice(0, i + 1);
+        if (nativeSetter) nativeSetter.call(el, partial);
+        else el.value = partial;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: text[i], bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: text[i], bubbles: true }));
+        await new Promise(r => setTimeout(r, randInt(60, 180)));
+      }
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    const findInput = () => {
+      const sels = [
+        'input[name="input"]',
+        'input[placeholder*="domain" i]',
+        'input[placeholder*="URL" i]',
+        'input[type="text"]:not([readonly]):not([hidden])'
+      ];
+      for (const sel of sels) {
+        try {
+          const el = document.querySelector(sel);
+          if (el && el.offsetParent !== null) return el;
+        } catch (_) {}
+      }
+      return null;
+    };
+
+    const findBtn = () => {
+      const hasText = (el) => /check\s*backlink/i.test((el.textContent || el.value || '').trim());
+      for (const sel of ['button[type="submit"]', 'button', 'input[type="submit"]', '[role="button"]', 'a']) {
+        const btn = Array.from(document.querySelectorAll(sel)).find(hasText);
+        if (btn && btn.offsetParent !== null) return btn;
+      }
+      return null;
+    };
+
+    (async () => {
+      try {
+        await humanDelay();
+
+        let inputEl = null;
+        let btn = null;
+        for (let retry = 0; retry < 8; retry++) {
+          inputEl = findInput();
+          btn = findBtn();
+          if (inputEl && btn) break;
+          await new Promise(r => setTimeout(r, randInt(800, 1500)));
+        }
+
+        if (!inputEl) {
+          sendResponse({ success: false, error: '未找到输入框', filledInput: false });
+          return;
+        }
+
+        if (domain) {
+          inputEl.click();
+          await shortDelay();
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (nativeSetter) nativeSetter.call(inputEl, '');
+          else inputEl.value = '';
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          await simulateHumanType(inputEl, domain);
+          console.log(TAG, 'Ahrefs: 已模拟人工输入域名:', domain);
+        }
+
+        await humanDelay();
+
+        btn = findBtn();
+        if (!btn) {
+          sendResponse({ success: false, error: '未找到 Check backlinks 按钮', filledInput: !!domain });
+          return;
+        }
+
+        simulateHumanClick(btn);
+        console.log(TAG, 'Ahrefs: 已模拟人工点击 Check backlinks');
+        await shortDelay();
+        sendResponse({ success: true, filledInput: !!domain });
+      } catch (e) {
+        sendResponse({ success: false, error: e?.message || '操作异常', filledInput: false });
+      }
+    })();
+    return true;
+
+  } else if (request.action === 'ahrefsClickCheckBtn') {
+    const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+    const humanClickEl = (el) => {
+      if (!el || !el.getBoundingClientRect) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const maxOx = Math.max(8, rect.width * 0.25);
+      const maxOy = Math.max(5, rect.height * 0.3);
+      const cx = rect.left + rect.width / 2 + (Math.random() * 2 - 1) * maxOx;
+      const cy = rect.top + rect.height / 2 + (Math.random() * 2 - 1) * maxOy;
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx - randInt(20, 50), clientY: cy + randInt(-10, 10), view: window }));
+      setTimeout(() => {
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy, view: window }));
+        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy, view: window }));
+        setTimeout(() => {
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window }));
+          setTimeout(() => {
+            const rx = cx + (Math.random() * 3 - 1.5);
+            const ry = cy + (Math.random() * 3 - 1.5);
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: rx, clientY: ry, view: window }));
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: rx, clientY: ry, view: window }));
+          }, randInt(60, 180));
+        }, randInt(120, 350));
+      }, randInt(80, 200));
+      return true;
+    };
+
+    const findCheckBtn = () => {
+      const hasText = (el) => /check\s*backlink/i.test((el.textContent || el.value || '').trim());
+      for (const sel of ['button[type="submit"]', 'button', 'input[type="submit"]', '[role="button"]', 'a']) {
+        const btn = Array.from(document.querySelectorAll(sel)).find(hasText);
+        if (btn && btn.offsetParent !== null) return btn;
+      }
+      return null;
+    };
+
+    (async () => {
+      try {
+        for (let retry = 0; retry < 10; retry++) {
+          const btn = findCheckBtn();
+          if (btn) {
+            console.log(TAG, 'Ahrefs: 找到 Check backlinks 按钮，准备点击');
+            await new Promise(r => setTimeout(r, randInt(500, 1200)));
+            humanClickEl(btn);
+            await new Promise(r => setTimeout(r, randInt(300, 600)));
+            sendResponse({ success: true });
+            return;
+          }
+          await new Promise(r => setTimeout(r, randInt(800, 1500)));
+        }
+        sendResponse({ success: false, error: '多次重试后仍未找到 Check backlinks 按钮' });
+      } catch (e) {
+        sendResponse({ success: false, error: e?.message || '点击异常' });
+      }
+    })();
+    return true;
+
+  } else if (request.action === 'ahrefsDetectCF') {
+    const cfIndicators = [
+      '.cf-turnstile',
+      'iframe[src*="challenges.cloudflare"]',
+      '#challenge-running',
+      '#challenge-form',
+      '[data-sitekey]'
+    ];
+    let hasCF = false;
+    for (const sel of cfIndicators) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) { hasCF = true; break; }
+      } catch (_) {}
+    }
+    if (!hasCF) {
+      hasCF = /verify you are human|just a moment|checking your browser/i.test(document.body?.innerText?.slice(0, 500) || '');
+    }
+    sendResponse({ success: true, hasCF });
+    return true;
+
+  } else if (request.action === 'ahrefsClickCloudflare') {
+    const clickAtCenter = (el) => {
+      if (!el || !el.getBoundingClientRect) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const maxOx = Math.max(6, rect.width * 0.2);
+      const maxOy = Math.max(4, rect.height * 0.25);
+      const x = rect.left + rect.width / 2 + (Math.random() * 2 - 1) * maxOx;
+      const y = rect.top + rect.height / 2 + (Math.random() * 2 - 1) * maxOy;
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x - 15, clientY: y - 8, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: x, clientY: y, view: window }));
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y, view: window }));
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+      const rx = x + (Math.random() * 3 - 1.5);
+      const ry = y + (Math.random() * 3 - 1.5);
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: rx, clientY: ry, view: window }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: rx, clientY: ry, view: window }));
+      return true;
+    };
+
+    const turnstileContainer = document.querySelector('.cf-turnstile');
+    if (turnstileContainer) {
+      const iframe = turnstileContainer.querySelector('iframe');
+      if (iframe) {
+        clickAtCenter(iframe);
+        sendResponse({ success: true, found: 'turnstile-iframe', note: 'clicked iframe container; user may need to complete manually' });
+        return true;
+      }
+    }
+
+    const candidates = [
+      () => document.querySelector('[data-sitekey] iframe'),
+      () => document.querySelector('[data-sitekey]'),
+      () => Array.from(document.querySelectorAll('input[type="checkbox"]')).find((c) => c.offsetParent !== null),
+      () => Array.from(document.querySelectorAll('button, [role="button"], a')).find((el) => /verify|human|not a robot/i.test((el.textContent || '').trim())),
+      () => document.querySelector('#challenge-form input[type="submit"]'),
+      () => document.querySelector('.challenge-form input[type="submit"], .cf-form input[type="submit"]')
+    ];
+    for (const getEl of candidates) {
+      try {
+        const el = getEl();
+        if (el && el.offsetParent !== null) {
+          clickAtCenter(el);
+          el.click();
+          sendResponse({ success: true, found: el.className || el.id || el.tagName });
+          return true;
+        }
+      } catch (_) {}
+    }
+    sendResponse({ success: false, error: '未找到人机验证控件' });
+    return true;
+
+  } else if (request.action === 'ahrefsInjectTurnstileToken') {
+    const token = request.token;
+    if (!token) {
+      sendResponse({ success: false, error: '未提供 token' });
+      return true;
+    }
+    window.postMessage({ __navSubmitterInjectTurnstileToken: true, token }, '*');
+    const onResult = (event) => {
+      if (event.source !== window) return;
+      if (event.data && event.data.__navSubmitterTurnstileInjected !== undefined) {
+        window.removeEventListener('message', onResult);
+        clearTimeout(timer);
+        sendResponse({ success: event.data.__navSubmitterTurnstileInjected, method: event.data.method || 'unknown' });
+      }
+    };
+    window.addEventListener('message', onResult);
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', onResult);
+      sendResponse({ success: false, error: 'token 注入超时' });
+    }, 5000);
+    return true;
   }
 });
 
@@ -3374,3 +3647,23 @@ new MutationObserver(() => {
     console.log(`${TAG} Page navigation detected`);
   }
 }).observe(document.body, { childList: true, subtree: true });
+
+// ========== Ahrefs 反链 API 拦截（FR-3，仅 ahrefs.com） ==========
+// 必须注入到页面的 MAIN world（content script 是 isolated world，无法拦截页面的 fetch）
+// 使用 web_accessible_resources 中的外部文件注入，绕过页面 CSP 限制
+if (window.location.hostname === 'ahrefs.com') {
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('content/ahrefsInterceptor.js');
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
+
+  window.addEventListener('message', function (event) {
+    if (event.source !== window) return;
+    if (event.data && event.data.__navSubmitterAhrefsBacklinks && Array.isArray(event.data.urlFromList)) {
+      console.log(TAG, 'Ahrefs backlinks intercepted via MAIN world bridge, count:', event.data.urlFromList.length);
+      chrome.runtime.sendMessage({ type: 'ahrefsBacklinks', success: true, urlFromList: event.data.urlFromList }).catch(() => {});
+    }
+  });
+  console.log(TAG, 'Ahrefs MAIN world fetch interceptor injected (file-based), postMessage bridge listening');
+}
+

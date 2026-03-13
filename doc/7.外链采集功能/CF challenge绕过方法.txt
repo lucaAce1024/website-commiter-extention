@@ -1,0 +1,179 @@
+【脚本分享】利用 ahrefs 未公开 API 获取任意域名 Top 20 最佳外链
+
+收藏
+故事起因
+起因是群友在讨论如何获取外链，然后哥飞分享了一段聊天记录：群友@安于不安 提到ahrefs外链检查工具返回的20条记录是 best links，而这里所说的 best links 是ahrefs 平台采集到该域名的最佳外链。然后就有群友开始讨论是否可以逆向一下网页然后拿到数据，这一下提起了我的兴趣。说干就干！打开 chrome 网页检查工具，切换到『网络』、发送请求、观察数据、搜索关键词、分析请求和响应、切换到 ApiFox 调试 API、打开 Cursor 写脚本，一顿操作下来，花了半小时完成了整个分析和脚本编写工作。wechat-records.png
+技术难点
+ahrefs 这个页面选择使用 Cloudflare Turnstile 来保护 API 不被窃取，不过道高一尺魔高一丈，市面上已经有很有工具可以破解，有的是收费服务，有的是开源项目。为了追求速度，我选择了一个收费服务：CapSolver，这个服务我之前用过，速度很快，对于Cloudflare Turnstile每次基本在3秒左右可以生成 token，价格是每1000请求1.2刀，如果是自己使用的话我觉得还行。首先声明这不是广告，单纯是我自己觉得好用。类似的收费服务还有2Captcha。经群友@安于不安 推荐，开源的工具还有DrissionPage 和 CloudflareBypassForScraping。然后，我通过搜索 cloudflare turnstile solver，又找到一个开源项目Turnstile-Solver。不确定以上提到的工具是否好用，有兴趣的朋友都可以试一试。
+脚本使用
+将变量api_key的值修改为你在CapSolver上注册后拿到的 key
+将变量domain修改为你要查询的域名
+安装 requests 包：pip install requests
+运行脚本
+注意：变量site_key的值不用改，每一个被 Turnstile 保护的站点都会在 Cloudflare 后台拥有一个专属的 site key，至于如何获取这个 key，你可以在 chrome 检查工具中截包，然后搜索0x4或 challenge来查询，你会发现有很多 url 都带了这个 key（以0x4开头）。CleanShot 2025-03-24 at 10.49.20@2x.png
+完整脚本
+import requests
+import time
+
+# CapSolver 官网介绍：https://www.capsolver.com/products/cloudflare 
+# CapSolver API 文档： https://docs.capsolver.com/en/guide/captcha/cloudflare_turnstile/
+api_key = "CAP-XXXXXXXXXXXXXX"  # your api key of capsolver
+domain = "yourware.so"
+site_key = "0x4AAAAAAAAzi9ITzSN9xKMi"  # site key of your target site: ahrefs.com
+site_url = f"https://ahrefs.com/backlink-checker/?input={domain}&mode=subdomains"  # page url of your target site
+ 
+def get_token():
+    """
+    Step 1: 使用CapSolver解决验证码获取token
+    """
+    payload = {
+        "clientKey": api_key,
+        "task": {
+            "type": 'AntiTurnstileTaskProxyLess',
+            "websiteKey": site_key,
+            "websiteURL": site_url,
+            "metadata": {
+                "action": ""  # optional
+            }
+        }
+    }
+    res = requests.post("https://api.capsolver.com/createTask", json=payload)
+    resp = res.json()
+    task_id = resp.get("taskId")
+    if not task_id:
+        print("Failed to create task:", res.text)
+        return None
+    print(f"Got taskId: {task_id} / Getting result...")
+ 
+    while True:
+        time.sleep(1)  # delay
+        payload = {"clientKey": api_key, "taskId": task_id}
+        res = requests.post("https://api.capsolver.com/getTaskResult", json=payload)
+        resp = res.json()
+        status = resp.get("status")
+        if status == "ready":
+            token = resp.get("solution", {}).get('token')
+            print(f"获取到Token: {token}")
+            return token
+        if status == "failed" or resp.get("errorId"):
+            print("Solve failed! response:", res.text)
+            return None
+
+def get_signature(token):
+    """
+    Step 2: 使用token获取signature和validUntil参数
+    """
+    if not token:
+        print("未获取到Token，无法继续")
+        return None, None
+    
+    url = "https://ahrefs.com/v4/stGetFreeBacklinksOverview"
+    payload = {
+        "captcha": token,
+        "mode": "subdomains",
+        "url": domain
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    response = requests.post(url, json=payload, headers=headers)
+    if response.status_code != 200:
+        print(f"获取签名失败，状态码: {response.status_code}")
+        print(response.text)
+        return None, None
+    
+    data = response.json()
+    print(f"获取到签名数据: {data}")
+    
+    try:
+        # 假设数据始终是格式 ['Ok', {包含签名信息的对象}]
+        if isinstance(data, list) and len(data) > 1:
+            second_element = data[1]
+            signature = second_element['signedInput']['signature']
+            valid_until = second_element['signedInput']['input']['validUntil']
+            
+            print(f"获取到签名: {signature}")
+            print(f"有效期至: {valid_until}")
+            
+            return signature, valid_until
+        else:
+            print("响应数据格式不符合预期")
+            return None, None
+    except Exception as e:
+        print(f"解析签名数据时出错: {e}")
+        return None, None
+
+def get_backlinks(signature, valid_until):
+    """
+    Step 3: 使用signature和validUntil获取反向链接列表
+    """
+    if not signature or not valid_until:
+        print("未获取到签名或有效期，无法继续")
+        return None
+    
+    url = "https://ahrefs.com/v4/stGetFreeBacklinksList"
+    payload = {
+        "reportType": "TopBacklinks",
+        "signedInput": {
+            "signature": signature,
+            "input": {
+                "validUntil": valid_until,
+                "mode": "subdomains",
+                "url": f"{domain}/"
+            }
+        }
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    response = requests.post(url, json=payload, headers=headers)
+    if response.status_code != 200:
+        print(f"获取反向链接失败，状态码: {response.status_code}")
+        print(response.text)
+        return None
+    
+    data = response.json()
+    return data
+
+def print_backlinks(backlinks_data):
+    """
+    打印反向链接信息
+    """
+    if backlinks_data and len(backlinks_data) > 1 and "topBacklinks" in backlinks_data[1]:
+        backlinks = backlinks_data[1]["topBacklinks"]["backlinks"]
+        print(f"\n获取到 {len(backlinks)} 个反向链接:")
+        for i, backlink in enumerate(backlinks, 1):
+            print(f"{i}. {backlink.get('title', '无标题')} - {backlink.get('urlFrom', '无URL')}")
+    else:
+        print("未获取到有效的反向链接数据")
+
+def main():
+    """
+    主函数，按顺序调用各步骤
+    """
+    # Step 1: 获取token
+    token = get_token()
+    if not token:
+        return
+    
+    # Step 2: 获取signature和validUntil
+    signature, valid_until = get_signature(token)
+    if not signature or not valid_until:
+        return
+    
+    # Step 3: 获取反向链接列表
+    backlinks_data = get_backlinks(signature, valid_until)
+    
+    # 打印反向链接信息
+    print_backlinks(backlinks_data)
+
+if __name__ == "__main__":
+    main()
+
+
+
+最后，感谢@安于不安 这位兄弟的分享，没有他的分享我这个脚本也不可能写出来。我在6群，昵称 liunice，有问题的兄弟随时可以问我。

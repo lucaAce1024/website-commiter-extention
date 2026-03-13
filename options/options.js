@@ -169,6 +169,8 @@ function cacheElements() {
   elements.llmDisableThinking = document.getElementById('llmDisableThinking');
   elements.testLlmBtn = document.getElementById('testLlmBtn');
   elements.saveSettingsBtn = document.getElementById('saveSettingsBtn');
+  elements.capsolverApiKey = document.getElementById('capsolverApiKey');
+  elements.toggleCapsolverKeyBtn = document.getElementById('toggleCapsolverKeyBtn');
 
   // Modal
   elements.modal = document.getElementById('modal');
@@ -245,6 +247,14 @@ function setupEventListeners() {
     elements.toggleApiKeyBtn.textContent = isPassword ? '🙈' : '👁';
     elements.toggleApiKeyBtn.title = isPassword ? '隐藏 API Key' : '显示 API Key';
     elements.toggleApiKeyBtn.setAttribute('aria-label', elements.toggleApiKeyBtn.title);
+  });
+  elements.toggleCapsolverKeyBtn?.addEventListener('click', () => {
+    const input = elements.capsolverApiKey;
+    if (!input) return;
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    elements.toggleCapsolverKeyBtn.textContent = isPassword ? '🙈' : '👁';
+    elements.toggleCapsolverKeyBtn.title = isPassword ? '隐藏 Key' : '显示 Key';
   });
 
   // Feishu Config
@@ -574,7 +584,9 @@ function renderSettingsTab() {
   }
   elements.llmDisableThinking.checked = llmConfig.disableThinking !== false;
 
-  // Auto submit
+  if (elements.capsolverApiKey) {
+    elements.capsolverApiKey.value = settings.capsolverApiKey || '';
+  }
 }
 
 /**
@@ -1240,7 +1252,7 @@ async function createBackup() {
       'feishuCredentials',
       'feishuSyncLimit',
       'feishuLastSyncTime',
-      'exploreExcludeDomains'
+      'exploreExcludeFromBlogSites'
     ]);
 
     const data = {
@@ -1256,7 +1268,7 @@ async function createBackup() {
       feishuCredentials: feishuResult.feishuCredentials || null,
       feishuSyncLimit: feishuResult.feishuSyncLimit ?? null,
       feishuLastSyncTime: feishuResult.feishuLastSyncTime || null,
-      exploreExcludeDomains: feishuResult.exploreExcludeDomains ?? null
+      exploreExcludeFromBlogSites: feishuResult.exploreExcludeFromBlogSites
     };
 
     if (elements.includeRecords.checked) {
@@ -1319,7 +1331,7 @@ async function restoreBackup() {
       if (data.feishuCredentials != null) replacePayload.feishuCredentials = data.feishuCredentials;
       if (data.feishuSyncLimit != null) replacePayload.feishuSyncLimit = data.feishuSyncLimit;
       if (data.feishuLastSyncTime != null) replacePayload.feishuLastSyncTime = data.feishuLastSyncTime;
-      if (data.exploreExcludeDomains != null) replacePayload.exploreExcludeDomains = data.exploreExcludeDomains;
+      if (data.exploreExcludeFromBlogSites !== undefined) replacePayload.exploreExcludeFromBlogSites = data.exploreExcludeFromBlogSites;
       await chrome.storage.local.set(replacePayload);
     } else {
       // Merge data
@@ -1342,7 +1354,7 @@ async function restoreBackup() {
       if (data.feishuCredentials != null) mergePayload.feishuCredentials = data.feishuCredentials;
       if (data.feishuSyncLimit != null) mergePayload.feishuSyncLimit = data.feishuSyncLimit;
       if (data.feishuLastSyncTime != null) mergePayload.feishuLastSyncTime = data.feishuLastSyncTime;
-      if (data.exploreExcludeDomains != null) mergePayload.exploreExcludeDomains = data.exploreExcludeDomains;
+      if (data.exploreExcludeFromBlogSites !== undefined) mergePayload.exploreExcludeFromBlogSites = data.exploreExcludeFromBlogSites;
       await chrome.storage.local.set(mergePayload);
     }
 
@@ -1440,7 +1452,8 @@ async function saveSettings() {
         model: (getProviderFromEndpoint(elements.llmEndpoint?.value?.trim()) === 'custom' || elements.llmModel.value === '__custom__' ? elements.llmModelCustom.value.trim() : elements.llmModel.value) || getDefaultModelForEndpoint(elements.llmEndpoint?.value?.trim()),
         disableThinking: elements.llmDisableThinking.checked
       },
-      autoSubmit: (await chrome.storage.local.get(['settings'])).settings?.autoSubmit ?? false
+      autoSubmit: (await chrome.storage.local.get(['settings'])).settings?.autoSubmit ?? false,
+      capsolverApiKey: (elements.capsolverApiKey?.value || '').trim()
     };
 
     await chrome.storage.local.set({ settings: newSettings });
