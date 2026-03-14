@@ -963,6 +963,36 @@ body {
   margin-top: 6px;
 }
 
+/* 嵌入式子模块样式 */
+.explore-embedded-section {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--section-bg, #fafafa);
+}
+
+.embedded-section-header {
+  margin-bottom: 6px;
+}
+
+.label-secondary {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary, #666);
+}
+
+.explore-embedded-list {
+  max-height: 120px;
+}
+
+.embedded-section-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
 .explore-controls {
   display: flex;
   gap: 8px;

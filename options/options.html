@@ -305,13 +305,14 @@
       <section id="tab-feishu" class="tab-content">
         <div class="content-header">
           <h2>飞书配置</h2>
-          <p class="section-desc">配置飞书多维表格凭证，用于批量提交功能的数据源</p>
+          <p class="section-desc">配置飞书凭证，用于批量提交和外链采集数据写入</p>
         </div>
 
         <div class="feishu-config-section">
+          <!-- 飞书应用凭证（共用） -->
           <div class="config-card">
             <h3 class="card-title">飞书应用凭证</h3>
-            <p class="card-desc">在 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建应用并获取以下凭证</p>
+            <p class="card-desc">在 <a href="https://open.feishu.cn/app" target="_blank">飞书开放平台</a> 创建应用并获取以下凭证（所有表格共用）</p>
 
             <div class="form-group">
               <label for="feishuAppId">App ID</label>
@@ -327,68 +328,116 @@
             </div>
           </div>
 
+          <!-- 批量提交：多维表格配置 -->
           <div class="config-card">
-            <h3 class="card-title">多维表格配置</h3>
-            <p class="card-desc">从飞书多维表格 URL 或设置中获取以下信息</p>
+            <h3 class="card-title">批量提交 - 多维表格</h3>
+            <p class="card-desc">用于「批量提交」功能的数据源（从飞书读取待提交 URL）</p>
 
             <div class="form-group">
               <label for="feishuAppToken">App Token</label>
-              <input type="text" id="feishuAppToken" class="input" placeholder="多维表格 App Token（从表格 URL 获取）">
+              <input type="text" id="feishuAppToken" class="input" placeholder="多维表格 App Token">
               <p class="field-hint">多维表格 URL 格式：https://xxx.feishu.cn/base/<strong>AppToken</strong>?table=TableId</p>
             </div>
 
             <div class="form-group">
               <label for="feishuTableId">Table ID</label>
               <input type="text" id="feishuTableId" class="input" placeholder="数据表 ID">
-              <p class="field-hint">可在多维表格 URL 的 table 参数中找到，或点击表格右上角「...」→ 获取链接</p>
             </div>
+
+            <div class="form-group">
+              <label for="feishuSyncLimit">同步条数限制</label>
+              <input type="number" id="feishuSyncLimit" class="input" placeholder="10" min="1" max="500">
+              <p class="field-hint">每次从飞书同步的最大条数（1-500）</p>
+            </div>
+
+            <details class="field-details">
+              <summary>表格字段约定</summary>
+              <table class="field-table">
+                <thead>
+                  <tr><th>列名</th><th>类型</th><th>说明</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>外链 URL</code></td><td>文本</td><td>待提交的页面 URL（必填）</td></tr>
+                  <tr><td><code>类型</code></td><td>单选/文本</td><td>Blog评论站 / 导航站 / 其他</td></tr>
+                  <tr><td><code>提交状态</code></td><td>文本</td><td>待提交 / 检测成功 / 检测失败</td></tr>
+                  <tr><td><code>备注</code></td><td>文本</td><td>人工备注（可选）</td></tr>
+                </tbody>
+              </table>
+            </details>
           </div>
 
+          <!-- 外链采集：遍历检测结果表格（普通电子表格） -->
           <div class="config-card">
-            <h3 class="card-title">表格字段约定</h3>
-            <p class="card-desc">飞书多维表格需包含以下字段（列名必须一致）</p>
+            <h3 class="card-title">外链采集 - 遍历检测结果</h3>
+            <p class="card-desc">用于存储「遍历检测」发现的可评论站点（<strong>普通电子表格</strong>）</p>
 
-            <table class="field-table">
-              <thead>
-                <tr>
-                  <th>列名</th>
-                  <th>类型</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>外链 URL</code></td>
-                  <td>文本</td>
-                  <td>待提交的页面 URL（必填）</td>
-                </tr>
-                <tr>
-                  <td><code>类型</code></td>
-                  <td>单选/文本</td>
-                  <td>Blog评论站 / 导航站 / 其他</td>
-                </tr>
-                <tr>
-                  <td><code>提交状态</code></td>
-                  <td>文本</td>
-                  <td>待提交 / 检测成功 / 检测失败 等</td>
-                </tr>
-                <tr>
-                  <td><code>最后更新时间</code></td>
-                  <td>文本</td>
-                  <td>最后状态变更时间（可选）</td>
-                </tr>
-                <tr>
-                  <td><code>备注</code></td>
-                  <td>文本</td>
-                  <td>人工备注（可选）</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="form-group">
+              <label for="feishuExploreSheetToken">Spreadsheet Token</label>
+              <input type="text" id="feishuExploreSheetToken" class="input" placeholder="电子表格 Token">
+              <p class="field-hint">普通表格 URL 格式：https://xxx.feishu.cn/sheets/<strong>SpreadsheetToken</strong>?sheet=SheetId</p>
+            </div>
+
+            <div class="form-group">
+              <label for="feishuExploreSheetId">Sheet ID</label>
+              <input type="text" id="feishuExploreSheetId" class="input" placeholder="工作表 ID（如 sheetId=xxxxxx 中的 xxxxxx）">
+            </div>
+
+            <details class="field-details">
+              <summary>表格字段约定（首行为表头）</summary>
+              <table class="field-table">
+                <thead>
+                  <tr><th>列名</th><th>说明</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>URL</code></td><td>可评论页面 URL</td></tr>
+                  <tr><td><code>域名</code></td><td>hostname</td></tr>
+                  <tr><td><code>发现时间</code></td><td>ISO 8601 时间</td></tr>
+                  <tr><td><code>发现来源域名</code></td><td>种子或 Ahrefs 查询域名</td></tr>
+                  <tr><td><code>是否有 CAPTCHA</code></td><td>是/否</td></tr>
+                  <tr><td><code>是否需登录评论</code></td><td>是/否</td></tr>
+                </tbody>
+              </table>
+            </details>
+          </div>
+
+          <!-- 外链采集：Ahrefs 反链表格（普通电子表格） -->
+          <div class="config-card">
+            <h3 class="card-title">外链采集 - Ahrefs 反链</h3>
+            <p class="card-desc">用于存储「Ahrefs 拉取」的反链数据（<strong>普通电子表格</strong>）</p>
+
+            <div class="form-group">
+              <label for="feishuAhrefsSheetToken">Spreadsheet Token</label>
+              <input type="text" id="feishuAhrefsSheetToken" class="input" placeholder="电子表格 Token">
+              <p class="field-hint">普通表格 URL 格式：https://xxx.feishu.cn/sheets/<strong>SpreadsheetToken</strong>?sheet=SheetId</p>
+            </div>
+
+            <div class="form-group">
+              <label for="feishuAhrefsSheetId">Sheet ID</label>
+              <input type="text" id="feishuAhrefsSheetId" class="input" placeholder="工作表 ID">
+            </div>
+
+            <details class="field-details">
+              <summary>表格字段约定（首行为表头）</summary>
+              <table class="field-table">
+                <thead>
+                  <tr><th>列名</th><th>说明</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>查询域名</code></td><td>Ahrefs 查询的种子域名</td></tr>
+                  <tr><td><code>反链 URL</code></td><td>来源页面 URL（urlFrom）</td></tr>
+                  <tr><td><code>目标 URL</code></td><td>指向页面 URL（urlTo）</td></tr>
+                  <tr><td><code>锚文本</code></td><td>链接文字</td></tr>
+                  <tr><td><code>来源 DR</code></td><td>来源页面域名评分</td></tr>
+                  <tr><td><code>来源标题</code></td><td>来源页面标题</td></tr>
+                  <tr><td><code>拉取时间</code></td><td>ISO 8601 时间</td></tr>
+                </tbody>
+              </table>
+            </details>
           </div>
 
           <div class="sync-status-section">
             <div class="sync-info">
-              <span class="sync-label">同步状态：</span>
+              <span class="sync-label">批量提交同步状态：</span>
               <span id="feishuSyncStatusText" class="sync-status-badge">未配置</span>
             </div>
             <div class="sync-info">

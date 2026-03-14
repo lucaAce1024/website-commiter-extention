@@ -188,6 +188,11 @@ function cacheElements() {
   elements.feishuAppSecret = document.getElementById('feishuAppSecret');
   elements.feishuAppToken = document.getElementById('feishuAppToken');
   elements.feishuTableId = document.getElementById('feishuTableId');
+  elements.feishuSyncLimit = document.getElementById('feishuSyncLimit');
+  elements.feishuExploreSheetToken = document.getElementById('feishuExploreSheetToken');
+  elements.feishuExploreSheetId = document.getElementById('feishuExploreSheetId');
+  elements.feishuAhrefsSheetToken = document.getElementById('feishuAhrefsSheetToken');
+  elements.feishuAhrefsSheetId = document.getElementById('feishuAhrefsSheetId');
   elements.feishuSyncStatusText = document.getElementById('feishuSyncStatusText');
   elements.feishuLastSyncTimeText = document.getElementById('feishuLastSyncTimeText');
   elements.toggleFeishuSecretBtn = document.getElementById('toggleFeishuSecretBtn');
@@ -1523,6 +1528,23 @@ function renderFeishuTab() {
   if (elements.feishuTableId) {
     elements.feishuTableId.value = feishuConfig.tableId || '';
   }
+  if (elements.feishuSyncLimit) {
+    elements.feishuSyncLimit.value = feishuConfig.syncLimit || '';
+  }
+  // 外链采集 - 遍历检测结果表格
+  if (elements.feishuExploreSheetToken) {
+    elements.feishuExploreSheetToken.value = feishuConfig.exploreSheetToken || '';
+  }
+  if (elements.feishuExploreSheetId) {
+    elements.feishuExploreSheetId.value = feishuConfig.exploreSheetId || '';
+  }
+  // 外链采集 - Ahrefs 反链表格
+  if (elements.feishuAhrefsSheetToken) {
+    elements.feishuAhrefsSheetToken.value = feishuConfig.ahrefsSheetToken || '';
+  }
+  if (elements.feishuAhrefsSheetId) {
+    elements.feishuAhrefsSheetId.value = feishuConfig.ahrefsSheetId || '';
+  }
 
   // Update sync status
   updateFeishuSyncStatus();
@@ -1565,8 +1587,17 @@ async function saveFeishuConfig() {
     const newConfig = {
       appId: elements.feishuAppId?.value?.trim() || '',
       appSecret: elements.feishuAppSecret?.value?.trim() || '',
+      // 批量提交 - 多维表格
       appToken: elements.feishuAppToken?.value?.trim() || '',
       tableId: elements.feishuTableId?.value?.trim() || '',
+      syncLimit: parseInt(elements.feishuSyncLimit?.value) || 10,
+      // 外链采集 - 遍历检测结果表格（普通电子表格）
+      exploreSheetToken: elements.feishuExploreSheetToken?.value?.trim() || '',
+      exploreSheetId: elements.feishuExploreSheetId?.value?.trim() || '',
+      // 外链采集 - Ahrefs 反链表格（普通电子表格）
+      ahrefsSheetToken: elements.feishuAhrefsSheetToken?.value?.trim() || '',
+      ahrefsSheetId: elements.feishuAhrefsSheetId?.value?.trim() || '',
+      // 其他
       lastSyncTime: feishuConfig?.lastSyncTime || null
     };
 

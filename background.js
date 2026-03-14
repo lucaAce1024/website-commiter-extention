@@ -138,6 +138,74 @@ const CAPSOLVER_CREATE_TASK = 'https://api.capsolver.com/createTask';
 const CAPSOLVER_GET_RESULT = 'https://api.capsolver.com/getTaskResult';
 const AHREFS_OVERVIEW_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksOverview';
 const AHREFS_BACKLINKS_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksList';
+const AHREFS_CACHE_KEY = 'ahrefsCheckedDomains';
+const AHREFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时缓存有效期
+
+/**
+ * 标准化域名（用于缓存 key）
+ * @param {string} domain
+ * @returns {string}
+ */
+function ahrefsNormalizeDomainForCache(domain) {
+  if (!domain || typeof domain !== 'string') return '';
+  return domain.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+}
+
+/**
+ * 从缓存获取 Ahrefs 数据
+ * @param {string} domain
+ * @returns {Promise<{urlFromList: string[], backlinks: object[], overview: object}|null>}
+ */
+async function ahrefsGetFromCache(domain) {
+  const normalized = ahrefsNormalizeDomainForCache(domain);
+  if (!normalized) return null;
+  try {
+    const stored = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
+    const cache = stored[AHREFS_CACHE_KEY] || {};
+    const cached = cache[normalized];
+    if (!cached) return null;
+    const now = Date.now();
+    if (cached.timestamp && (now - cached.timestamp) < AHREFS_CACHE_TTL_MS) {
+      console.log('[Ahrefs Cache] 命中缓存:', normalized, '缓存时间:', new Date(cached.timestamp).toISOString());
+      return {
+        urlFromList: cached.urlFromList || [],
+        backlinks: cached.backlinks || [],
+        overview: cached.overview || {}
+      };
+    }
+    console.log('[Ahrefs Cache] 缓存已过期:', normalized);
+    return null;
+  } catch (e) {
+    console.warn('[Ahrefs Cache] 读取缓存失败:', e?.message);
+    return null;
+  }
+}
+
+/**
+ * 将 Ahrefs 数据写入缓存
+ * @param {string} domain
+ * @param {string[]} urlFromList
+ * @param {object[]} backlinks
+ * @param {object} overview
+ */
+async function ahrefsSaveToCache(domain, urlFromList, backlinks, overview) {
+  const normalized = ahrefsNormalizeDomainForCache(domain);
+  if (!normalized) return;
+  try {
+    const stored = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
+    const cache = stored[AHREFS_CACHE_KEY] || {};
+    cache[normalized] = {
+      urlFromList,
+      backlinks,
+      overview,
+      timestamp: Date.now()
+    };
+    await chrome.storage.local.set({ [AHREFS_CACHE_KEY]: cache });
+    console.log('[Ahrefs Cache] 已缓存:', normalized, '反链数:', urlFromList?.length);
+  } catch (e) {
+    console.warn('[Ahrefs Cache] 写入缓存失败:', e?.message);
+  }
+}
 
 async function ahrefsSolveTurnstile(capsolverKey, domain) {
   const siteUrl = `https://ahrefs.com/backlink-checker/?input=${encodeURIComponent(domain)}&mode=subdomains`;
@@ -245,12 +313,28 @@ function ahrefsSendProgress(msg, type = 'info') {
   chrome.runtime.sendMessage({ action: 'ahrefsProgress', message: msg, type }).catch(() => {});
 }
 
-async function handleAhrefsDirectBacklinks(domain) {
+async function handleAhrefsDirectBacklinks(domain, forceRefresh = false) {
+  const normalized = ahrefsNormalizeDomainForCache(domain);
+
+  // 1. 检查缓存（非强制刷新时）
+  if (!forceRefresh && normalized) {
+    const cached = await ahrefsGetFromCache(domain);
+    if (cached) {
+      ahrefsSendProgress(`命中缓存：${normalized}（${cached.urlFromList?.length || 0} 条反链）`, 'success');
+      return {
+        urlFromList: cached.urlFromList || [],
+        backlinks: cached.backlinks || [],
+        overview: cached.overview || {},
+        fromCache: true
+      };
+    }
+  }
+
   const storage = await chrome.storage.local.get(['settings']);
   const capsolverKey = storage.settings?.capsolverApiKey;
   if (!capsolverKey) throw new Error('未配置 CapSolver API Key，请在设置页面配置后重试');
 
-  console.log('[Ahrefs API] 开始获取反链:', domain);
+  console.log('[Ahrefs API] 开始获取反链:', domain, forceRefresh ? '(强制刷新)' : '');
 
   ahrefsSendProgress(`步骤 1/3: 正在通过 CapSolver 解决 Turnstile 验证（约 3-10 秒）…`);
   const token = await ahrefsSolveTurnstile(capsolverKey, domain);
@@ -266,7 +350,13 @@ async function handleAhrefsDirectBacklinks(domain) {
   console.log('[Ahrefs API] 完成:', domain, '反链', backlinks.length, 'DR', overview.domainRating);
 
   const urlFromList = backlinks.map(b => b.urlFrom).filter(Boolean);
-  return { urlFromList, backlinks, overview };
+
+  // 2. 写入缓存
+  if (normalized) {
+    await ahrefsSaveToCache(domain, urlFromList, backlinks, overview);
+  }
+
+  return { urlFromList, backlinks, overview, fromCache: false };
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
