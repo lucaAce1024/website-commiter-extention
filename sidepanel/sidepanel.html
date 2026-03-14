@@ -313,6 +313,7 @@
         <div class="section-header">
           <span class="label">任务批次</span>
           <span id="exploreBatchId" class="explore-batch-id">—</span>
+          <button type="button" id="exploreClearCacheBtn" class="btn-link btn-sm" title="清除所有采集数据">清除缓存</button>
         </div>
         <div id="exploreBatchStatus" class="explore-batch-status hidden">—</div>
       </section>
@@ -331,6 +332,19 @@
         <div class="explore-extract-actions">
           <button type="button" id="exploreExtractCommentUrlsBtn" class="btn btn-secondary btn-sm">从评论区提取 URL</button>
           <button type="button" id="exploreExtractFromCurrentPageBtn" class="btn btn-secondary btn-sm">从当前活动页面提取</button>
+        </div>
+        <!-- 嵌入：评论区挖到的域名 -->
+        <div class="explore-embedded-section">
+          <div class="embedded-section-header">
+            <span class="label-secondary">评论区挖到的域名</span>
+          </div>
+          <div id="exploreDugDomainsList" class="explore-url-list explore-embedded-list">
+            <div class="empty-list-hint">暂无</div>
+          </div>
+          <div class="embedded-section-actions">
+            <button type="button" id="exploreAddDugToAhrefsBtn" class="btn-link btn-sm" disabled>加入 Ahrefs 输入</button>
+            <button type="button" id="exploreAddDugToUrlListBtn" class="btn-link btn-sm" disabled>加入待检测</button>
+          </div>
         </div>
       </section>
 
@@ -371,14 +385,6 @@
         <button type="button" id="exploreWriteFeishuBtn" class="btn btn-secondary btn-sm" disabled>写入飞书</button>
       </section>
 
-      <section class="section">
-        <div class="section-header"><span class="label">评论区挖到的域名</span></div>
-        <div id="exploreDugDomainsList" class="explore-url-list">
-          <div class="empty-list-hint">暂无</div>
-        </div>
-        <button type="button" id="exploreAddDugToAhrefsBtn" class="btn-link btn-sm" disabled>加入 Ahrefs 输入</button>
-        <button type="button" id="exploreAddDugToUrlListBtn" class="btn-link btn-sm" disabled>加入待检测</button>
-      </section>
     </div>
     <!-- /panel-explore -->
   </div>
