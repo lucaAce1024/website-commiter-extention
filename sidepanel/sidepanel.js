@@ -154,6 +154,105 @@ let feishuSyncLimit = 10; // 默认同步 10 条
 
 let exploreCurrentBatch = null;
 
+// ========== WHOIS 域名年龄查询 ==========
+const WHOIS_SUPPORTED_SUFFIXES = ['com', 'box', 'net', 'org', 'me', 'xyz', 'im', 'info', 'io', 'co', 'ai', 'biz', 'us', 'app', 'sg', 'cafe', 'now', 'shop', 'life', 'cn', 'uk', 'chat', 'design', 'fun', 'website', 'link', 'site', 'online', 'cards', 'fr', 'sk', 'it', 'new', 'video'];
+const WHOIS_CACHE_KEY = 'domain_whois_cache';
+
+function isWhoisSuffixSupported(domain) {
+  const parts = domain.split('.');
+  const suffix = parts[parts.length - 1];
+  return WHOIS_SUPPORTED_SUFFIXES.includes(suffix);
+}
+
+function parseWhoisDomain(domain) {
+  const parts = domain.split('.');
+  if (parts.length < 2) return null;
+  const suffix = parts[parts.length - 1];
+  const name = parts[parts.length - 2];
+  return { name, suffix };
+}
+
+async function loadWhoisCache() {
+  try {
+    const result = await chrome.storage.local.get([WHOIS_CACHE_KEY]);
+    return result[WHOIS_CACHE_KEY] || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+async function saveWhoisCache(cache) {
+  try {
+    await chrome.storage.local.set({ [WHOIS_CACHE_KEY]: cache });
+  } catch (e) {
+    console.warn('[WHOIS] Failed to save cache:', e);
+  }
+}
+
+async function queryWhoisCreationDate(domain, cache) {
+  if (cache[domain] !== undefined) {
+    return cache[domain];
+  }
+  if (!isWhoisSuffixSupported(domain)) {
+    cache[domain] = null;
+    return null;
+  }
+  const parsed = parseWhoisDomain(domain);
+  if (!parsed) {
+    cache[domain] = null;
+    return null;
+  }
+  const { name, suffix } = parsed;
+  const url = `https://whois.freeaiapi.xyz/?name=${name}&suffix=${suffix}&c=1`;
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    let result = null;
+    if (data && data.status === 'ok' && data.creation_datetime) {
+      const dateStr = data.creation_datetime.trim();
+      const date = new Date(dateStr);
+      if (!isNaN(date.getTime())) {
+        result = date.toISOString().split('T')[0];
+      }
+    }
+    cache[domain] = result;
+    return result;
+  } catch (e) {
+    console.error('[WHOIS] Query failed:', domain, e);
+    cache[domain] = null;
+    return null;
+  }
+}
+
+async function filterDomainsByAge(domains, maxYearsAgo = 5) {
+  const cutoffDate = new Date();
+  cutoffDate.setFullYear(cutoffDate.getFullYear() - maxYearsAgo);
+  const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+  const cache = await loadWhoisCache();
+  const results = [];
+  const domainDates = [];
+
+  for (let i = 0; i < domains.length; i++) {
+    const domain = domains[i];
+    showExploreMessage(`[${i + 1}/${domains.length}] 查询 ${domain} 注册时间…`, 'info');
+    const creationDate = await queryWhoisCreationDate(domain, cache);
+    if (creationDate) {
+      domainDates.push({ domain, creationDate });
+      if (creationDate >= cutoffStr) {
+        results.push(domain);
+      }
+    }
+    // 域名间随机延迟 500-1000ms，避免触发限流
+    if (i < domains.length - 1) {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+    }
+  }
+
+  await saveWhoisCache(cache);
+  return { filtered: results, domainDates, cutoffDate: cutoffStr };
+}
+
 /**
  * 通过 CapSolver + Ahrefs 未公开 API 直接获取反链列表，无需打开页面。
  * @param {string} domain
@@ -2139,11 +2238,78 @@ function setupEventListeners() {
   elements.exploreWriteFeishuBtn?.addEventListener('click', async () => {
     await writeExploreDiscoveredSitesToFeishu();
   });
-  elements.exploreAddDugToAhrefsBtn?.addEventListener('click', () => {
-    showExploreMessage('加入 Ahrefs 输入待实现（步骤 10）', 'info');
+  elements.exploreAddDugToAhrefsBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    const domains = exploreCurrentBatch?.dugDomains || [];
+    if (domains.length === 0) {
+      showExploreMessage('暂无挖到的域名', 'warning');
+      return;
+    }
+    try {
+      showExploreMessage(`开始查询 ${domains.length} 个域名的注册时间，筛选近5年的域名…`, 'info');
+      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge(domains, 5);
+      if (filtered.length === 0) {
+        showExploreMessage(`所有域名都超过5年（截止日期 ${cutoffDate}），无符合条件的域名`, 'warning');
+        return;
+      }
+      // 填充到 Ahrefs 输入框
+      if (elements.exploreAhrefsDomain) {
+        elements.exploreAhrefsDomain.value = filtered.join(', ');
+      }
+      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，已填充到 Ahrefs 输入框`, 'success');
+      console.log('[Explore] WHOIS 筛选结果:', { filtered, domainDates, cutoffDate });
+    } catch (e) {
+      showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');
+    }
   });
-  elements.exploreAddDugToUrlListBtn?.addEventListener('click', () => {
-    showExploreMessage('加入待检测待实现（步骤 10）', 'info');
+  elements.exploreAddDugToUrlListBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    const domains = exploreCurrentBatch?.dugDomains || [];
+    if (domains.length === 0) {
+      showExploreMessage('暂无挖到的域名', 'warning');
+      return;
+    }
+    try {
+      showExploreMessage(`开始查询 ${domains.length} 个域名的注册时间，筛选近5年的域名…`, 'info');
+      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge(domains, 5);
+      if (filtered.length === 0) {
+        showExploreMessage(`所有域名都超过5年（截止日期 ${cutoffDate}），无符合条件的域名`, 'warning');
+        return;
+      }
+      // 将域名转换为 URL 并加入待检测列表
+      const urls = filtered.map(d => `https://${d}`);
+      if (typeof dedupeUrls !== 'function') {
+        showExploreMessage('dedupeUrls 函数不可用', 'error');
+        return;
+      }
+      let batch = exploreCurrentBatch;
+      if (!batch) {
+        if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function') {
+          showExploreMessage('批次创建函数不可用', 'error');
+          return;
+        }
+        const batchId = await generateBatchId();
+        batch = createBatch(batchId, { type: 'dug_domains', sourceUrl: 'comment_extract' });
+        exploreCurrentBatch = batch;
+        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+        if (elements.exploreBatchStatus) {
+          elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
+          elements.exploreBatchStatus.classList.remove('hidden');
+        }
+        updateExploreControls(batch.status);
+      }
+      const prevLen = (batch.urlList || []).length;
+      const merged = dedupeUrls([...(batch.urlList || []), ...urls]);
+      batch.urlList = merged;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
+      renderExploreUrlList();
+      const addedCount = merged.length - prevLen;
+      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，新增 ${addedCount} 条至待检测列表（共 ${merged.length} 条）`, 'success');
+    } catch (e) {
+      showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');
+    }
   });
   elements.exploreExcludeFromBlogSites?.addEventListener('change', async () => {
     const checked = !!elements.exploreExcludeFromBlogSites?.checked;
