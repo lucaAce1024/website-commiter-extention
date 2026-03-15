@@ -370,8 +370,16 @@
           <span id="exploreUrlListCount" class="list-count hidden">0 条</span>
           <span id="exploreUrlListViewToggle" class="label-action hidden" title="切换详情/简略视图">详情</span>
         </div>
+        <!-- 批次选择 -->
+        <div class="explore-batch-selector">
+          <label for="exploreLoadBatchSelect" class="label-sm">从缓存批次加载：</label>
+          <select id="exploreLoadBatchSelect" class="select select-sm">
+            <option value="">-- 选择批次 --</option>
+          </select>
+          <button type="button" id="exploreLoadBatchBtn" class="btn btn-secondary btn-sm" disabled>加载</button>
+        </div>
         <div id="exploreUrlList" class="explore-url-list">
-          <div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>
+          <div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入，或从缓存批次加载</div>
         </div>
         <button type="button" id="exploreStartTraverseBtn" class="btn btn-primary btn-sm" disabled>遍历检测可评论站点</button>
       </section>

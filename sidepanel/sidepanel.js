@@ -143,6 +143,9 @@ const elements = {
   exploreAhrefsDomainCount: document.getElementById('exploreAhrefsDomainCount'),
   exploreUrlListCount: document.getElementById('exploreUrlListCount'),
   exploreDiscoveredCount: document.getElementById('exploreDiscoveredCount'),
+  // 批次选择
+  exploreLoadBatchSelect: document.getElementById('exploreLoadBatchSelect'),
+  exploreLoadBatchBtn: document.getElementById('exploreLoadBatchBtn'),
 };
 
 // ========== State ==========
@@ -820,6 +823,132 @@ function escHtml(s) {
   return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+/**
+ * 渲染批次选择下拉框（从 backlinkExplorationBatches 加载）
+ */
+async function renderExploreBatchSelect() {
+  const selectEl = elements.exploreLoadBatchSelect;
+  const loadBtn = elements.exploreLoadBatchBtn;
+  if (!selectEl) return;
+
+  try {
+    const result = await chrome.storage.local.get(['backlinkExplorationBatches']);
+    const batches = result.backlinkExplorationBatches || {};
+    const batchList = Object.values(batches).sort((a, b) =>
+      (b.updatedAt || '').localeCompare(a.updatedAt || '')
+    );
+
+    // 保留当前选择
+    const currentVal = selectEl.value;
+    selectEl.innerHTML = '<option value="">-- 选择批次 --</option>' +
+      batchList.map(batch => {
+        const urlCount = (batch.urlList || []).length;
+        const status = batch.status || 'unknown';
+        const time = batch.updatedAt ? new Date(batch.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+        return `<option value="${batch.batchId}">${batch.batchId} (${urlCount} URLs, ${status}) ${time}</option>`;
+      }).join('');
+
+    // 恢复选择
+    if (currentVal && batches[currentVal]) {
+      selectEl.value = currentVal;
+    }
+
+    // 更新加载按钮状态
+    if (loadBtn) {
+      loadBtn.disabled = !selectEl.value;
+    }
+  } catch (e) {
+    console.error('[Explore] Failed to render batch select:', e);
+  }
+}
+
+/**
+ * 从选中的批次加载 URL 到待检测列表
+ */
+async function loadUrlsFromSelectedBatch() {
+  const selectEl = elements.exploreLoadBatchSelect;
+  if (!selectEl || !selectEl.value) return;
+
+  const batchId = selectEl.value;
+
+  try {
+    const result = await chrome.storage.local.get(['backlinkExplorationBatches']);
+    const batches = result.backlinkExplorationBatches || {};
+    const sourceBatch = batches[batchId];
+
+    if (!sourceBatch) {
+      showExploreMessage('未找到选中的批次', 'error');
+      return;
+    }
+
+    const sourceUrls = sourceBatch.urlList || [];
+    if (sourceUrls.length === 0) {
+      showExploreMessage('选中批次没有 URL 数据', 'warning');
+      return;
+    }
+
+    // 获取或创建当前批次
+    let batch = exploreCurrentBatch;
+    if (!batch) {
+      const newBatchId = 'explore_' + Date.now();
+      batch = {
+        batchId: newBatchId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: 'idle',
+        phase: 'idle',
+        urlList: [],
+        backlinkDetails: [],
+        discoveredSites: [],
+        dugDomains: [],
+        sourceInput: { domains: [], commentPageUrl: '' }
+      };
+    }
+
+    // 增量合并 URL（去重）
+    const existingUrls = new Set(batch.urlList || []);
+    const newUrls = sourceUrls.filter(u => !existingUrls.has(u));
+
+    if (newUrls.length === 0) {
+      showExploreMessage('选中批次的 URL 已全部存在于当前列表', 'info');
+      return;
+    }
+
+    batch.urlList = [...(batch.urlList || []), ...newUrls];
+
+    // 同时合并反链详情（如果有）
+    const sourceDetails = sourceBatch.backlinkDetails || [];
+    const existingDetailsMap = new Map((batch.backlinkDetails || []).map(d => [d.urlFrom, d]));
+    for (const d of sourceDetails) {
+      if (d.urlFrom && !existingDetailsMap.has(d.urlFrom)) {
+        (batch.backlinkDetails || (batch.backlinkDetails = [])).push(d);
+      }
+    }
+
+    batch.updatedAt = new Date().toISOString();
+
+    // 保存并更新 UI
+    await saveExploreBatchWithExcludeFilter(batch);
+    exploreCurrentBatch = batch;
+
+    // 更新批次 ID 显示
+    if (elements.exploreBatchId) {
+      elements.exploreBatchId.textContent = batch.batchId;
+    }
+    if (elements.exploreBatchStatus) {
+      elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
+      elements.exploreBatchStatus.classList.remove('hidden');
+    }
+
+    renderExploreUrlList();
+    showExploreMessage(`已从批次 ${batchId} 加载 ${newUrls.length} 条 URL`, 'success');
+
+  } catch (e) {
+    console.error('[Explore] Failed to load batch URLs:', e);
+    showExploreMessage('加载批次失败: ' + e.message, 'error');
+  }
+}
+
 function renderExploreUrlList() {
   const listEl = elements.exploreUrlList;
   if (!listEl) return;
@@ -953,6 +1082,8 @@ async function loadExploreState() {
   renderExploreUrlList();
   renderExploreDiscoveredList();
   renderExploreDugDomainsList();
+  // 渲染批次选择下拉框
+  await renderExploreBatchSelect();
 }
 
 async function saveExploreBatchWithExcludeFilter(batch) {
@@ -2652,6 +2783,18 @@ function setupEventListeners() {
   elements.exploreExcludeFromBlogSites?.addEventListener('change', async () => {
     const checked = !!elements.exploreExcludeFromBlogSites?.checked;
     await chrome.storage.local.set({ exploreExcludeFromBlogSites: checked });
+  });
+
+  // 批次选择下拉框变化时更新加载按钮状态
+  elements.exploreLoadBatchSelect?.addEventListener('change', () => {
+    if (elements.exploreLoadBatchBtn) {
+      elements.exploreLoadBatchBtn.disabled = !elements.exploreLoadBatchSelect.value;
+    }
+  });
+
+  // 点击加载按钮
+  elements.exploreLoadBatchBtn?.addEventListener('click', async () => {
+    await loadUrlsFromSelectedBatch();
   });
 
   // 监听 storage 变更
