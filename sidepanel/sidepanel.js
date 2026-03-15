@@ -424,12 +424,27 @@ async function filterDomainsByAge(domains, maxYearsAgo = 5) {
 
 /**
  * 通过 CapSolver + Ahrefs 未公开 API 直接获取反链列表，无需打开页面。
+ * 支持缓存：缓存有效期15天，过期后自动重新拉取
  * @param {string} domain
  * @param {number} idx
  * @param {number} total
- * @returns {Promise<{urlFromList: string[], backlinks: object[], overview: object}>}
+ * @returns {Promise<{urlFromList: string[], backlinks: object[], overview: object, fromCache: boolean}>}
  */
 async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
+  // 检查缓存（如果支持缓存函数）
+  if (typeof getAhrefsCacheForDomain === 'function') {
+    const cached = await getAhrefsCacheForDomain(domain);
+    if (cached) {
+      showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：使用缓存（${cached.cachedAt}）✓`, 'info');
+      return {
+        urlFromList: cached.urlFromList || [],
+        backlinks: cached.backlinks || [],
+        overview: cached.overview || {},
+        fromCache: true
+      };
+    }
+  }
+
   showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：正在通过 API 获取反链…`, 'info');
 
   try {
@@ -437,18 +452,30 @@ async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
       chrome.runtime.sendMessage({ action: 'ahrefsDirectBacklinks', domain }, resolve);
     });
     if (resp?.success && Array.isArray(resp.urlFromList)) {
-      showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
-      return {
+      const result = {
         urlFromList: resp.urlFromList,
         backlinks: resp.backlinks || [],
-        overview: resp.overview || {}
+        overview: resp.overview || {},
+        fromCache: false
       };
+
+      // 保存到缓存（如果支持）
+      if (typeof saveAhrefsCacheForDomain === 'function') {
+        try {
+          await saveAhrefsCacheForDomain(domain, result);
+        } catch (cacheErr) {
+          console.warn('[Ahrefs] Failed to save cache:', cacheErr);
+        }
+      }
+
+      showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
+      return result;
     }
     showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链失败: ${resp?.error || '未知错误'}`, 'error');
-    return { urlFromList: [], backlinks: [], overview: {} };
+    return { urlFromList: [], backlinks: [], overview: {}, fromCache: false };
   } catch (e) {
     showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链异常: ${e?.message || e}`, 'error');
-    return { urlFromList: [], backlinks: [], overview: {} };
+    return { urlFromList: [], backlinks: [], overview: {}, fromCache: false };
   }
 }
 

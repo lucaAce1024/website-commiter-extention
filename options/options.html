@@ -47,6 +47,10 @@
         <span class="tab-icon">📊</span>
         飞书配置
       </button>
+      <button class="tab" data-tab="cache">
+        <span class="tab-icon">📦</span>
+        缓存管理
+      </button>
     </nav>
 
     <!-- Tab Contents -->
@@ -366,40 +370,6 @@
             </details>
           </div>
 
-          <!-- 外链采集：遍历检测结果表格（普通电子表格） -->
-          <div class="config-card">
-            <h3 class="card-title">外链采集 - 遍历检测结果</h3>
-            <p class="card-desc">用于存储「遍历检测」发现的可评论站点（<strong>普通电子表格</strong>）</p>
-
-            <div class="form-group">
-              <label for="feishuExploreSheetToken">Spreadsheet Token</label>
-              <input type="text" id="feishuExploreSheetToken" class="input" placeholder="电子表格 Token">
-              <p class="field-hint">普通表格 URL 格式：https://xxx.feishu.cn/sheets/<strong>SpreadsheetToken</strong>?sheet=SheetId</p>
-            </div>
-
-            <div class="form-group">
-              <label for="feishuExploreSheetId">Sheet ID</label>
-              <input type="text" id="feishuExploreSheetId" class="input" placeholder="工作表 ID（如 sheetId=xxxxxx 中的 xxxxxx）">
-            </div>
-
-            <details class="field-details">
-              <summary>表格字段约定（首行为表头）</summary>
-              <table class="field-table">
-                <thead>
-                  <tr><th>列名</th><th>说明</th></tr>
-                </thead>
-                <tbody>
-                  <tr><td><code>URL</code></td><td>可评论页面 URL</td></tr>
-                  <tr><td><code>域名</code></td><td>hostname</td></tr>
-                  <tr><td><code>发现时间</code></td><td>ISO 8601 时间</td></tr>
-                  <tr><td><code>发现来源域名</code></td><td>种子或 Ahrefs 查询域名</td></tr>
-                  <tr><td><code>是否有 CAPTCHA</code></td><td>是/否</td></tr>
-                  <tr><td><code>是否需登录评论</code></td><td>是/否</td></tr>
-                </tbody>
-              </table>
-            </details>
-          </div>
-
           <!-- 外链采集：Ahrefs 反链表格（普通电子表格） -->
           <div class="config-card">
             <h3 class="card-title">外链采集 - Ahrefs 反链</h3>
@@ -433,6 +403,54 @@
                 </tbody>
               </table>
             </details>
+
+            <div class="feishu-link-section">
+              <a href="#" id="openAhrefsSheetLink" class="btn-link feishu-link-btn" target="_blank" rel="noopener">
+                <span class="btn-icon">🔗</span>
+                打开飞书表格
+              </a>
+            </div>
+          </div>
+
+          <!-- 外链采集：遍历检测结果表格（普通电子表格） -->
+          <div class="config-card">
+            <h3 class="card-title">外链采集 - 遍历检测结果</h3>
+            <p class="card-desc">用于存储「遍历检测」发现的可评论站点（<strong>普通电子表格</strong>）</p>
+
+            <div class="form-group">
+              <label for="feishuExploreSheetToken">Spreadsheet Token</label>
+              <input type="text" id="feishuExploreSheetToken" class="input" placeholder="电子表格 Token">
+              <p class="field-hint">普通表格 URL 格式：https://xxx.feishu.cn/sheets/<strong>SpreadsheetToken</strong>?sheet=SheetId</p>
+            </div>
+
+            <div class="form-group">
+              <label for="feishuExploreSheetId">Sheet ID</label>
+              <input type="text" id="feishuExploreSheetId" class="input" placeholder="工作表 ID（如 sheetId=xxxxxx 中的 xxxxxx）">
+            </div>
+
+            <details class="field-details">
+              <summary>表格字段约定（首行为表头）</summary>
+              <table class="field-table">
+                <thead>
+                  <tr><th>列名</th><th>说明</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>URL</code></td><td>可评论页面 URL</td></tr>
+                  <tr><td><code>域名</code></td><td>hostname</td></tr>
+                  <tr><td><code>发现时间</code></td><td>ISO 8601 时间</td></tr>
+                  <tr><td><code>发现来源域名</code></td><td>种子或 Ahrefs 查询域名</td></tr>
+                  <tr><td><code>是否有 CAPTCHA</code></td><td>是/否</td></tr>
+                  <tr><td><code>是否需登录评论</code></td><td>是/否</td></tr>
+                </tbody>
+              </table>
+            </details>
+
+            <div class="feishu-link-section">
+              <a href="#" id="openExploreSheetLink" class="btn-link feishu-link-btn" target="_blank" rel="noopener">
+                <span class="btn-icon">🔗</span>
+                打开飞书表格
+              </a>
+            </div>
           </div>
 
           <div class="sync-status-section">
@@ -454,6 +472,105 @@
             <button class="btn btn-primary" id="testFeishuBtn" disabled>
               <span class="btn-icon">🔗</span>
               测试连接
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Cache Management Tab -->
+      <section id="tab-cache" class="tab-content">
+        <div class="content-header">
+          <h2>缓存管理</h2>
+          <button class="btn btn-secondary" id="refreshCacheBtn">
+            <span class="btn-icon">🔄</span>
+            刷新缓存
+          </button>
+        </div>
+
+        <div class="info-box">
+          <p>展示从缓存中获取的数据，包括 WHOIS 域名年龄查询结果和 Ahrefs 反链采集数据。</p>
+        </div>
+
+        <!-- WHOIS 域名年龄缓存 -->
+        <div class="cache-section">
+          <div class="cache-section-header">
+            <h3>🔍 WHOIS 域名年龄缓存</h3>
+            <span id="whoisCacheCount" class="cache-count">0 条</span>
+          </div>
+          <p class="section-desc">已查询的域名创建日期记录（用于筛选近 5 年域名）</p>
+          <div id="whoisCacheList" class="cache-list">
+            <div class="empty-cache-hint">暂无缓存数据</div>
+          </div>
+          <div class="cache-actions">
+            <button class="btn btn-secondary btn-sm" id="clearWhoisCacheBtn">
+              <span class="btn-icon">🗑️</span>
+              清除 WHOIS 缓存
+            </button>
+          </div>
+        </div>
+
+        <!-- Ahrefs 域名缓存 -->
+        <div class="cache-section">
+          <div class="cache-section-header">
+            <h3>🔗 Ahrefs 域名缓存</h3>
+            <span id="ahrefsCacheCount" class="cache-count">0 个域名</span>
+          </div>
+          <p class="section-desc">已拉取的域名反链缓存（有效期15天），包含查询域名、缓存日期、反链数量</p>
+          <div id="ahrefsCacheList" class="cache-list cache-list-domains">
+            <div class="empty-cache-hint">暂无缓存数据</div>
+          </div>
+          <div class="cache-actions">
+            <button class="btn btn-secondary btn-sm" id="clearAhrefsCacheBtn">
+              <span class="btn-icon">🗑️</span>
+              清除 Ahrefs 缓存
+            </button>
+          </div>
+        </div>
+
+        <!-- Ahrefs 反链批次缓存 -->
+        <div class="cache-section">
+          <div class="cache-section-header">
+            <h3>🔗 Ahrefs 反链批次</h3>
+            <span id="backlinkBatchCount" class="cache-count">0 个批次</span>
+          </div>
+          <p class="section-desc">通过 Ahrefs API 拉取的反链数据，包含域名清单和反链详情</p>
+
+          <!-- 批次选择 -->
+          <div class="batch-selector">
+            <label for="backlinkBatchSelect" class="label">选择批次：</label>
+            <select id="backlinkBatchSelect" class="select">
+              <option value="">-- 请选择批次 --</option>
+            </select>
+          </div>
+
+          <!-- 域名清单（筛选后的） -->
+          <div class="cache-subsection">
+            <div class="cache-subsection-header">
+              <h4>📍 域名清单（筛选后）</h4>
+              <span id="filteredDomainCount" class="cache-count">0 个域名</span>
+            </div>
+            <p class="section-desc-sm">经过域名创建日期筛选后的域名列表</p>
+            <div id="filteredDomainList" class="cache-list cache-list-domains">
+              <div class="empty-cache-hint">请先选择批次</div>
+            </div>
+          </div>
+
+          <!-- 反链详情清单 -->
+          <div class="cache-subsection">
+            <div class="cache-subsection-header">
+              <h4>📄 反链详情清单</h4>
+              <span id="backlinkDetailsCount" class="cache-count">0 条</span>
+            </div>
+            <p class="section-desc-sm">通过 Ahrefs 请求获取的反链信息，含站点类型标识</p>
+            <div id="backlinkDetailsList" class="cache-list cache-list-backlinks">
+              <div class="empty-cache-hint">请先选择批次</div>
+            </div>
+          </div>
+
+          <div class="cache-actions">
+            <button class="btn btn-secondary btn-sm" id="clearBacklinkBatchesBtn">
+              <span class="btn-icon">🗑️</span>
+              清除所有批次
             </button>
           </div>
         </div>

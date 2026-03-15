@@ -275,6 +275,9 @@ function setupEventListeners() {
   elements.saveFeishuBtn?.addEventListener('click', saveFeishuConfig);
   elements.testFeishuBtn?.addEventListener('click', testFeishuConnection);
 
+  // Cache Management
+  setupCacheTabListeners();
+
   // Modal
   elements.modalCloseBtn?.addEventListener('click', closeModal);
   elements.modalOverlay?.addEventListener('click', closeModal);
@@ -351,6 +354,9 @@ function renderCurrentTab() {
       break;
     case 'feishu':
       renderFeishuTab();
+      break;
+    case 'cache':
+      renderCacheTab();
       break;
   }
 }
@@ -1548,6 +1554,9 @@ function renderFeishuTab() {
 
   // Update sync status
   updateFeishuSyncStatus();
+
+  // Update sheet links
+  updateFeishuSheetLinks();
 }
 
 /**
@@ -1669,6 +1678,518 @@ async function testFeishuConnection() {
   } finally {
     elements.testFeishuBtn.disabled = false;
     elements.testFeishuBtn.innerHTML = '<span class="btn-icon">🔗</span> 测试连接';
+  }
+}
+
+// ========== Cache Management Tab ==========
+
+const WHOIS_CACHE_KEY = 'domain_whois_cache';
+const BACKLINK_BATCHES_KEY = 'backlinkExplorationBatches';
+const AHERFS_CACHE_KEY = 'ahrefs_domain_cache';
+
+/**
+ * Render Cache Management Tab
+ */
+async function renderCacheTab() {
+  // Load WHOIS cache
+  await renderWhoisCache();
+
+  // Load Ahrefs cache
+  await renderAhrefsCache();
+
+  // Load backlink batches
+  await renderBacklinkBatches();
+}
+
+/**
+ * Render WHOIS cache list
+ */
+async function renderWhoisCache() {
+  const whoisCacheList = document.getElementById('whoisCacheList');
+  const whoisCacheCount = document.getElementById('whoisCacheCount');
+
+  if (!whoisCacheList) return;
+
+  try {
+    const result = await chrome.storage.local.get([WHOIS_CACHE_KEY]);
+    const cache = result[WHOIS_CACHE_KEY] || {};
+    const entries = Object.entries(cache).filter(([_, v]) => v !== null);
+
+    if (whoisCacheCount) {
+      whoisCacheCount.textContent = `${entries.length} 个`;
+    }
+
+    if (entries.length === 0) {
+      whoisCacheList.innerHTML = '<div class="empty-cache-hint">暂无缓存数据</div>';
+      return;
+    }
+
+    // Sort by creation date (newest first)
+    entries.sort((a, b) => (b[1] || '').localeCompare(a[1] || ''));
+
+    whoisCacheList.innerHTML = entries.map(([domain, date]) => `
+      <div class="cache-item">
+        <div class="cache-item-main">
+          <span class="cache-item-domain">${escapeHtml(domain)}</span>
+          <span class="cache-item-date">${escapeHtml(date || '未知')}</span>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    whoisCacheList.innerHTML = '<div class="empty-cache-hint">加载失败</div>';
+    console.error('[Cache] Failed to load WHOIS cache:', e);
+  }
+}
+
+/**
+ * Render Ahrefs cache list
+ */
+async function renderAhrefsCache() {
+  const ahrefsCacheList = document.getElementById('ahrefsCacheList');
+  const ahrefsCacheCount = document.getElementById('ahrefsCacheCount');
+
+  if (!ahrefsCacheList) return;
+
+  try {
+    const result = await chrome.storage.local.get([AHERFS_CACHE_KEY]);
+    const cache = result[AHERFS_CACHE_KEY] || {};
+    const entries = Object.entries(cache);
+
+    if (ahrefsCacheCount) {
+      ahrefsCacheCount.textContent = `${entries.length} 个域名`;
+    }
+
+    if (entries.length === 0) {
+      ahrefsCacheList.innerHTML = '<div class="empty-cache-hint">暂无缓存数据</div>';
+      return;
+    }
+
+    // Sort by cached date (newest first)
+    entries.sort((a, b) => (b[1].cachedAt || '').localeCompare(a[1].cachedAt || ''));
+
+    ahrefsCacheList.innerHTML = entries.map(([domain, data]) => {
+      const cachedAt = data.cachedAt || '未知';
+      const urlCount = (data.urlFromList || []).length;
+      const backlinkCount = (data.backlinks || []).length;
+      const dr = data.overview?.domainRating || data.overview?.dr || '-';
+
+      // 计算缓存是否过期
+      const now = new Date();
+      const cacheDate = data.cachedAt ? new Date(data.cachedAt) : null;
+      const daysOld = cacheDate ? Math.floor((now - cacheDate) / (1000 * 60 * 60 * 24)) : -1;
+      const isExpired = daysOld >= 15;
+      const daysLabel = daysOld >= 0 ? `${daysOld} 天前` : '未知';
+
+      return `
+        <div class="cache-item ${isExpired ? 'cache-item-expired' : ''}">
+          <div class="cache-item-main">
+            <a href="https://${domain}" target="_blank" class="cache-item-domain">${escapeHtml(domain)}</a>
+            <div class="cache-item-info">
+              <span class="cache-item-date" title="缓存日期">${escapeHtml(cachedAt)}</span>
+              <span class="cache-item-meta">${urlCount} 条反链</span>
+              ${dr !== '-' ? `<span class="cache-item-dr" title="域名评分">DR: ${dr}</span>` : ''}
+              <span class="cache-item-age ${isExpired ? 'expired' : ''}">${daysLabel}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    ahrefsCacheList.innerHTML = '<div class="empty-cache-hint">加载失败</div>';
+    console.error('[Cache] Failed to load Ahrefs cache:', e);
+  }
+}
+
+/**
+ * Render backlink batches dropdown and details
+ */
+async function renderBacklinkBatches() {
+  const batchSelect = document.getElementById('backlinkBatchSelect');
+  const batchCount = document.getElementById('backlinkBatchCount');
+
+  if (!batchSelect) return;
+
+  try {
+    const result = await chrome.storage.local.get([BACKLINK_BATCHES_KEY]);
+    const batches = result[BACKLINK_BATCHES_KEY] || {};
+    const batchList = Object.values(batches).sort((a, b) =>
+      (b.updatedAt || '').localeCompare(a.updatedAt || '')
+    );
+
+    if (batchCount) {
+      batchCount.textContent = `${batchList.length} 个批次`;
+    }
+
+    // Populate dropdown
+    const currentSelection = batchSelect.value;
+    batchSelect.innerHTML = '<option value="">-- 请选择批次 --</option>' +
+      batchList.map(batch => `
+        <option value="${batch.batchId}">
+          ${batch.batchId} (${(batch.urlList || []).length} URLs, ${batch.status || 'unknown'})
+        </option>
+      `).join('');
+
+    // Restore selection if still valid
+    if (currentSelection && batches[currentSelection]) {
+      batchSelect.value = currentSelection;
+    }
+
+    // Load selected batch details
+    await loadSelectedBatchDetails();
+  } catch (e) {
+    console.error('[Cache] Failed to load backlink batches:', e);
+  }
+}
+
+/**
+ * Load selected batch details
+ */
+async function loadSelectedBatchDetails() {
+  const batchSelect = document.getElementById('backlinkBatchSelect');
+  const filteredDomainList = document.getElementById('filteredDomainList');
+  const filteredDomainCount = document.getElementById('filteredDomainCount');
+  const backlinkDetailsList = document.getElementById('backlinkDetailsList');
+  const backlinkDetailsCount = document.getElementById('backlinkDetailsCount');
+
+  const selectedBatchId = batchSelect?.value;
+
+  if (!selectedBatchId) {
+    if (filteredDomainList) {
+      filteredDomainList.innerHTML = '<div class="empty-cache-hint">请先选择批次</div>';
+    }
+    if (filteredDomainCount) {
+      filteredDomainCount.textContent = '0 个域名';
+    }
+    if (backlinkDetailsList) {
+      backlinkDetailsList.innerHTML = '<div class="empty-cache-hint">请先选择批次</div>';
+    }
+    if (backlinkDetailsCount) {
+      backlinkDetailsCount.textContent = '0 条';
+    }
+    return;
+  }
+
+  try {
+    const result = await chrome.storage.local.get([BACKLINK_BATCHES_KEY]);
+    const batches = result[BACKLINK_BATCHES_KEY] || {};
+    const batch = batches[selectedBatchId];
+
+    if (!batch) {
+      return;
+    }
+
+    // Render filtered domains (from Ahrefs domain list with creation dates)
+    await renderFilteredDomains(batch);
+
+    // Render backlink details
+    renderBacklinkDetails(batch);
+
+  } catch (e) {
+    console.error('[Cache] Failed to load batch details:', e);
+  }
+}
+
+/**
+ * Render filtered domains with WHOIS dates
+ */
+async function renderFilteredDomains(batch) {
+  const filteredDomainList = document.getElementById('filteredDomainList');
+  const filteredDomainCount = document.getElementById('filteredDomainCount');
+
+  if (!filteredDomainList) return;
+
+  // Get WHOIS cache for domain dates
+  const whoisResult = await chrome.storage.local.get([WHOIS_CACHE_KEY]);
+  const whoisCache = whoisResult[WHOIS_CACHE_KEY] || {};
+
+  // Get domains from batch's Ahrefs domain list (exploreAhrefsDomains in sidepanel)
+  // These are stored in the batch's ahrefsDomains or we can extract from backlinkDetails
+  const backlinkDetails = batch.backlinkDetails || [];
+  const domainMap = new Map();
+
+  // Extract unique domains from backlinks
+  for (const bl of backlinkDetails) {
+    const urlFrom = bl.urlFrom || '';
+    try {
+      const url = new URL(urlFrom.startsWith('http') ? urlFrom : 'https://' + urlFrom);
+      const domain = url.hostname;
+      if (domain && !domainMap.has(domain)) {
+        domainMap.set(domain, {
+          domain,
+          creationDate: whoisCache[domain] || null
+        });
+      }
+    } catch (e) {
+      // Skip invalid URLs
+    }
+  }
+
+  const domains = Array.from(domainMap.values());
+
+  if (filteredDomainCount) {
+    filteredDomainCount.textContent = `${domains.length} 个域名`;
+  }
+
+  if (domains.length === 0) {
+    filteredDomainList.innerHTML = '<div class="empty-cache-hint">暂无域名数据</div>';
+    return;
+  }
+
+  // Sort: with creation date first, then by domain name
+  domains.sort((a, b) => {
+    if (a.creationDate && !b.creationDate) return -1;
+    if (!a.creationDate && b.creationDate) return 1;
+    if (a.creationDate && b.creationDate) {
+      return b.creationDate.localeCompare(a.creationDate);
+    }
+    return a.domain.localeCompare(b.domain);
+  });
+
+  filteredDomainList.innerHTML = domains.map(d => `
+    <div class="cache-item">
+      <div class="cache-item-main">
+        <a href="https://${d.domain}" target="_blank" class="cache-item-domain">${escapeHtml(d.domain)}</a>
+        <span class="cache-item-date ${d.creationDate ? '' : 'unknown'}">${escapeHtml(d.creationDate || '未知')}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+/**
+ * Render backlink details with site type indicators
+ */
+function renderBacklinkDetails(batch) {
+  const backlinkDetailsList = document.getElementById('backlinkDetailsList');
+  const backlinkDetailsCount = document.getElementById('backlinkDetailsCount');
+
+  if (!backlinkDetailsList) return;
+
+  const backlinks = batch.backlinkDetails || [];
+  const urlProgress = batch.urlProgress || {};
+  const discoveredSites = batch.discoveredSites || [];
+
+  // Get query domains and fetch time
+  const queryDomains = batch.sourceInput?.domains || [];
+  const fetchTime = batch.createdAt || batch.updatedAt || '';
+
+  // Format fetch time to yyyy-MM-dd HH:mm:ss
+  const formatDateTime = (isoString) => {
+    if (!isoString) return '未知';
+    try {
+      const date = new Date(isoString);
+      const Y = date.getFullYear();
+      const M = String(date.getMonth() + 1).padStart(2, '0');
+      const D = String(date.getDate()).padStart(2, '0');
+      const h = String(date.getHours()).padStart(2, '0');
+      const m = String(date.getMinutes()).padStart(2, '0');
+      const s = String(date.getSeconds()).padStart(2, '0');
+      return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+    } catch {
+      return '未知';
+    }
+  };
+
+  // Create a set of discovered URLs for quick lookup
+  const discoveredUrls = new Set(discoveredSites.map(s => {
+    try {
+      const url = s.url || s;
+      return url.startsWith('http') ? url : 'https://' + url;
+    } catch {
+      return '';
+    }
+  }).filter(Boolean));
+
+  if (backlinkDetailsCount) {
+    backlinkDetailsCount.textContent = `${backlinks.length} 条`;
+  }
+
+  if (backlinks.length === 0) {
+    backlinkDetailsList.innerHTML = '<div class="empty-cache-hint">暂无反链数据</div>';
+    return;
+  }
+
+  // Sort by domain rating (if available) or by URL
+  backlinks.sort((a, b) => {
+    const drA = a.domainRating || a.dr || 0;
+    const drB = b.domainRating || b.dr || 0;
+    return drB - drA;
+  });
+
+  backlinkDetailsList.innerHTML = backlinks.map(bl => {
+    const urlFrom = bl.urlFrom || '';
+    let siteType = 'unknown';
+    let siteTypeLabel = '未知';
+
+    // Check if this URL is in discovered sites (commentable)
+    const normalizedUrl = urlFrom.startsWith('http') ? urlFrom : 'https://' + urlFrom;
+    if (discoveredUrls.has(normalizedUrl)) {
+      siteType = 'commentable';
+      siteTypeLabel = '可评论站';
+    }
+
+    // Check urlProgress for more info
+    const progress = urlProgress[normalizedUrl] || urlProgress[urlFrom];
+    if (progress) {
+      if (progress.commentable) {
+        siteType = 'commentable';
+        siteTypeLabel = '可评论站';
+      } else if (progress.error) {
+        siteType = 'error';
+        siteTypeLabel = '检测失败';
+      }
+    }
+
+    const domainRating = bl.domainRating || bl.dr || '-';
+    const anchorText = bl.anchor || bl.anchorText || '';
+
+    return `
+      <div class="cache-item cache-item-backlink">
+        <div class="cache-item-main">
+          <a href="${escapeHtml(normalizedUrl)}" target="_blank" class="cache-item-url">${escapeHtml(urlFrom)}</a>
+          <div class="cache-item-info">
+            <span class="cache-item-type ${siteType}">${siteTypeLabel}</span>
+            ${domainRating !== '-' ? `<span class="cache-item-dr" title="域名评分">DR: ${domainRating}</span>` : ''}
+          </div>
+        </div>
+        <div class="cache-item-meta-row">
+          <span class="cache-item-meta" title="查询域名">查询: ${escapeHtml(queryDomains.join(', ') || '未知')}</span>
+          <span class="cache-item-meta" title="爬取时间">${formatDateTime(fetchTime)}</span>
+        </div>
+        ${anchorText ? `<div class="cache-item-anchor" title="锚文本">${escapeHtml(anchorText.substring(0, 50))}${anchorText.length > 50 ? '...' : ''}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Clear WHOIS cache
+ */
+async function clearWhoisCache() {
+  if (!confirm('确定要清除所有 WHOIS 缓存吗？')) return;
+
+  try {
+    await chrome.storage.local.remove([WHOIS_CACHE_KEY]);
+    await renderWhoisCache();
+    showToast('WHOIS 缓存已清除', 'success');
+  } catch (e) {
+    showToast('清除失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * Clear Ahrefs cache
+ */
+async function clearAhrefsCache() {
+  if (!confirm('确定要清除所有 Ahrefs 域名缓存吗？')) return;
+
+  try {
+    await chrome.storage.local.remove([AHERFS_CACHE_KEY]);
+    await renderAhrefsCache();
+    showToast('Ahrefs 缓存已清除', 'success');
+  } catch (e) {
+    showToast('清除失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * Clear all backlink batches
+ */
+async function clearBacklinkBatches() {
+  if (!confirm('确定要清除所有反链批次数据吗？此操作不可恢复。')) return;
+
+  try {
+    await chrome.storage.local.remove([BACKLINK_BATCHES_KEY]);
+    await renderBacklinkBatches();
+    showToast('所有批次已清除', 'success');
+  } catch (e) {
+    showToast('清除失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * Setup cache tab event listeners
+ */
+function setupCacheTabListeners() {
+  // Refresh button
+  const refreshBtn = document.getElementById('refreshCacheBtn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', renderCacheTab);
+  }
+
+  // Batch selector
+  const batchSelect = document.getElementById('backlinkBatchSelect');
+  if (batchSelect) {
+    batchSelect.addEventListener('change', loadSelectedBatchDetails);
+  }
+
+  // Clear WHOIS cache button
+  const clearWhoisBtn = document.getElementById('clearWhoisCacheBtn');
+  if (clearWhoisBtn) {
+    clearWhoisBtn.addEventListener('click', clearWhoisCache);
+  }
+
+  // Clear Ahrefs cache button
+  const clearAhrefsBtn = document.getElementById('clearAhrefsCacheBtn');
+  if (clearAhrefsBtn) {
+    clearAhrefsBtn.addEventListener('click', clearAhrefsCache);
+  }
+
+  // Clear backlink batches button
+  const clearBatchesBtn = document.getElementById('clearBacklinkBatchesBtn');
+  if (clearBatchesBtn) {
+    clearBatchesBtn.addEventListener('click', clearBacklinkBatches);
+  }
+
+  // Feishu sheet input change listeners
+  const feishuSheetInputs = [
+    'feishuExploreSheetToken',
+    'feishuExploreSheetId',
+    'feishuAhrefsSheetToken',
+    'feishuAhrefsSheetId'
+  ];
+  feishuSheetInputs.forEach(id => {
+    const input = document.getElementById(id);
+    if (input) {
+      input.addEventListener('input', updateFeishuSheetLinks);
+    }
+  });
+}
+
+/**
+ * Update Feishu sheet links based on current config values
+ */
+function updateFeishuSheetLinks() {
+  const exploreToken = document.getElementById('feishuExploreSheetToken')?.value?.trim() || feishuConfig?.exploreSheetToken || '';
+  const exploreSheetId = document.getElementById('feishuExploreSheetId')?.value?.trim() || feishuConfig?.exploreSheetId || '';
+  const ahrefsToken = document.getElementById('feishuAhrefsSheetToken')?.value?.trim() || feishuConfig?.ahrefsSheetToken || '';
+  const ahrefsSheetId = document.getElementById('feishuAhrefsSheetId')?.value?.trim() || feishuConfig?.ahrefsSheetId || '';
+
+  // Update explore sheet link
+  const exploreLinkBtn = document.getElementById('openExploreSheetLink');
+  if (exploreLinkBtn) {
+    if (exploreToken && exploreSheetId) {
+      exploreLinkBtn.href = `https://feishu.cn/sheets/${exploreToken}?sheet=${exploreSheetId}`;
+      exploreLinkBtn.classList.remove('disabled');
+      exploreLinkBtn.removeAttribute('aria-disabled');
+    } else {
+      exploreLinkBtn.href = '#';
+      exploreLinkBtn.classList.add('disabled');
+      exploreLinkBtn.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  // Update Ahrefs sheet link
+  const ahrefsLinkBtn = document.getElementById('openAhrefsSheetLink');
+  if (ahrefsLinkBtn) {
+    if (ahrefsToken && ahrefsSheetId) {
+      ahrefsLinkBtn.href = `https://feishu.cn/sheets/${ahrefsToken}?sheet=${ahrefsSheetId}`;
+      ahrefsLinkBtn.classList.remove('disabled');
+      ahrefsLinkBtn.removeAttribute('aria-disabled');
+    } else {
+      ahrefsLinkBtn.href = '#';
+      ahrefsLinkBtn.classList.add('disabled');
+      ahrefsLinkBtn.setAttribute('aria-disabled', 'true');
+    }
   }
 }
 
