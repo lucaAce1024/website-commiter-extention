@@ -2061,6 +2061,13 @@ function setupEventListeners() {
       showExploreMessage('请先点击"加入 Ahrefs 输入"筛选域名，或手动输入域名', 'warning');
       return;
     }
+
+    // 检查飞书配置
+    const feishuResult = await chrome.storage.local.get(['feishuConfig']);
+    const feishuConfig = feishuResult.feishuConfig || {};
+    const hasFeishuConfig = feishuConfig.appId && feishuConfig.appSecret &&
+                            feishuConfig.ahrefsSheetToken && feishuConfig.ahrefsSheetId;
+
     try {
       let batch = exploreCurrentBatch;
       if (!batch) {
@@ -2075,11 +2082,14 @@ function setupEventListeners() {
         updateExploreControls(batch.status);
       }
       batch.phase = 'ahrefs_fetch';
+      batch.urlList = batch.urlList || [];
+      batch.backlinkDetails = batch.backlinkDetails || [];
       await saveExploreBatchWithExcludeFilter(batch);
+
       const exclude = await getExploreExcludeDomainsForFilter();
-      const allUrlFrom = [];
-      const allBacklinks = [];
       let lastOverview = {};
+      let totalCount = 0;
+
       for (let i = 0; i < domains.length; i++) {
         if (i > 0) {
           const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
@@ -2087,22 +2097,74 @@ function setupEventListeners() {
           await new Promise(r => setTimeout(r, interDomainDelay));
         }
         const d = domains[i];
+        showExploreMessage(`[${i + 1}/${domains.length}] 正在拉取 ${d} 的反链…`, 'info');
+
         const result = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
-        if (result.urlFromList.length) allUrlFrom.push(...result.urlFromList);
-        if (result.backlinks.length) allBacklinks.push(...result.backlinks);
-        if (result.overview && result.overview.domainRating !== undefined) lastOverview = result.overview;
+
+        if (result.urlFromList.length > 0) {
+          // 过滤并去重
+          const filtered = typeof filterUrlsExcludingDomains === 'function'
+            ? filterUrlsExcludingDomains(result.urlFromList, exclude)
+            : result.urlFromList;
+          const newUrls = dedupeUrls(filtered);
+
+          // 增量更新 batch
+          const existingUrls = new Set(batch.urlList || []);
+          const addedUrls = newUrls.filter(u => !existingUrls.has(u));
+          if (addedUrls.length > 0) {
+            batch.urlList = [...(batch.urlList || []), ...addedUrls];
+          }
+
+          // 增量更新反链详情
+          if (result.backlinks.length > 0) {
+            const existingBacklinkUrls = new Set((batch.backlinkDetails || []).map(b => b.urlFrom));
+            const newBacklinks = result.backlinks.filter(b => !existingBacklinkUrls.has(b.urlFrom));
+            if (newBacklinks.length > 0) {
+              batch.backlinkDetails = [...(batch.backlinkDetails || []), ...newBacklinks];
+            }
+          }
+
+          // 更新 overview
+          if (result.overview && result.overview.domainRating !== undefined) {
+            lastOverview = result.overview;
+            batch.ahrefsOverview = lastOverview;
+          }
+
+          batch.updatedAt = new Date().toISOString();
+          await saveExploreBatchWithExcludeFilter(batch);
+          if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) {
+            exploreCurrentBatch = batch;
+          }
+
+          // 立即渲染列表
+          renderExploreUrlList();
+          if (lastOverview.domainRating !== undefined) {
+            renderAhrefsOverview(lastOverview, domains);
+          }
+
+          // 写入飞书（如果配置了）
+          if (hasFeishuConfig && result.backlinks.length > 0) {
+            showExploreMessage(`[${i + 1}/${domains.length}] 正在写入 ${result.backlinks.length} 条反链到飞书…`, 'info');
+            try {
+              await writeBacklinksToFeishu(d, result.backlinks, feishuConfig);
+              showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，已同步飞书`, 'success');
+            } catch (feishuErr) {
+              console.warn('[Ahrefs] 飞书写入失败:', feishuErr);
+              showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，飞书写入失败: ${feishuErr?.message}`, 'warning');
+            }
+          } else {
+            showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链`, 'success');
+          }
+
+          totalCount += addedUrls.length;
+        } else {
+          showExploreMessage(`[${i + 1}/${domains.length}] ${d} 无反链数据`, 'info');
+        }
       }
-      const filtered = typeof filterUrlsExcludingDomains === 'function' ? filterUrlsExcludingDomains(allUrlFrom, exclude) : allUrlFrom;
-      batch.urlList = dedupeUrls(filtered);
-      batch.backlinkDetails = allBacklinks;
-      batch.ahrefsOverview = lastOverview;
+
       batch.phase = 'idle';
-      batch.updatedAt = new Date().toISOString();
       await saveExploreBatchWithExcludeFilter(batch);
-      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
-      renderAhrefsOverview(lastOverview, domains);
-      renderExploreUrlList();
-      showExploreMessage(`已拉取反链：共 ${batch.urlList.length} 条待检测 URL（来自 ${domains.length} 个域名）`, 'success');
+      showExploreMessage(`拉取完成：共 ${totalCount} 条新反链（来自 ${domains.length} 个域名）`, 'success');
     } catch (e) {
       showExploreMessage(e?.message || '拉取反链失败', 'error');
     }
@@ -2672,6 +2734,92 @@ function formatDateTime(date) {
  * - 是否有 CAPTCHA 验证: 是/否
  * - 是否必须登录才能评论: 是/否
  */
+
+/**
+ * 写入 Ahrefs 反链数据到飞书表格（增量写入）
+ * @param {string} queryDomain - 查询的种子域名
+ * @param {Array} backlinks - 反链数据数组
+ * @param {object} config - 飞书配置对象
+ */
+async function writeBacklinksToFeishu(queryDomain, backlinks, config) {
+  if (!backlinks || backlinks.length === 0) {
+    return;
+  }
+
+  // 获取 access token
+  const accessToken = await getFeishuAccessToken();
+
+  const now = new Date().toISOString();
+
+  // 构建行数据：查询域名、反链 URL、目标 URL、锚文本、来源 DR、来源标题、拉取时间
+  const rows = backlinks.map(bl => {
+    return [
+      queryDomain || '',
+      bl.urlFrom || '',
+      bl.urlTo || '',
+      bl.anchor || '',
+      bl.domainRating || '',
+      bl.title || '',
+      now
+    ];
+  });
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const spreadsheetToken = config.ahrefsSheetToken;
+  const sheetId = config.ahrefsSheetId;
+
+  // 先获取表格元数据以确定起始行
+  const metaResponse = await fetch(
+    `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`,
+    {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    }
+  );
+  const metaData = await metaResponse.json();
+
+  let startRow = 2; // 默认从第2行开始（跳过表头）
+  if (metaData.code === 0 && metaData.data?.sheets) {
+    const sheet = metaData.data.sheets.find(s => s.sheetId === sheetId);
+    if (sheet && sheet.rowCount) {
+      startRow = sheet.rowCount + 1; // 追加到最后一行之后
+    }
+  }
+
+  // 写入数据到普通电子表格
+  const range = `${sheetId}!A${startRow}:G${startRow + rows.length - 1}`;
+  const response = await fetch(
+    `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
+    {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        valueRange: {
+          range: range,
+          values: rows
+        }
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  if (data.code !== 0) {
+    console.error('[Ahrefs] 飞书写入反链失败:', data.msg, data);
+    throw new Error(data.msg || '飞书写入失败');
+  }
+
+  console.log(`[Ahrefs] 成功写入 ${rows.length} 条反链到飞书`);
+}
+
 async function writeExploreDiscoveredSitesToFeishu() {
   try {
     if (!exploreCurrentBatch) {
