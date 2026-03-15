@@ -981,6 +981,15 @@ body {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* URL 列表操作按钮容器 */
+.explore-url-list-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  align-items: center;
+}
 /* 嵌入式子模块样式 */
 .explore-embedded-section {
   margin-top: 12px;

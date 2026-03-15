@@ -146,6 +146,8 @@ const elements = {
   // 批次选择
   exploreLoadBatchSelect: document.getElementById('exploreLoadBatchSelect'),
   exploreLoadBatchBtn: document.getElementById('exploreLoadBatchBtn'),
+  // 写入飞书按钮
+  exploreWriteUrlListToFeishuBtn: document.getElementById('exploreWriteUrlListToFeishuBtn'),
 };
 
 // ========== State ==========
@@ -949,6 +951,68 @@ async function loadUrlsFromSelectedBatch() {
   }
 }
 
+/**
+ * 将待检测 URL 列表写入飞书表格（外链采集 - Ahrefs 反链）
+ */
+async function writeUrlListToFeishu() {
+  try {
+    if (!exploreCurrentBatch) {
+      showExploreMessage('请先选择或创建批次', 'warning');
+      return;
+    }
+
+    const urls = exploreCurrentBatch.urlList || [];
+    const details = exploreCurrentBatch.backlinkDetails || [];
+    const queryDomains = exploreCurrentBatch.sourceInput?.domains || [];
+
+    if (urls.length === 0) {
+      showExploreMessage('待检测 URL 列表为空', 'warning');
+      return;
+    }
+
+    // 构建 backlinks 数据结构
+    const backlinks = urls.map((url, index) => {
+      // 尝试从 details 中查找匹配的反链详情
+      const detail = details.find(d => d.urlFrom === url) || {};
+
+      // 从 URL 提取域名
+      let domain = '';
+      try {
+        const urlObj = new URL(url.startsWith('http') ? url : 'https://' + url);
+        domain = urlObj.hostname;
+      } catch (e) {
+        // 忽略无效 URL
+      }
+
+      return {
+        urlFrom: url,
+        urlTo: detail.urlTo || '',
+        anchor: detail.anchor || detail.anchorText || '',
+        domainRating: detail.domainRating || detail.dr || 0,
+        title: detail.title || '',
+        domain: domain
+      };
+    });
+
+    // 使用查询域名作为 domain 参数（如果有多个则用逗号分隔）
+    const domain = queryDomains.join(',') || (backlinks[0]?.domain || '');
+
+    showExploreMessage(`正在写入 ${backlinks.length} 条 URL 到飞书...`, 'info');
+
+    const result = await writeAhrefsBacklinksToFeishu(domain, backlinks, {});
+
+    if (result.success) {
+      showExploreMessage(`成功写入 ${backlinks.length} 条 URL 到飞书`, 'success');
+    } else {
+      showExploreMessage('写入飞书失败: ' + (result.error || '未知错误'), 'error');
+    }
+
+  } catch (e) {
+    console.error('[Explore] Failed to write URL list to Feishu:', e);
+    showExploreMessage('写入飞书失败: ' + e.message, 'error');
+  }
+}
+
 function renderExploreUrlList() {
   const listEl = elements.exploreUrlList;
   if (!listEl) return;
@@ -998,7 +1062,11 @@ function renderExploreUrlList() {
     listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`).join('');
   }
   if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = !hasUrls;
-}
+    // 更新写入飞书按钮状态
+    if (elements.exploreWriteUrlListToFeishuBtn) {
+      elements.exploreWriteUrlListToFeishuBtn.disabled = !hasUrls;
+    }
+  }
 
 function renderExploreDiscoveredList() {
   const listEl = elements.exploreDiscoveredList;
@@ -2795,6 +2863,11 @@ function setupEventListeners() {
   // 点击加载按钮
   elements.exploreLoadBatchBtn?.addEventListener('click', async () => {
     await loadUrlsFromSelectedBatch();
+  });
+
+  // 点击写入飞书按钮（待检测 URL 列表）
+  elements.exploreWriteUrlListToFeishuBtn?.addEventListener('click', async () => {
+    await writeUrlListToFeishu();
   });
 
   // 监听 storage 变更
