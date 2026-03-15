@@ -121,6 +121,7 @@ const elements = {
   exploreExtractCommentUrlsBtn: document.getElementById('exploreExtractCommentUrlsBtn'),
   exploreExtractFromCurrentPageBtn: document.getElementById('exploreExtractFromCurrentPageBtn'),
   exploreAhrefsDomain: document.getElementById('exploreAhrefsDomain'),
+  exploreAhrefsDomainList: document.getElementById('exploreAhrefsDomainList'),
   exploreFetchBacklinksBtn: document.getElementById('exploreFetchBacklinksBtn'),
   exploreAhrefsProgress: document.getElementById('exploreAhrefsProgress'),
   exploreAhrefsOverview: document.getElementById('exploreAhrefsOverview'),
@@ -153,6 +154,29 @@ let batchPaused = false;
 let feishuSyncLimit = 10; // 默认同步 10 条
 
 let exploreCurrentBatch = null;
+let exploreAhrefsDomains = []; // Ahrefs 域名列表
+
+// ========== Ahrefs 域名列表渲染 ==========
+function renderExploreAhrefsDomainList() {
+  const listEl = elements.exploreAhrefsDomainList;
+  if (!listEl) return;
+  const domains = exploreAhrefsDomains || [];
+  if (domains.length === 0) {
+    listEl.innerHTML = '<div class="empty-list-hint">暂无域名</div>';
+    listEl.classList.add('hidden');
+  } else {
+    listEl.innerHTML = domains.map((d, idx) => {
+      const creationDate = d.creationDate || '';
+      const dateLabel = creationDate ? `<span class="domain-date-label">${creationDate}</span>` : '';
+      return `<div class="explore-url-item" data-domain="${d.domain}">
+        <span class="domain-index">${idx + 1}.</span>
+        <a href="https://${d.domain}" target="_blank" rel="noopener">${d.domain}</a>
+        ${dateLabel}
+      </div>`;
+    }).join('');
+    listEl.classList.remove('hidden');
+  }
+}
 
 // ========== WHOIS 域名年龄查询 ==========
 const WHOIS_SUPPORTED_SUFFIXES = ['com', 'box', 'net', 'org', 'me', 'xyz', 'im', 'info', 'io', 'co', 'ai', 'biz', 'us', 'app', 'sg', 'cafe', 'now', 'shop', 'life', 'cn', 'uk', 'chat', 'design', 'fun', 'website', 'link', 'site', 'online', 'cards', 'fr', 'sk', 'it', 'new', 'video'];
@@ -1986,15 +2010,21 @@ function setupEventListeners() {
     if (currentMode !== 'explore') return;
     if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function' || typeof saveBatch !== 'function' ||
         typeof dedupeUrls !== 'function' || typeof dedupeDomains !== 'function' || typeof normalizeDomain !== 'function') return;
-    const inputDomain = elements.exploreAhrefsDomain?.value?.trim() || '';
     let domains = [];
-    if (inputDomain) {
-      domains = [normalizeDomain(inputDomain)].filter(Boolean);
-    } else if (exploreCurrentBatch?.urlList?.length) {
-      domains = dedupeDomains((exploreCurrentBatch.urlList || []).map(u => normalizeDomain(u)));
+    // 优先从 Ahrefs 域名列表获取
+    if (exploreAhrefsDomains.length > 0) {
+      domains = exploreAhrefsDomains.map(d => d.domain).filter(Boolean);
+    } else {
+      // 回退到从输入框获取
+      const inputDomain = elements.exploreAhrefsDomain?.value?.trim() || '';
+      if (inputDomain) {
+        domains = inputDomain.split(/[,，\s]+/).map(d => normalizeDomain(d.trim())).filter(Boolean);
+      } else if (exploreCurrentBatch?.urlList?.length) {
+        domains = dedupeDomains((exploreCurrentBatch.urlList || []).map(u => normalizeDomain(u)));
+      }
     }
     if (domains.length === 0) {
-      showExploreMessage('请输入要查询的域名，或先从评论区提取 URL 得到待查域名', 'warning');
+      showExploreMessage('请先点击"加入 Ahrefs 输入"筛选域名，或手动输入域名', 'warning');
       return;
     }
     try {
@@ -2252,11 +2282,14 @@ function setupEventListeners() {
         showExploreMessage(`所有域名都超过5年（截止日期 ${cutoffDate}），无符合条件的域名`, 'warning');
         return;
       }
-      // 填充到 Ahrefs 输入框
+      // 保存到 Ahrefs 域名列表并渲染
+      exploreAhrefsDomains = domainDates.filter(d => filtered.includes(d.domain));
+      renderExploreAhrefsDomainList();
+      // 同时填充到输入框（用于 debug）
       if (elements.exploreAhrefsDomain) {
         elements.exploreAhrefsDomain.value = filtered.join(', ');
       }
-      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，已填充到 Ahrefs 输入框`, 'success');
+      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，已添加到列表`, 'success');
       console.log('[Explore] WHOIS 筛选结果:', { filtered, domainDates, cutoffDate });
     } catch (e) {
       showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');

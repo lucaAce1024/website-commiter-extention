@@ -1120,3 +1120,26 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Ahrefs 域名列表 */
+.explore-ahrefs-domain-list {
+  max-height: 200px;
+  margin-top: 8px;
+}
+
+.domain-date-label {
+  display: inline-block;
+  font-size: 11px;
+  color: #2e7d32;
+  background: #e8f5e8;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 6px;
+  font-weight: 500;
+}
+
+.domain-index {
+  color: var(--text-secondary);
+  margin-right: 4px;
+  font-size: 12px;
+}
