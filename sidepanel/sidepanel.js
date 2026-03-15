@@ -161,6 +161,12 @@ let feishuSyncLimit = 10; // 默认同步 10 条
 let exploreCurrentBatch = null;
 let exploreAhrefsDomains = []; // Ahrefs 域名列表
 
+let exploreAhrefsRunning = false; // 拉取反链是否运行中
+let exploreAhrefsPaused = false; // 拉取反链是否暂停
+let exploreAhrefsAborted = false; // 拉取反链是否中止
+let exploreAhrefsDomainsQueue = []; // 待拉取的域名队列
+let exploreAhrefsCurrentIndex = 0; // 当前正在拉取的域名索引
+
 // ========== Ahrefs 域名列表渲染 ==========
 function renderExploreAhrefsDomainList() {
   const listEl = elements.exploreAhrefsDomainList;
