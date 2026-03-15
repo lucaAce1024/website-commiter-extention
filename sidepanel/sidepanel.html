@@ -337,6 +337,7 @@
         <div class="explore-embedded-section">
           <div class="embedded-section-header">
             <span class="label-secondary">评论区挖到的域名</span>
+            <span id="exploreDugDomainsCount" class="list-count hidden">0</span>
           </div>
           <div id="exploreDugDomainsList" class="explore-url-list explore-embedded-list">
             <div class="empty-list-hint">暂无</div>
@@ -349,7 +350,10 @@
       </section>
 
       <section class="section">
-        <div class="section-header"><span class="label">Ahrefs 反链（纯 API）</span></div>
+        <div class="section-header">
+          <span class="label">Ahrefs 反链（纯 API）</span>
+          <span id="exploreAhrefsDomainCount" class="list-count hidden">0 个域名</span>
+        </div>
         <input type="text" id="exploreAhrefsDomain" class="input" placeholder="输入域名，如 new.web.cafe">
         <button type="button" id="exploreFetchBacklinksBtn" class="btn btn-secondary btn-sm">拉取反链</button>
         <!-- Ahrefs 域名列表 -->
@@ -363,6 +367,7 @@
       <section class="section">
         <div class="section-header">
           <span class="label">待检测 URL 列表</span>
+          <span id="exploreUrlListCount" class="list-count hidden">0 条</span>
           <span id="exploreUrlListViewToggle" class="label-action hidden" title="切换详情/简略视图">详情</span>
         </div>
         <div id="exploreUrlList" class="explore-url-list">
@@ -381,7 +386,10 @@
       </section>
 
       <section class="section">
-        <div class="section-header"><span class="label">已发现可评论站</span></div>
+        <div class="section-header">
+          <span class="label">已发现可评论站</span>
+          <span id="exploreDiscoveredCount" class="list-count hidden">0 个</span>
+        </div>
         <div id="exploreDiscoveredList" class="explore-url-list">
           <div class="empty-list-hint">暂无</div>
         </div>
