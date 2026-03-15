@@ -166,6 +166,132 @@ let exploreAhrefsPaused = false; // 拉取反链是否暂停
 let exploreAhrefsAborted = false; // 拉取反链是否中止
 let exploreAhrefsDomainsQueue = []; // 待拉取的域名队列
 let exploreAhrefsCurrentIndex = 0; // 当前正在拉取的域名索引
+let exploreAhrefsFeishuConfig = null; // 飞书配置缓存
+
+// ========== Ahrefs 拉取反链核心逻辑 ==========
+async function runAhrefsFetchingLoop(domains, startIndex = 0) {
+  if (typeof dedupeUrls !== 'function' || typeof filterUrlsExcludingDomains !== 'function' ||
+      typeof saveExploreBatchWithExcludeFilter !== 'function' || typeof fetchAhrefsBacklinksForDomain !== 'function') {
+    throw new Error('缺少必要的依赖函数');
+  }
+
+  const exclude = await getExploreExcludeDomainsForFilter();
+  let batch = exploreCurrentBatch;
+  let lastOverview = {};
+  let totalCount = 0;
+
+  for (let i = startIndex; i < domains.length; i++) {
+    // 检查是否暂停或停止
+    if (exploreAhrefsPaused || exploreAhrefsAborted) {
+      exploreAhrefsCurrentIndex = i; // 保存当前位置
+      exploreAhrefsRunning = false;
+      updateExploreControls(exploreCurrentBatch?.status || null);
+      showExploreMessage(`拉取反链已暂停/停止于第 ${i + 1} 个域名`, 'warning');
+      return { paused: true, stopped: exploreAhrefsAborted, currentIndex: i, totalCount };
+    }
+
+    exploreAhrefsCurrentIndex = i;
+
+    if (i > startIndex) {
+      const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
+      showExploreMessage(`域名间随机等待 ${(interDomainDelay / 1000).toFixed(1)} 秒,避免触发反爬…`, 'info');
+      await new Promise(r => setTimeout(r, interDomainDelay));
+    }
+
+    const d = domains[i];
+    showExploreMessage(`[${i + 1}/${domains.length}] 正在拉取 ${d} 的反链…`, 'info');
+
+    const result = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
+    if (result.urlFromList.length > 0) {
+      // 过滤并去重
+      const filtered = filterUrlsExcludingDomains(result.urlFromList, exclude);
+      const newUrls = dedupeUrls(filtered);
+
+      // 增量更新 batch
+      const existingUrls = new Set(batch.urlList || []);
+      const addedUrls = newUrls.filter(u => !existingUrls.has(u));
+      if (addedUrls.length > 0) {
+        batch.urlList = [...(batch.urlList || []), ...addedUrls];
+      }
+
+      // 增量更新反链详情
+      if (result.backlinks.length > 0) {
+        const existingBacklinkUrls = new Set((batch.backlinkDetails || []).map(b => b.urlFrom));
+        const newBacklinks = result.backlinks.filter(b => !existingBacklinkUrls.has(b.urlFrom));
+        if (newBacklinks.length > 0) {
+          batch.backlinkDetails = [...(batch.backlinkDetails || []), ...newBacklinks];
+        }
+      }
+
+      // 更新 overview
+      if (result.overview && result.overview.domainRating !== undefined) {
+        lastOverview = result.overview;
+        batch.ahrefsOverview = lastOverview;
+      }
+
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) {
+        exploreCurrentBatch = batch;
+      }
+
+      // 立即渲染列表
+      renderExploreUrlList();
+      if (lastOverview.domainRating !== undefined) {
+        renderAhrefsOverview(lastOverview, domains);
+      }
+
+      // 写入飞书（如果配置了）
+      const hasFeishuConfig = exploreAhrefsFeishuConfig?.appId && exploreAhrefsFeishuConfig?.appSecret &&
+                              exploreAhrefsFeishuConfig?.ahrefsSheetToken && exploreAhrefsFeishuConfig?.ahrefsSheetId;
+      if (hasFeishuConfig && result.backlinks.length > 0) {
+        showExploreMessage(`[${i + 1}/${domains.length}] 正在写入 ${result.backlinks.length} 条反链到飞书…`, 'info');
+        try {
+          await writeBacklinksToFeishu(d, result.backlinks, exploreAhrefsFeishuConfig);
+          showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，已同步飞书`, 'success');
+        } catch (feishuErr) {
+          console.warn('[Ahrefs] 飞书写入失败:', feishuErr);
+          showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，飞书写入失败: ${feishuErr?.message}`, 'warning');
+        }
+      } else {
+        showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链`, 'success');
+      }
+
+      totalCount += addedUrls.length;
+    } else {
+      showExploreMessage(`[${i + 1}/${domains.length}] ${d} 无反链数据`, 'info');
+    }
+  }
+
+  // 完成
+  exploreAhrefsRunning = false;
+  exploreAhrefsDomainsQueue = [];
+  exploreAhrefsCurrentIndex = 0;
+  batch.phase = 'idle';
+  await saveExploreBatchWithExcludeFilter(batch);
+  updateExploreControls(batch.status);
+  showExploreMessage(`拉取完成：共 ${totalCount} 条新反链（来自 ${domains.length} 个域名）`, 'success');
+  return { paused: false, stopped: false, totalCount };
+}
+
+async function resumeAhrefsFetching() {
+  if (!exploreAhrefsPaused || exploreAhrefsDomainsQueue.length === 0) {
+    showExploreMessage('没有可恢复的反链任务', 'warning');
+    return;
+  }
+
+  exploreAhrefsPaused = false;
+  exploreAhrefsRunning = true;
+  updateExploreControls('running');
+
+  try {
+    await runAhrefsFetchingLoop(exploreAhrefsDomainsQueue, exploreAhrefsCurrentIndex);
+  } catch (e) {
+    exploreAhrefsRunning = false;
+    showExploreMessage(e?.message || '恢复拉取反链失败', 'error');
+    updateExploreControls(exploreCurrentBatch?.status || null);
+  }
+}
 
 // ========== Ahrefs 域名列表渲染 ==========
 function renderExploreAhrefsDomainList() {
@@ -600,24 +726,38 @@ function showExploreMessage(message, type) {
 }
 
 function updateExploreControls(status) {
-  const running = status === 'running';
-  const paused = status === 'paused';
-  const stopped = status === 'stopped';
-  const canResume = paused || stopped;
+  // 同时考虑拉取反链和遍历检测的状态
+  const ahrefsRunning = exploreAhrefsRunning && !exploreAhrefsPaused;
+  const ahrefsPaused = exploreAhrefsRunning && exploreAhrefsPaused;
+  const traverseRunning = status === 'running';
+  const traversePaused = status === 'paused';
+  const traverseStopped = status === 'stopped';
+
+  // 只要有一个流程在运行，就显示暂停和停止按钮
+  const anyRunning = ahrefsRunning || traverseRunning;
+  // 只要有一个流程暂停或停止，就显示继续按钮
+  const anyPausedOrStopped = ahrefsPaused || traversePaused || traverseStopped;
+  // 可以继续的条件：有暂停的反链任务或暂停的遍历任务
+  const canResume = ahrefsPaused || (traversePaused && exploreCurrentBatch?.traverseBacklinkList?.length > 0);
+
   if (elements.explorePauseBtn) {
-    elements.explorePauseBtn.classList.toggle('hidden', !running);
-    elements.explorePauseBtn.disabled = !running;
+    elements.explorePauseBtn.classList.toggle('hidden', !anyRunning);
+    elements.explorePauseBtn.disabled = !anyRunning;
   }
   if (elements.exploreResumeBtn) {
     elements.exploreResumeBtn.classList.toggle('hidden', !canResume);
     elements.exploreResumeBtn.disabled = !canResume;
   }
   if (elements.exploreStopBtn) {
-    elements.exploreStopBtn.classList.toggle('hidden', !running);
-    elements.exploreStopBtn.disabled = !running;
+    elements.exploreStopBtn.classList.toggle('hidden', !anyRunning);
+    elements.exploreStopBtn.disabled = !anyRunning;
   }
   if (elements.exploreBatchStatus) {
-    elements.exploreBatchStatus.textContent = (status || '—') + (exploreCurrentBatch?.phase ? ' · ' + exploreCurrentBatch.phase : '');
+    let statusText = status || '—';
+    if (exploreAhrefsRunning) {
+      statusText = exploreAhrefsPaused ? '拉取反链已暂停' : '拉取反链中';
+    }
+    elements.exploreBatchStatus.textContent = statusText + (exploreCurrentBatch?.phase ? ' · ' + exploreCurrentBatch.phase : '');
   }
 }
 
@@ -2097,16 +2237,21 @@ function setupEventListeners() {
       let totalCount = 0;
 
       for (let i = 0; i < domains.length; i++) {
+        // 检查是否暂停或停止
+        if (exploreAhrefsPaused || exploreAhrefsAborted) {
+          showExploreMessage(`拉取反链已暂停/停止`, 'warning');
+          return;
+        }
+
         if (i > 0) {
           const interDomainDelay = Math.floor(Math.random() * 5000) + 3000;
-          showExploreMessage(`域名间随机等待 ${(interDomainDelay / 1000).toFixed(1)} 秒，避免触发反爬…`, 'info');
+          showExploreMessage(`域名间随机等待 ${(interDomainDelay / 1000).toFixed(1)} 秒,避免触发反爬…`, 'info');
           await new Promise(r => setTimeout(r, interDomainDelay));
         }
         const d = domains[i];
         showExploreMessage(`[${i + 1}/${domains.length}] 正在拉取 ${d} 的反链…`, 'info');
 
         const result = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
-
         if (result.urlFromList.length > 0) {
           // 过滤并去重
           const filtered = typeof filterUrlsExcludingDomains === 'function'
@@ -2325,18 +2470,39 @@ function setupEventListeners() {
     }
   });
   elements.explorePauseBtn?.addEventListener('click', async () => {
-    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
-    if (typeof saveBatch !== 'function') return;
-    exploreCurrentBatch.status = 'paused';
-    exploreCurrentBatch.updatedAt = new Date().toISOString();
-    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    if (currentMode !== 'explore') return;
+    // 暂停拉取反链流程
+    if (exploreAhrefsRunning) {
+      exploreAhrefsPaused = true;
+      showExploreMessage('拉取反链已暂停', 'success');
+    }
+    // 暂停遍历检测流程
+    if (exploreCurrentBatch && typeof saveBatch !== 'function') return;
+    if (exploreCurrentBatch) {
+      exploreCurrentBatch.status = 'paused';
+      exploreCurrentBatch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    }
     updateExploreControls('paused');
-    showExploreMessage('已暂停，进度已保存', 'success');
+    if (exploreCurrentBatch) {
+      showExploreMessage('已暂停，进度已保存', 'success');
+    }
   });
   elements.exploreResumeBtn?.addEventListener('click', async () => {
-    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
-    if (typeof loadBatch !== 'function' || typeof saveBatch !== 'function') return;
+    if (currentMode !== 'explore') return;
     try {
+      // 继续拉取反链流程
+      if (exploreAhrefsPaused && exploreAhrefsDomainsQueue.length > 0) {
+        exploreAhrefsPaused = false;
+        updateExploreControls('running');
+        showExploreMessage('继续拉取反链，从第 ' + (exploreAhrefsCurrentIndex + 1) + ' 个域名开始', 'success');
+        // 继续拉取反链（从当前索引继续）
+        await resumeAhrefsFetching();
+        return;
+      }
+      // 继续遍历检测流程
+      if (!exploreCurrentBatch) return;
+      if (typeof loadBatch !== 'function' || typeof saveBatch !== 'function') return;
       const loaded = await loadBatch(exploreCurrentBatch.batchId);
       if (loaded) exploreCurrentBatch = loaded;
       const list = exploreCurrentBatch.traverseBacklinkList || [];
@@ -2356,13 +2522,23 @@ function setupEventListeners() {
     }
   });
   elements.exploreStopBtn?.addEventListener('click', async () => {
-    if (currentMode !== 'explore' || !exploreCurrentBatch) return;
-    if (typeof saveBatch !== 'function') return;
-    exploreCurrentBatch.status = 'stopped';
-    exploreCurrentBatch.updatedAt = new Date().toISOString();
-    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    if (currentMode !== 'explore') return;
+    // 停止拉取反链流程
+    if (exploreAhrefsRunning) {
+      exploreAhrefsAborted = true;
+      showExploreMessage('拉取反链已停止', 'success');
+    }
+    // 停止遍历检测流程
+    if (exploreCurrentBatch && typeof saveBatch !== 'function') return;
+    if (exploreCurrentBatch) {
+      exploreCurrentBatch.status = 'stopped';
+      exploreCurrentBatch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    }
     updateExploreControls('stopped');
-    showExploreMessage('已停止，进度已保存', 'success');
+    if (exploreCurrentBatch) {
+      showExploreMessage('已停止，进度已保存', 'success');
+    }
   });
   elements.exploreFeishuConfigBtn?.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('options/options.html') });
