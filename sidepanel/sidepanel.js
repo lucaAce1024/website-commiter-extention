@@ -134,10 +134,15 @@ const elements = {
   exploreDiscoveredList: document.getElementById('exploreDiscoveredList'),
   exploreFeishuConfigBtn: document.getElementById('exploreFeishuConfigBtn'),
   exploreWriteFeishuBtn: document.getElementById('exploreWriteFeishuBtn'),
-  exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
+ exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
+  exploreDugDomainsCount: document.getElementById('exploreDugDomainsCount'),
   exploreAddDugToAhrefsBtn: document.getElementById('exploreAddDugToAhrefsBtn'),
   exploreAddDugToUrlListBtn: document.getElementById('exploreAddDugToUrlListBtn'),
-  exploreExcludeFromBlogSites: document.getElementById('exploreExcludeFromBlogSites')
+  exploreExcludeFromBlogSites: document.getElementById('exploreExcludeFromBlogSites'),
+  exploreAhrefsDomainList: document.getElementById('exploreAhrefsDomainList'),
+  exploreAhrefsDomainCount: document.getElementById('exploreAhrefsDomainCount'),
+  exploreUrlListCount: document.getElementById('exploreUrlListCount'),
+  exploreDiscoveredCount: document.getElementById('exploreDiscoveredCount'),
 };
 
 // ========== State ==========
@@ -161,7 +166,15 @@ function renderExploreAhrefsDomainList() {
   const listEl = elements.exploreAhrefsDomainList;
   if (!listEl) return;
   const domains = exploreAhrefsDomains || [];
-  if (domains.length === 0) {
+  const hasDomains = domains.length > 0;
+
+  // 更新统计数字
+  if (elements.exploreAhrefsDomainCount) {
+    elements.exploreAhrefsDomainCount.textContent = `${domains.length} 个域名`;
+    elements.exploreAhrefsDomainCount.classList.toggle('hidden', !hasDomains);
+  }
+
+  if (!hasDomains) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无域名</div>';
     listEl.classList.add('hidden');
   } else {
@@ -640,6 +653,13 @@ function renderExploreUrlList() {
   const urls = exploreCurrentBatch?.urlList || [];
   const details = exploreCurrentBatch?.backlinkDetails || [];
   const hasDetails = details.length > 0;
+  const hasUrls = urls.length > 0;
+
+  // 更新统计数字
+  if (elements.exploreUrlListCount) {
+    elements.exploreUrlListCount.textContent = `${urls.length} 条`;
+    elements.exploreUrlListCount.classList.toggle('hidden', !hasUrls);
+  }
 
   if (elements.exploreUrlListViewToggle) {
     if (hasDetails) {
@@ -650,7 +670,7 @@ function renderExploreUrlList() {
     }
   }
 
-  if (urls.length === 0) {
+  if (!hasUrls) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>';
   } else if (exploreUrlListDetailView && hasDetails) {
     const detailMap = new Map();
@@ -675,14 +695,22 @@ function renderExploreUrlList() {
   } else {
     listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`).join('');
   }
-  if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = urls.length === 0;
+  if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = !hasUrls;
 }
 
 function renderExploreDiscoveredList() {
   const listEl = elements.exploreDiscoveredList;
   if (!listEl) return;
   const sites = exploreCurrentBatch?.discoveredSites || [];
-  if (sites.length === 0) {
+  const hasSites = sites.length > 0;
+
+  // 更新统计数字
+  if (elements.exploreDiscoveredCount) {
+    elements.exploreDiscoveredCount.textContent = `${sites.length} 个`;
+    elements.exploreDiscoveredCount.classList.toggle('hidden', !hasSites);
+  }
+
+  if (!hasSites) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无</div>';
   } else {
     listEl.innerHTML = sites.map((s) => {
@@ -697,6 +725,12 @@ function renderExploreDugDomainsList() {
   if (!listEl) return;
   const domains = exploreCurrentBatch?.dugDomains || [];
   const hasDomains = domains.length > 0;
+
+  // 更新统计数字
+  if (elements.exploreDugDomainsCount) {
+    elements.exploreDugDomainsCount.textContent = `${domains.length} 个`;
+    elements.exploreDugDomainsCount.classList.toggle('hidden', !hasDomains);
+  }
 
   // 更新按钮状态
   if (elements.exploreAddDugToAhrefsBtn) {
