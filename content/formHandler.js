@@ -71,6 +71,283 @@ const COMMENT_LINK_SKIP_HOSTS = [
   'wikipedia.org', 'amazon.', 'apple.com', 'play.google', 'apps.apple'
 ];
 
+/** 多语言评论表单标题模式（用于 Blog 评论站判断） */
+const BLOG_COMMENT_FORM_TITLES = [
+  'leave a reply', 'leave a reply cancel reply', 'leave a comment', 'post a comment', 'add comment',
+  'reply to comment', 'submit comment', 'your comment',
+  '发表评论', '添加留言', '提交评论', '写下你的评论',
+  '评论回复', '发表留言', '回复评论', '留言回复',
+  'laisser un commentaire', "laissez une réponse", 'publier un commentaire', "répondre à l'article",
+  'ajouter un commentaire', 'écrire un commentaire', 'poster un message',
+  'kommentar schreiben', 'kommentar hinzufügen', 'einen kommentar abgeben',
+  'dejar un comentario', 'publicar un comentario', 'enviar comentario', 'escribir comentario',
+  'comentar', 'aportar un comentario', 'su comentario',
+  'invia commento', 'scrivi commento', 'napisz komentarz',
+  'laat een reactie', 'plaats een reactie', 'verstuur een reactie',
+  'schrijf een reactie', 'geef reactie plaatsen'
+];
+
+/** 评论按钮/链接文本（多语言，用于 Blog 评论站判断） */
+const BLOG_COMMENT_BUTTON_TEXTS = [
+  'comment', 'reply', '回复', 'respond', 'submit', 'send', 'post', 'publish',
+  'publier', 'répondre', 'envoyer', 'kirim', 'skicka',
+  '送出', '提交', '发表', '发布', '确定', '确认'
+];
+
+/** Blog 评论站判断默认阈值（≥ 此分数视为可评论站），可通过 storage 的 blogCommentSiteThreshold 覆盖 */
+const BLOG_COMMENT_SITE_THRESHOLD_DEFAULT = 3;
+
+/** URL 路径中含以下片段视为后台/设置/账户页，不做可评论站判定（避免误判） */
+const BLOG_COMMENT_EXCLUDED_PATH_SEGMENTS = /\/?(?:dashboard|settings|account|spending|billing|admin|login|signup|signin|billing|profile|preferences)(\/|$)/i;
+
+/**
+ * 从 HTML 中移除 <script>、<style>、application/ld+json，仅用 body/可见内容做评论规则匹配，避免 JS/CSS/结构化数据里的词误触发
+ * @param {string} html
+ * @returns {string}
+ */
+function stripNonBodyForCommentDetection(html) {
+  if (!html || typeof html !== 'string') return '';
+  return html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+}
+
+/**
+ * 多语言「需登录后才能评论」匹配关键词（评论区常见文案）
+ * 命中任一则视为需要登录才能评论
+ */
+const REQUIRES_LOGIN_TO_COMMENT_PATTERNS = [
+  'log in to publish', 'log in to comment', 'log in to reply', 'log in as a member',
+  'sign in to comment', 'sign in to reply', 'sign in to post', 'sign in to publish',
+  'must be logged in', 'you must be logged in', 'please log in', 'please sign in',
+  'login to comment', 'login to reply', 'login required',
+  '登录后', '登录才能', '登录以', '请登录', '需要登录', '登录才能评论', '登录后可评论',
+  '登入后', '登入才能', '請登入', '需要登入',
+  'connectez-vous pour', 'connectez-vous pour commenter', 'se connecter pour commenter',
+  'anmelden um zu kommentieren', 'einloggen um', 'melden sie sich an',
+  'iniciar sesión para comentar', 'inicia sesión para', 'accede para comentar',
+  'accedi per commentare', 'effettua l\'accesso per', 'accedi per commentar',
+  'zaloguj się aby', 'zaloguj się by skomentować',
+  'ログインして', 'ログインしてください', 'コメントするにはログイン',
+  '로그인 후', '로그인하여', '댓글을 달려면 로그인',
+  'đăng nhập để', 'đăng nhập để bình luận',
+  'เข้าสู่ระบบเพื่อ', 'เข้าสู่ระบบเพื่อแสดงความคิดเห็น',
+  'giriş yapın', 'yorum yapmak için giriş',
+  'تسجيل الدخول للتعليق', 'قم بتسجيل الدخول'
+];
+
+/**
+ * 检测评论区/页面是否提示需登录后才能评论（多语言）
+ * @param {string} html - 页面 HTML
+ * @returns {boolean}
+ */
+function detectRequiresLoginToComment(html) {
+  if (!html || typeof html !== 'string') return false;
+  const lower = html.toLowerCase();
+  const matched = REQUIRES_LOGIN_TO_COMMENT_PATTERNS.find(function (phrase) {
+    return lower.includes(phrase.toLowerCase());
+  });
+  if (matched) {
+    console.log(TAG + ' [需登录检测] 命中: "' + matched + '" → 需登录后才能评论');
+  }
+  return !!matched;
+}
+
+/**
+ * 判断当前页面是否为 Blog 评论站（基于 URL + HTML 多规则打分），并返回得分
+ * @param {string} url - 页面 URL
+ * @param {string} html - 页面 HTML 内容
+ * @param {number} [threshold] - 判定阈值，未传则使用 BLOG_COMMENT_SITE_THRESHOLD_DEFAULT
+ * @returns {{ isBlogCommentSite: boolean, score: number }} 是否可评论站及得分
+ */
+function isBlogCommentSite(url, html, threshold) {
+  const out = { isBlogCommentSite: false, score: 0 };
+  if (!url || !html) return out;
+  const th = typeof threshold === 'number' && threshold >= 0 ? threshold : BLOG_COMMENT_SITE_THRESHOLD_DEFAULT;
+
+  try {
+    const urlPath = new URL(url).pathname || '';
+    if (BLOG_COMMENT_EXCLUDED_PATH_SEGMENTS.test(urlPath)) {
+      console.log(TAG + ' [Blog评论站] URL 为后台/设置类路径，排除判定: ' + urlPath);
+      return out;
+    }
+  } catch (_) {}
+
+  const bodyOnly = stripNonBodyForCommentDetection(html);
+
+  const urlHasCommentKeyword = /\/(comment|comments|评论|留言|讨论|反馈|评论区)/.test(url) ||
+    /unapproved=/.test(url) ||
+    /moderation-hash=/.test(url);
+
+  const htmlHasCommentForm = BLOG_COMMENT_FORM_TITLES.some(function (title) {
+    const re = new RegExp('(' + title.replace(/\s+/g, '\\s*') + ')', 'i');
+    return re.test(bodyOnly);
+  });
+
+  const htmlHasCommentInput = /<textarea|<[^>]*content[^>]*>/i.test(bodyOnly) ||
+    /<div[^>]*contenteditable[^>]*>/i.test(bodyOnly) ||
+    /id=["']?comment|textarea/i.test(bodyOnly);
+
+  function detectCommentButtonByDomOrHtml(htmlFragment) {
+    try {
+      if (typeof document !== 'undefined' && document.querySelectorAll) {
+        // 1）优先在评论区域容器内查找按钮
+        const commentRoots = [];
+        for (let i = 0; i < COMMENT_AREA_SELECTORS.length; i++) {
+          try {
+            const root = document.querySelector(COMMENT_AREA_SELECTORS[i]);
+            if (root) commentRoots.push(root);
+          } catch (_) {}
+        }
+        // 2）再在页面上所有 form 中查找，且要求 form 内存在“评论内容”字段
+        const forms = Array.prototype.slice.call(document.querySelectorAll('form') || []);
+        const commentLike = /comment|kommentar|留言|message|nachricht|reply|回复|评论/i;
+
+        function formLooksLikeCommentForm(formEl) {
+          try {
+            const textareas = formEl.querySelectorAll('textarea');
+            for (let i = 0; i < textareas.length; i++) {
+              const ta = textareas[i];
+              const name = (ta.name || ta.id || '').toLowerCase();
+              const placeholder = (ta.placeholder || '').toLowerCase();
+              const aria = (ta.getAttribute('aria-label') || '').toLowerCase();
+              const labelText = (getFieldLabel ? getFieldLabel(ta) : '') || '';
+              const text = [name, placeholder, aria, labelText].join(' ');
+              if (commentLike.test(text)) return true;
+            }
+          } catch (_) {}
+          return false;
+        }
+
+        const buttonSelector =
+          'button, input[type="submit"], input[type="button"], ' +
+          'a[role="button"], a[class*="button"], a[class*="btn"]';
+
+        const scopedRoots = commentRoots.length ? commentRoots : forms.filter(formLooksLikeCommentForm);
+        const candidates = [];
+
+        scopedRoots.forEach(function (root) {
+          try {
+            const list = root.querySelectorAll(buttonSelector);
+            for (let i = 0; i < list.length; i++) {
+              candidates.push(list[i]);
+            }
+          } catch (_) {}
+        });
+
+        // 如果连评论区域也没有、也找不到像评论表单的 form，则认为“没有评论按钮”
+        if (!candidates.length) {
+          return false;
+        }
+
+        const getLabel = function (el) {
+          const text = (el.textContent || '').trim();
+          const value = (el.value || '').trim();
+          const aria = (el.getAttribute && el.getAttribute('aria-label')) || '';
+          return (text || value || aria || '');
+        };
+        for (let i = 0; i < candidates.length; i++) {
+          const label = getLabel(candidates[i]);
+          if (!label) continue;
+          const hit = BLOG_COMMENT_BUTTON_TEXTS.some(function (btnText) {
+            return new RegExp('\\b' + btnText + '\\b', 'i').test(label);
+          });
+          if (hit) return true;
+        }
+      }
+    } catch (_) {}
+    if (htmlFragment && typeof htmlFragment === 'string') {
+      return BLOG_COMMENT_BUTTON_TEXTS.some(function (btnText) {
+        return new RegExp('\\b' + btnText + '\\b', 'i').test(htmlFragment);
+      });
+    }
+    return false;
+  }
+
+  const htmlHasCommentButton = detectCommentButtonByDomOrHtml(bodyOnly);
+
+  const urlHasCommentPath = /comment|comments|评论|留言/.test(url) &&
+    (/comment-page-\d+|\/page\/\d+|next.*page|pagination/i.test(url));
+
+  const htmlShowsCommentList = (/(?:<ol[^>]*<li[^>]*|<ul[^>]*<li)[^>]/i.test(bodyOnly)) &&
+    (/<li[^>]*comment[^>]*>/i.test(bodyOnly));
+
+  const htmlHasReplyFeature = /reply\s+(to\s+)?\s*comment/i.test(bodyOnly) ||
+    /回复.*评论/i.test(bodyOnly);
+
+  const htmlShowsCommentCount = /\d+\s*(?:thoughts?|comments?|responses?)\s+on\s+/i.test(bodyOnly) ||
+    /留言?\s*\d+|\d+\s*留言/i.test(bodyOnly) ||
+    /评论?\s*\d+|\d+\s*评论/i.test(bodyOnly) ||
+    /commentaire?s?\s*\d+/i.test(bodyOnly);
+
+  const htmlHasAvatar = /gravatar\.com|secure\.gravatar|avatar|头?like|用户头像/i.test(bodyOnly);
+
+  const htmlHasSocialShare = (
+    /(?:share|teilen|partager|分享)\s*(?:on|to|via|with|到|至)?\s*(?:facebook|twitter|linkedin|pinterest|x\.com|微博|微信)/i.test(bodyOnly) ||
+    /(?:class|id)=["'][^"']*(?:share[-_]?(?:button|buttons|widget|this)|social[-_]?share|addtoany|sharethis)[^"']*["']/i.test(bodyOnly)
+  );
+
+  const htmlHasCommentPagination = /(?:newer|older|next|previous|comment.*page|pagination|分页)/i.test(bodyOnly);
+
+  const htmlHasRSSFeed = /rss\.xml|feed\/|订阅/i.test(html) || /rss\.php\?/i.test(url);
+
+  const hasStrongCommentSignal = urlHasCommentKeyword || htmlHasCommentForm;
+  const hasCommentCorePair = htmlHasCommentInput && htmlHasCommentButton;
+
+  let score = 0;
+  if (urlHasCommentKeyword) score += 4;
+  if (htmlHasCommentForm) score += 3;
+  if (htmlHasCommentButton) score += 3;
+  if (htmlShowsCommentList && htmlHasReplyFeature) score += 3;
+  if (htmlShowsCommentCount) score += 2;
+  if (htmlHasCommentPagination && hasStrongCommentSignal) score += 1;
+  if (htmlHasAvatar && hasStrongCommentSignal) score += 1;
+  if (htmlHasSocialShare) score += 1;
+  if (htmlHasRSSFeed && hasStrongCommentSignal) score += 1;
+
+  const wpLike = /generator=["']?\s*wordpress|wp-content|wp-includes|\/wp-json\/|wp-comments-post\.js|class=["']?\s*comment/i.test(bodyOnly);
+  if (wpLike) score += 2;
+  const mediumLike = /medium\.com/i.test(url) && /medium\.com\/[^/]+?source=comments|responses/i.test(bodyOnly);
+  if (mediumLike) score += 2;
+  const substackLike = /substack\.com/i.test(url) && /\/p\/[^/]+\/comments/i.test(bodyOnly);
+  if (substackLike) score += 2;
+  const bloggerLike = /blog(ger)?\.com|blogspot\.com/i.test(url) && /<iframe.*blogger-|blog-post-|post-comment-form/i.test(bodyOnly);
+  if (bloggerLike) score += 2;
+  const wixLike = /wixstatic\.com/i.test(url) && /_wix_static|wix-comments/i.test(bodyOnly);
+  if (wixLike) score += 2;
+
+  out.score = score;
+  // Blog 评论站必须具备「评论输入区 + 评论按钮」这一核心组合，否则即使得分达到阈值也不判定为可评论站
+  out.isBlogCommentSite = score >= th && hasCommentCorePair;
+
+  const items = [
+    { rule: 'URL含评论关键词/参数', points: 4, hit: urlHasCommentKeyword },
+    { rule: 'HTML含评论表单标题', points: 3, hit: htmlHasCommentForm },
+    { rule: 'HTML含评论按钮', points: 3, hit: htmlHasCommentButton && htmlHasCommentInput },
+    { rule: '评论列表+回复功能', points: 3, hit: htmlShowsCommentList && htmlHasReplyFeature },
+    { rule: '评论数展示', points: 2, hit: htmlShowsCommentCount },
+    { rule: '评论分页导航', points: 1, hit: htmlHasCommentPagination && hasStrongCommentSignal },
+    { rule: '头像服务', points: 1, hit: htmlHasAvatar && hasStrongCommentSignal },
+    { rule: '社交分享', points: 1, hit: htmlHasSocialShare },
+    { rule: 'RSS订阅', points: 1, hit: htmlHasRSSFeed && hasStrongCommentSignal },
+    { rule: 'WordPress等特征', points: 2, hit: wpLike },
+    { rule: 'Medium特征', points: 2, hit: mediumLike },
+    { rule: 'Substack特征', points: 2, hit: substackLike },
+    { rule: 'Blogger特征', points: 2, hit: bloggerLike },
+    { rule: 'Wix特征', points: 2, hit: wixLike }
+  ];
+  const hitItems = items.filter(function (x) { return x.hit; });
+  const detailStr = hitItems.map(function (x) { return x.rule + '+' + x.points; }).join(', ');
+  console.log(
+    TAG + ' [Blog评论站] 当前判断阈值: ' + th +
+    ' | 总分: ' + score + (score >= th ? ' (≥阈值, 判定为可评论站)' : ' (<阈值, 非可评论站)') +
+    ' | 命中项: ' + (detailStr || '无')
+  );
+  console.log(TAG + ' [Blog评论站] 记分明细', { 命中: hitItems, 总分: score, 阈值: th, 结果: out.isBlogCommentSite ? '可评论站' : '否' });
+
+  return out;
+}
+
 /**
  * 从当前页评论区提取评论者留下的网站 URL（外链采集 FR-2）
  * 先匹配评论区，再匹配论坛/主内容区，最后回退到 body（大页限制处理数量）。
@@ -168,10 +445,54 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'getCommentPageState') {
     sendResponse({ success: true, state: commentFormState });
   } else if (request.action === 'recognizeCommentForm') {
-    recognizeCommentForm(request.useLlm)
-      .then(result => sendResponse({ success: true, result }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
-    return true;
+    try {
+      (function runRecognizeWithScroll() {
+        scrollToBottomForTraverseDetection()
+          .then(triggerCommentInputForLoginCheck)
+          .then(function () {
+            const url = window.location.href;
+            const html = document.documentElement.outerHTML;
+            const requiresLogin = detectRequiresLoginToComment(html);
+            return new Promise(function (resolve) {
+              chrome.storage.local.get(['blogCommentSiteThreshold'], function (storageResult) {
+                const threshold = storageResult.blogCommentSiteThreshold;
+                const effectiveThreshold = typeof threshold === 'number' && threshold >= 0 ? threshold : BLOG_COMMENT_SITE_THRESHOLD_DEFAULT;
+                const blogResult = isBlogCommentSite(url, html, effectiveThreshold);
+                resolve({ blogResult, requiresLogin });
+              });
+            }).then(function (payload) {
+              return recognizeCommentForm(request.useLlm).then(function (result) {
+                return { blogResult: payload.blogResult, requiresLogin: payload.requiresLogin, result };
+              });
+            });
+          })
+          .then(function (data) {
+            try {
+              sendResponse({
+                success: true,
+                result: Object.assign({}, data.result, {
+                  isBlogCommentSite: data.blogResult.isBlogCommentSite,
+                  blogCommentScore: data.blogResult.score,
+                  requiresLogin: data.requiresLogin
+                })
+              });
+            } catch (e) {
+              // 通道已关闭时静默忽略，避免抛出未捕获异常
+            }
+          })
+          .catch(function (error) {
+            try {
+              sendResponse({ success: false, error: error && error.message ? error.message : String(error) });
+            } catch (e) {
+              // 同上：若通道已关闭则忽略
+            }
+          });
+      })();
+      return true;
+    } catch (e) {
+      sendResponse({ success: false, error: e && e.message ? e.message : String(e) });
+      return false;
+    }
   } else if (request.action === 'fillCommentForm') {
     const verifyOpts = { tabId: request.tabId, siteUrl: request.siteUrl };
     fillCommentForm(request.siteId, request.commentText, request.autoSubmit, verifyOpts)
@@ -1683,6 +2004,105 @@ function scrollPageToBottomAndWait() {
 const SCROLL_TO_BOTTOM_WAIT_MS = 1200;
 /** 最多滚动次数：先识别，识别不到再滚动并重试，超过此次数仍未找到 form 则退出 */
 const MAX_SCROLL_ATTEMPTS = 3;
+/** 遍历检测可评论站时：先执行几次滚动到底部并等待，以触发懒加载的评论表单 */
+const TRAVERSE_SCROLL_ROUNDS = 3;
+
+/** 触发评论输入框后等待时间（ms），供「需登录」等文案动态出现 */
+const TRIGGER_COMMENT_INPUT_WAIT_MS = 600;
+
+/**
+ * 在滚动完成后尝试找到评论输入区，聚焦并输入一个字符以触发「需登录」等动态文案，再便于后续 detectRequiresLoginToComment 检测
+ * @returns {Promise<void>}
+ */
+function triggerCommentInputForLoginCheck() {
+  function findCommentInputElement() {
+    const meta = getCommentFormMetadata();
+    if (meta.hasForm && meta.fields && meta.fields.length > 0) {
+      const commentLike = /comment|留言|message|reply|回复|评论|text|content|body/i;
+      const candidate = meta.fields.find(function (f) {
+        if (f.isSubmitButton) return false;
+        const text = [f.label, f.placeholder, f.name, f.ariaLabel, f.id].filter(Boolean).join(' ');
+            return f.isTextarea || (f.type !== 'submit' && f.type !== 'button') || commentLike.test(text);
+      });
+      if (candidate && candidate.locator) {
+        const el = findElementByLocator(candidate.locator);
+        if (el && isElementVisible(el)) return el;
+      }
+      const firstInput = meta.fields.find(function (f) { return f.isTextarea || (!f.isSubmitButton && f.type !== 'submit' && f.type !== 'button'); });
+      if (firstInput && firstInput.locator) {
+        const el = findElementByLocator(firstInput.locator);
+        if (el && isElementVisible(el)) return el;
+      }
+    }
+    for (let i = 0; i < COMMENT_AREA_SELECTORS.length; i++) {
+      try {
+        const root = document.querySelector(COMMENT_AREA_SELECTORS[i]);
+        if (!root) continue;
+        const ta = root.querySelector('textarea');
+        if (ta && isElementVisible(ta)) return ta;
+        const ce = root.querySelector('[contenteditable="true"]');
+        if (ce && isElementVisible(ce)) return ce;
+        const input = root.querySelector('input[type="text"], input[type="email"]');
+        if (input && isElementVisible(input)) return input;
+      } catch (_) {}
+    }
+    const fallback = document.querySelector('textarea[name*="comment"], textarea[id*="comment"], textarea[name*="message"]');
+    if (fallback && isElementVisible(fallback)) return fallback;
+    return null;
+  }
+
+  const el = findCommentInputElement();
+  if (!el) return Promise.resolve();
+
+  return new Promise(function (resolve) {
+    try {
+      el.scrollIntoView({ block: 'center', behavior: 'auto' });
+      el.focus();
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      const isContentEditable = el.getAttribute('contenteditable') === 'true';
+      const testChar = 'a';
+      const originalValue = isContentEditable ? null : (el.value || '');
+      if (isContentEditable) {
+        if (typeof document.execCommand === 'function') {
+          document.execCommand('insertText', false, testChar);
+        } else {
+          el.textContent = (el.textContent || '') + testChar;
+        }
+      } else {
+        el.value = originalValue + testChar;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: testChar }));
+      }
+      setTimeout(function () {
+        if (isContentEditable) {
+          const t = el.textContent || '';
+          if (t.slice(-1) === testChar) el.textContent = t.slice(0, -1);
+        } else {
+          el.value = originalValue;
+        }
+        el.blur();
+        resolve();
+      }, TRIGGER_COMMENT_INPUT_WAIT_MS);
+    } catch (err) {
+      console.warn(TAG + ' [需登录检测] 触发评论输入失败:', err && err.message ? err.message : String(err));
+      resolve();
+    }
+  });
+}
+
+/**
+ * 遍历检测前先滚动到底部多轮并等待，确保懒加载的评论表单进入 DOM
+ * @returns {Promise<void>}
+ */
+function scrollToBottomForTraverseDetection() {
+  let round = 0;
+  function next() {
+    if (round >= TRAVERSE_SCROLL_ROUNDS) return Promise.resolve();
+    scrollPageToBottomAndWait();
+    round++;
+    return new Promise(function (r) { setTimeout(r, SCROLL_TO_BOTTOM_WAIT_MS); }).then(next);
+  }
+  return next();
+}
 
 /**
  * 完全 AI 模式：预滚动 + 表单检测，返回 formRootSelector 与 hintText 供 Snapshot 缩小范围与 prompt 提示

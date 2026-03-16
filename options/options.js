@@ -191,6 +191,7 @@ function cacheElements() {
   elements.feishuSyncLimit = document.getElementById('feishuSyncLimit');
   elements.feishuExploreSheetToken = document.getElementById('feishuExploreSheetToken');
   elements.feishuExploreSheetId = document.getElementById('feishuExploreSheetId');
+  elements.blogCommentSiteThreshold = document.getElementById('blogCommentSiteThreshold');
   elements.feishuAhrefsSheetToken = document.getElementById('feishuAhrefsSheetToken');
   elements.feishuAhrefsSheetId = document.getElementById('feishuAhrefsSheetId');
   elements.feishuSyncStatusText = document.getElementById('feishuSyncStatusText');
@@ -1263,7 +1264,8 @@ async function createBackup() {
       'feishuCredentials',
       'feishuSyncLimit',
       'feishuLastSyncTime',
-      'exploreExcludeFromBlogSites'
+      'exploreExcludeFromBlogSites',
+      'blogCommentSiteThreshold'
     ]);
 
     const data = {
@@ -1279,7 +1281,8 @@ async function createBackup() {
       feishuCredentials: feishuResult.feishuCredentials || null,
       feishuSyncLimit: feishuResult.feishuSyncLimit ?? null,
       feishuLastSyncTime: feishuResult.feishuLastSyncTime || null,
-      exploreExcludeFromBlogSites: feishuResult.exploreExcludeFromBlogSites
+      exploreExcludeFromBlogSites: feishuResult.exploreExcludeFromBlogSites,
+      blogCommentSiteThreshold: feishuResult.blogCommentSiteThreshold
     };
 
     if (elements.includeRecords.checked) {
@@ -1343,6 +1346,7 @@ async function restoreBackup() {
       if (data.feishuSyncLimit != null) replacePayload.feishuSyncLimit = data.feishuSyncLimit;
       if (data.feishuLastSyncTime != null) replacePayload.feishuLastSyncTime = data.feishuLastSyncTime;
       if (data.exploreExcludeFromBlogSites !== undefined) replacePayload.exploreExcludeFromBlogSites = data.exploreExcludeFromBlogSites;
+      if (data.blogCommentSiteThreshold !== undefined) replacePayload.blogCommentSiteThreshold = data.blogCommentSiteThreshold;
       await chrome.storage.local.set(replacePayload);
     } else {
       // Merge data
@@ -1366,6 +1370,7 @@ async function restoreBackup() {
       if (data.feishuSyncLimit != null) mergePayload.feishuSyncLimit = data.feishuSyncLimit;
       if (data.feishuLastSyncTime != null) mergePayload.feishuLastSyncTime = data.feishuLastSyncTime;
       if (data.exploreExcludeFromBlogSites !== undefined) mergePayload.exploreExcludeFromBlogSites = data.exploreExcludeFromBlogSites;
+      if (data.blogCommentSiteThreshold !== undefined) mergePayload.blogCommentSiteThreshold = data.blogCommentSiteThreshold;
       await chrome.storage.local.set(mergePayload);
     }
 
@@ -1515,7 +1520,7 @@ function escapeHtml(str) {
 /**
  * Render Feishu tab
  */
-function renderFeishuTab() {
+async function renderFeishuTab() {
   // Load feishu config from storage if not already loaded
   if (!feishuConfig) {
     feishuConfig = {};
@@ -1543,6 +1548,10 @@ function renderFeishuTab() {
   }
   if (elements.feishuExploreSheetId) {
     elements.feishuExploreSheetId.value = feishuConfig.exploreSheetId || '';
+  }
+  const blogCommentThreshold = (await chrome.storage.local.get(['blogCommentSiteThreshold'])).blogCommentSiteThreshold;
+  if (elements.blogCommentSiteThreshold) {
+    elements.blogCommentSiteThreshold.value = typeof blogCommentThreshold === 'number' && blogCommentThreshold >= 0 ? String(blogCommentThreshold) : '3';
   }
   // 外链采集 - Ahrefs 反链表格
   if (elements.feishuAhrefsSheetToken) {
@@ -1610,7 +1619,9 @@ async function saveFeishuConfig() {
       lastSyncTime: feishuConfig?.lastSyncTime || null
     };
 
-    await chrome.storage.local.set({ feishuConfig: newConfig });
+    const thRaw = parseInt(elements.blogCommentSiteThreshold?.value, 10);
+    const blogCommentSiteThreshold = (typeof thRaw === 'number' && !isNaN(thRaw) && thRaw >= 0) ? thRaw : 3;
+    await chrome.storage.local.set({ feishuConfig: newConfig, blogCommentSiteThreshold });
     feishuConfig = newConfig;
     updateFeishuSyncStatus();
     showToast('飞书配置已保存', 'success');

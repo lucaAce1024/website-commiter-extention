@@ -117,6 +117,14 @@ const elements = {
   exploreBatchId: document.getElementById('exploreBatchId'),
   exploreBatchStatus: document.getElementById('exploreBatchStatus'),
   exploreClearCacheBtn: document.getElementById('exploreClearCacheBtn'),
+  exploreManualDetectBtn: document.getElementById('exploreManualDetectBtn'),
+  exploreManualDetectModal: document.getElementById('exploreManualDetectModal'),
+  exploreDetectThreshold: document.getElementById('exploreDetectThreshold'),
+  exploreDetectScore: document.getElementById('exploreDetectScore'),
+  exploreDetectResult: document.getElementById('exploreDetectResult'),
+  exploreDetectDomain: document.getElementById('exploreDetectDomain'),
+  exploreDetectRequiresLogin: document.getElementById('exploreDetectRequiresLogin'),
+  exploreManualDetectModalClose: document.getElementById('exploreManualDetectModalClose'),
   exploreCommentPageUrl: document.getElementById('exploreCommentPageUrl'),
   exploreExtractCommentUrlsBtn: document.getElementById('exploreExtractCommentUrlsBtn'),
   exploreExtractFromCurrentPageBtn: document.getElementById('exploreExtractFromCurrentPageBtn'),
@@ -1317,7 +1325,9 @@ function renderExploreDiscoveredList() {
   } else {
     listEl.innerHTML = sites.map((s) => {
       const u = (s && s.url) || s;
-      return `<div class="explore-url-item"><a href="${u}" target="_blank" rel="noopener">${u}</a></div>`;
+      const scoreText = s && typeof s.blogCommentScore === 'number' ? String(s.blogCommentScore) : '—';
+      const loginBadge = s && s.requiresLogin ? '<span class="explore-requires-login" title="需要登录后才能评论">需登录</span>' : '';
+      return `<div class="explore-url-item"><span class="explore-score" title="Blog 评论站得分">${scoreText}</span>${loginBadge}<a href="${escapeHtml(u)}" target="_blank" rel="noopener">${escapeHtml(u)}</a></div>`;
     }).join('');
   }
 
@@ -2515,6 +2525,75 @@ function setupEventListeners() {
     }
   });
 
+  function closeExploreDetectModal() {
+    if (elements.exploreManualDetectModal) {
+      elements.exploreManualDetectModal.classList.add('hidden');
+      elements.exploreManualDetectModal.setAttribute('aria-hidden', 'true');
+    }
+  }
+  function showExploreDetectModal(threshold, score, isBlogCommentSite, domain, requiresLogin) {
+    if (elements.exploreDetectThreshold) elements.exploreDetectThreshold.textContent = String(threshold);
+    if (elements.exploreDetectScore) elements.exploreDetectScore.textContent = typeof score === 'number' ? String(score) : '—';
+    if (elements.exploreDetectResult) {
+      elements.exploreDetectResult.textContent = isBlogCommentSite ? '✅ 是 Blog 评论站' : '❌ 否';
+      elements.exploreDetectResult.setAttribute('aria-label', isBlogCommentSite ? '是 Blog 评论站' : '否');
+    }
+    if (elements.exploreDetectDomain) {
+      elements.exploreDetectDomain.textContent = domain ? `（${domain}）` : '';
+    }
+    if (elements.exploreDetectRequiresLogin) {
+      if (requiresLogin === true) {
+        elements.exploreDetectRequiresLogin.textContent = '是';
+      } else if (requiresLogin === false) {
+        elements.exploreDetectRequiresLogin.textContent = '否';
+      } else {
+        elements.exploreDetectRequiresLogin.textContent = '—';
+      }
+    }
+    if (elements.exploreManualDetectModal) {
+      elements.exploreManualDetectModal.classList.remove('hidden');
+      elements.exploreManualDetectModal.setAttribute('aria-hidden', 'false');
+    }
+  }
+  elements.exploreManualDetectBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.id || !tab.url) {
+        showExploreMessage('无法获取当前活动页', 'error');
+        return;
+      }
+      if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+        showExploreMessage('当前页不是 http(s) 页面，无法检测', 'error');
+        return;
+      }
+      showExploreMessage('检测中…', 'info');
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'recognizeCommentForm', useLlm: false }).catch((e) => ({ success: false, error: e?.message }));
+      const storage = await chrome.storage.local.get(['blogCommentSiteThreshold']);
+      const threshold = typeof storage.blogCommentSiteThreshold === 'number' && storage.blogCommentSiteThreshold >= 0
+        ? storage.blogCommentSiteThreshold
+        : 3;
+      if (!response?.success) {
+        showExploreMessage('检测失败: ' + (response?.error || '未注入或页面未加载'), 'error');
+        return;
+      }
+      const score = response.result?.blogCommentScore;
+      const isBlog = response.result?.isBlogCommentSite === true;
+      const requiresLogin = response.result?.requiresLogin;
+      let domain = '';
+      try {
+        domain = tab.url ? new URL(tab.url).hostname : '';
+      } catch (_) {}
+      showExploreDetectModal(threshold, score, isBlog, domain, requiresLogin);
+    } catch (e) {
+      showExploreMessage('检测异常: ' + (e && e.message ? e.message : String(e)), 'error');
+    }
+  });
+  elements.exploreManualDetectModalClose?.addEventListener('click', closeExploreDetectModal);
+  if (elements.exploreManualDetectModal?.querySelector('.explore-detect-modal-backdrop')) {
+    elements.exploreManualDetectModal.querySelector('.explore-detect-modal-backdrop').addEventListener('click', closeExploreDetectModal);
+  }
+
   elements.exploreExtractCommentUrlsBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
     const pageUrl = elements.exploreCommentPageUrl?.value?.trim() || '';
@@ -2844,13 +2923,28 @@ function setupEventListeners() {
         return;
       }
 
-      const commentable = response?.success && response?.result?.status === 'success';
+      const commentable = response?.success && response?.result?.isBlogCommentSite === true;
+      const blogCommentScore = response?.result?.blogCommentScore;
+      const requiresLogin = response?.result?.requiresLogin === true;
       batch.urlProgress = batch.urlProgress || {};
-      batch.urlProgress[urlNorm] = { commentable };
+      batch.urlProgress[urlNorm] = { commentable, blogCommentScore, requiresLogin };
       if (commentable) {
         batch.discoveredSites = batch.discoveredSites || [];
         const exists = batch.discoveredSites.some((s) => normalizeUrl((s && s.url) || s) === urlNorm);
-        if (!exists) batch.discoveredSites.push({ url: urlNorm, discoveredAt: new Date().toISOString() });
+        if (!exists) {
+          const newSite = { url: urlNorm, discoveredAt: new Date().toISOString(), blogCommentScore, requiresLogin };
+          batch.discoveredSites.push(newSite);
+          if (typeof appendDiscoveredSitesToFeishu === 'function') {
+            try {
+              const feishuResult = await appendDiscoveredSitesToFeishu(batch, [newSite]);
+              if (!feishuResult.ok && !feishuResult.skipped && feishuResult.error) {
+                showExploreMessage('飞书写入失败: ' + feishuResult.error, 'error');
+              }
+            } catch (e) {
+              showExploreMessage('飞书写入异常: ' + (e && e.message ? e.message : String(e)), 'error');
+            }
+          }
+        }
       }
       batch.lastProcessedIndex = i + 1;
       batch.updatedAt = new Date().toISOString();
@@ -3509,6 +3603,79 @@ async function writeBacklinksToFeishu(queryDomain, backlinks, config) {
   console.log(`[Ahrefs] 成功写入 ${rows.length} 条反链到飞书`);
 }
 
+/**
+ * 将指定发现站点追加写入飞书表格（供遍历时单条写入或批量写入复用）
+ * @param {object} batch - 当前批次，含 sourceInput、urlProgress
+ * @param {Array<{url:string, discoveredAt?:string, blogCommentScore?:number}>} sitesToAppend - 要追加的站点列表
+ * @returns {Promise<{ok:boolean, written:number, error?:string, skipped?:boolean}>}
+ */
+async function appendDiscoveredSitesToFeishu(batch, sitesToAppend) {
+  if (!sitesToAppend || sitesToAppend.length === 0) return { ok: true, written: 0 };
+  const result = await chrome.storage.local.get(['feishuConfig']);
+  const config = result.feishuConfig || {};
+  if (!config.appId || !config.appSecret || !config.exploreSheetToken || !config.exploreSheetId) {
+    return { ok: false, written: 0, skipped: true };
+  }
+  const sourceDomains = batch?.sourceInput?.domains ||
+    batch?.sourceInput?.ahrefsInput?.split(/[,，\s]+/).filter(Boolean) ||
+    [];
+  const sourceDomainStr = sourceDomains.slice(0, 3).join(', ') + (sourceDomains.length > 3 ? '...' : '');
+  const rows = sitesToAppend.map((site) => {
+    const url = (site && site.url) || site;
+    if (!url) return null;
+    let domain = '';
+    try {
+      const u = new URL(url);
+      domain = u.hostname || '';
+    } catch (e) {
+      domain = url.replace(/^https?:\/\//, '').split('/')[0];
+    }
+    const urlNorm = typeof normalizeUrl === 'function' ? normalizeUrl(url) : url;
+    const progress = (batch && batch.urlProgress && batch.urlProgress[urlNorm]) || {};
+    const requiresLoginVal = site.requiresLogin === true || progress.requiresLogin === true;
+    const blogCommentScoreVal = site.blogCommentScore != null ? String(site.blogCommentScore) : (progress.blogCommentScore != null ? String(progress.blogCommentScore) : '');
+    return [
+      url,
+      domain,
+      site.discoveredAt || new Date().toISOString(),
+      sourceDomainStr || '未知',
+      progress.hasCaptcha ? '是' : '否',
+      requiresLoginVal ? '是' : '否',
+      blogCommentScoreVal
+    ];
+  }).filter(Boolean);
+  if (rows.length === 0) return { ok: true, written: 0 };
+  try {
+    const accessToken = await getFeishuAccessToken();
+    const spreadsheetToken = config.exploreSheetToken;
+    const sheetId = config.exploreSheetId;
+    const metaResponse = await fetch(
+      `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`,
+      { method: 'GET', headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaData = await metaResponse.json();
+    let startRow = 1;
+    if (metaData.code === 0 && metaData.data?.sheets) {
+      const sheet = metaData.data.sheets.find(s => s.sheetId === sheetId);
+      if (sheet && sheet.rowCount) startRow = sheet.rowCount + 1;
+    }
+    const range = `${sheetId}!A${startRow}:G${startRow + rows.length - 1}`;
+    const response = await fetch(
+      `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
+      {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ valueRange: { range: range, values: rows } })
+      }
+    );
+    const data = await response.json();
+    if (data.code !== 0) return { ok: false, written: 0, error: data.msg || '未知错误' };
+    return { ok: true, written: rows.length };
+  } catch (e) {
+    return { ok: false, written: 0, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 async function writeExploreDiscoveredSitesToFeishu() {
   try {
     if (!exploreCurrentBatch) {
@@ -3522,11 +3689,9 @@ async function writeExploreDiscoveredSitesToFeishu() {
       return;
     }
 
-    // 获取飞书配置
     const result = await chrome.storage.local.get(['feishuConfig']);
     const config = result.feishuConfig || {};
 
-    // 检查普通电子表格配置
     if (!config.appId || !config.appSecret) {
       showExploreMessage('请先在设置页面配置飞书应用凭证（App ID、Secret）', 'warning');
       return;
@@ -3538,107 +3703,19 @@ async function writeExploreDiscoveredSitesToFeishu() {
 
     showExploreMessage('正在写入飞书...', 'info');
 
-    // 获取 access token
-    const accessToken = await getFeishuAccessToken();
-
-    // 获取来源域名（从 sourceInput 或 ahrefsInput）
-    const sourceDomains = exploreCurrentBatch.sourceInput?.domains ||
-                          exploreCurrentBatch.sourceInput?.ahrefsInput?.split(/[,，\s]+/).filter(Boolean) ||
-                          [];
-    const sourceDomainStr = sourceDomains.slice(0, 3).join(', ') + (sourceDomains.length > 3 ? '...' : '');
-
-    // 构建二维数组数据（普通电子表格格式）
-    const rows = discoveredSites.map(site => {
-      const url = (site && site.url) || site;
-      if (!url) return null;
-
-      // 提取域名
-      let domain = '';
-      try {
-        const u = new URL(url);
-        domain = u.hostname || '';
-      } catch (e) {
-        domain = url.replace(/^https?:\/\//, '').split('/')[0];
-      }
-
-      // 从 urlProgress 获取额外信息
-      const urlNorm = typeof normalizeUrl === 'function' ? normalizeUrl(url) : url;
-      const progress = exploreCurrentBatch.urlProgress?.[urlNorm] || {};
-
-      return [
-        url,
-        domain,
-        site.discoveredAt || new Date().toISOString(),
-        sourceDomainStr || '未知',
-        progress.hasCaptcha ? '是' : '否',
-        progress.requiresLogin ? '是' : '否'
-      ];
-    }).filter(Boolean);
-
-    if (rows.length === 0) {
-      showExploreMessage('没有有效的记录可写入', 'warning');
+    const feishuResult = await appendDiscoveredSitesToFeishu(exploreCurrentBatch, discoveredSites);
+    if (!feishuResult.ok) {
+      showExploreMessage('写入飞书失败: ' + (feishuResult.error || '未知错误'), 'error');
       return;
     }
 
-    // 获取当前表格行数，追加写入
-    const spreadsheetToken = config.exploreSheetToken;
-    const sheetId = config.exploreSheetId;
-
-    // 先获取表格元数据以确定起始行
-    const metaResponse = await fetch(
-      `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
-      }
-    );
-    const metaData = await metaResponse.json();
-
-    let startRow = 1; // 默认从第1行开始（跳过表头）
-    if (metaData.code === 0 && metaData.data?.sheets) {
-      const sheet = metaData.data.sheets.find(s => s.sheetId === sheetId);
-      if (sheet && sheet.rowCount) {
-        startRow = sheet.rowCount + 1; // 追加到最后一行之后
-      }
-    }
-
-    // 写入数据到普通电子表格
-    const range = `${sheetId}!A${startRow}:F${startRow + rows.length - 1}`;
-    const response = await fetch(
-      `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
-      {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          valueRange: {
-            range: range,
-            values: rows
-          }
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (data.code !== 0) {
-      console.error('[Explore] 飞书写入失败:', data.msg, data);
-      showExploreMessage('写入飞书失败: ' + (data.msg || '未知错误'), 'error');
-      return;
-    }
-
-    // 更新批次状态
     exploreCurrentBatch.phase = 'feishu_written';
     exploreCurrentBatch.feishuWrittenAt = new Date().toISOString();
-    exploreCurrentBatch.feishuWrittenCount = rows.length;
+    exploreCurrentBatch.feishuWrittenCount = (exploreCurrentBatch.feishuWrittenCount || 0) + feishuResult.written;
     exploreCurrentBatch.updatedAt = new Date().toISOString();
     await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
 
-    showExploreMessage(`成功写入 ${rows.length} 条记录到飞书`, 'success');
+    showExploreMessage(`成功写入 ${feishuResult.written} 条记录到飞书`, 'success');
 
   } catch (error) {
     console.error('[Explore] 飞书写入异常:', error);

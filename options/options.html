@@ -428,6 +428,12 @@
               <input type="text" id="feishuExploreSheetId" class="input" placeholder="工作表 ID（如 sheetId=xxxxxx 中的 xxxxxx）">
             </div>
 
+            <div class="form-group">
+              <label for="blogCommentSiteThreshold">Blog 评论站判断阈值（分）</label>
+              <input type="number" id="blogCommentSiteThreshold" class="input" min="0" max="20" step="1" placeholder="6">
+              <p class="field-hint">遍历检测时，页面得分 ≥ 此值即标记为可评论站。默认 6，调高可减少误判。</p>
+            </div>
+
             <details class="field-details">
               <summary>表格字段约定（首行为表头）</summary>
               <table class="field-table">
@@ -441,6 +447,7 @@
                   <tr><td><code>发现来源域名</code></td><td>种子或 Ahrefs 查询域名</td></tr>
                   <tr><td><code>是否有 CAPTCHA</code></td><td>是/否</td></tr>
                   <tr><td><code>是否需登录评论</code></td><td>是/否</td></tr>
+                  <tr><td><code>评论站得分</code></td><td>仅 Blog 评论站判断得分（0～20+），后续可能有导航站等其它类型单独列</td></tr>
                 </tbody>
               </table>
             </details>

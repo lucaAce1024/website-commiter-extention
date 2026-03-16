@@ -319,6 +319,28 @@
       </section>
 
       <section class="section">
+        <div class="section-header"><span class="label">手动检测</span></div>
+        <p class="section-desc">对当前浏览器活动页进行 Blog 评论站判断（评分 + 阈值）。</p>
+        <button type="button" id="exploreManualDetectBtn" class="btn btn-secondary btn-sm">检测是否为 Blog 评论站</button>
+      </section>
+
+      <div id="exploreManualDetectModal" class="explore-detect-modal hidden" aria-hidden="true">
+        <div class="explore-detect-modal-backdrop"></div>
+        <div class="explore-detect-modal-box">
+          <div class="explore-detect-modal-title">Blog 评论站检测结果 <span id="exploreDetectDomain" class="explore-detect-domain"></span></div>
+          <div class="explore-detect-modal-body">
+            <p class="explore-detect-row"><span class="explore-detect-label">评判阈值：</span><span id="exploreDetectThreshold">—</span></p>
+            <p class="explore-detect-row"><span class="explore-detect-label">得分：</span><span id="exploreDetectScore">—</span></p>
+            <p class="explore-detect-row explore-detect-result"><span class="explore-detect-label">结果：</span><span id="exploreDetectResult">—</span></p>
+            <p class="explore-detect-row"><span class="explore-detect-label">是否需要登录：</span><span id="exploreDetectRequiresLogin">—</span></p>
+          </div>
+          <div class="explore-detect-modal-actions">
+            <button type="button" id="exploreManualDetectModalClose" class="btn btn-primary btn-sm">关闭</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="section">
         <label class="checkbox-label">
           <input type="checkbox" id="exploreExcludeFromBlogSites" checked>
           <span class="label">排除 Blog 评论「当前站点」列表中的域名</span>
