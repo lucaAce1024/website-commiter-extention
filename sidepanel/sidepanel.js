@@ -3435,16 +3435,31 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
     );
     const metaData = await metaResponse.json();
 
-    let startRow = 1;
+    console.log('[Ahrefs] 元数据响应:', metaData);
+
+    let startRow = 2; // 默认从第2行开始（跳过表头）
     if (metaData.code === 0 && metaData.data?.sheets) {
       const sheet = metaData.data.sheets.find(s => s.sheetId === sheetId);
+      console.log('[Ahrefs] 找到的工作表:', sheet);
       if (sheet && sheet.rowCount) {
         startRow = sheet.rowCount + 1;
       }
+    } else {
+      console.warn('[Ahrefs] 获取元数据失败或找不到工作表, 使用默认起始行:', metaData);
     }
+
+    console.log('[Ahrefs] 写入参数:', {
+      spreadsheetToken,
+      sheetId,
+      startRow,
+      rowsCount: rows.length,
+      firstRow: rows[0]
+    });
 
     // 写入数据
     const range = `${sheetId}!A${startRow}:G${startRow + rows.length - 1}`;
+    console.log('[Ahrefs] 写入范围:', range);
+
     const response = await fetch(
       `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
       {
@@ -3460,11 +3475,14 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
     );
 
     const data = await response.json();
+    console.log('[Ahrefs] 写入响应:', data);
+
     if (data.code !== 0) {
-      console.error('[Ahrefs] 飞书写入失败:', data.msg);
+      console.error('[Ahrefs] 飞书写入失败:', data.msg, data);
       return { success: false, error: data.msg };
     }
 
+    console.log('[Ahrefs] 飞书写入成功, 共', rows.length, '条');
     return { success: true, count: rows.length };
 
   } catch (error) {
