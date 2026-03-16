@@ -134,6 +134,7 @@ const elements = {
   exploreDiscoveredList: document.getElementById('exploreDiscoveredList'),
   exploreFeishuConfigBtn: document.getElementById('exploreFeishuConfigBtn'),
   exploreWriteFeishuBtn: document.getElementById('exploreWriteFeishuBtn'),
+  exploreClearDiscoveredBtn: document.getElementById('exploreClearDiscoveredBtn'),
  exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
   exploreDugDomainsCount: document.getElementById('exploreDugDomainsCount'),
   exploreAddDugToAhrefsBtn: document.getElementById('exploreAddDugToAhrefsBtn'),
@@ -148,6 +149,8 @@ const elements = {
   exploreLoadBatchBtn: document.getElementById('exploreLoadBatchBtn'),
   // 写入飞书按钮
   exploreWriteUrlListToFeishuBtn: document.getElementById('exploreWriteUrlListToFeishuBtn'),
+  // 清空列表按钮
+  exploreClearUrlListBtn: document.getElementById('exploreClearUrlListBtn'),
 };
 
 // ========== State ==========
@@ -1002,7 +1005,8 @@ async function writeUrlListToFeishu() {
     const result = await writeAhrefsBacklinksToFeishu(domain, backlinks, {});
 
     if (result.success) {
-      showExploreMessage(`成功写入 ${backlinks.length} 条 URL 到飞书`, 'success');
+      const rangeInfo = result.range ? ` (${result.range})` : '';
+      showExploreMessage(`成功写入 ${backlinks.length} 条 URL 到飞书${rangeInfo}`, 'success');
     } else {
       showExploreMessage('写入飞书失败: ' + (result.error || '未知错误'), 'error');
     }
@@ -1037,36 +1041,105 @@ function renderExploreUrlList() {
   }
 
   if (!hasUrls) {
-    listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入</div>';
+    listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入，或从缓存批次加载</div>';
   } else if (exploreUrlListDetailView && hasDetails) {
     const detailMap = new Map();
     for (const bl of details) {
       if (bl.urlFrom) detailMap.set(bl.urlFrom, bl);
     }
-    listEl.innerHTML = urls.map((u) => {
+    listEl.innerHTML = urls.map((u, idx) => {
       const bl = detailMap.get(u);
       if (bl) {
         const drClass = drBadgeClass(bl.domainRating);
-        return `<div class="explore-url-item rich">
+        return `<div class="explore-url-item rich" data-index="${idx}">
           <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
           <div class="backlink-meta">
             <span class="dr-badge ${drClass}">DR ${bl.domainRating}</span>
             <span class="anchor-text" title="锚文本: ${escHtml(bl.anchor)}">${escHtml(bl.anchor || '—')}</span>
             <span class="page-title" title="${escHtml(bl.title)}">${escHtml(bl.title || '')}</span>
           </div>
+          <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
         </div>`;
       }
-      return `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`;
+      return `<div class="explore-url-item" data-index="${idx}">
+        <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
+        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+      </div>`;
     }).join('');
   } else {
-    listEl.innerHTML = urls.map((u) => `<div class="explore-url-item"><a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a></div>`).join('');
+    listEl.innerHTML = urls.map((u, idx) => `<div class="explore-url-item" data-index="${idx}">
+      <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
+      <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+    </div>`).join('');
   }
+
+  // 绑定删除按钮事件
+  listEl.querySelectorAll('.btn-delete-url').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const index = parseInt(e.target.dataset.index, 10);
+      await deleteUrlFromList(index);
+    });
+  });
+
+  // 更新按钮状态
   if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = !hasUrls;
-    // 更新写入飞书按钮状态
-    if (elements.exploreWriteUrlListToFeishuBtn) {
-      elements.exploreWriteUrlListToFeishuBtn.disabled = !hasUrls;
-    }
+  if (elements.exploreWriteUrlListToFeishuBtn) elements.exploreWriteUrlListToFeishuBtn.disabled = !hasUrls;
+  if (elements.exploreClearUrlListBtn) elements.exploreClearUrlListBtn.disabled = !hasUrls;
+}
+
+/**
+ * 删除待检测 URL 列表中的单条记录
+ */
+async function deleteUrlFromList(index) {
+  try {
+    if (!exploreCurrentBatch) return;
+
+    const urls = exploreCurrentBatch.urlList || [];
+    if (index < 0 || index >= urls.length) return;
+
+    const deletedUrl = urls[index];
+    urls.splice(index, 1);
+
+    // 同时删除对应的 backlinkDetails
+    const details = exploreCurrentBatch.backlinkDetails || [];
+    exploreCurrentBatch.backlinkDetails = details.filter(d => d.urlFrom !== deletedUrl);
+
+    exploreCurrentBatch.updatedAt = new Date().toISOString();
+
+    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    renderExploreUrlList();
+    showExploreMessage(`已删除: ${deletedUrl}`, 'info');
+
+  } catch (e) {
+    console.error('[Explore] Failed to delete URL:', e);
+    showExploreMessage('删除失败: ' + e.message, 'error');
   }
+}
+
+/**
+ * 清空待检测 URL 列表
+ */
+async function clearExploreUrlList() {
+  try {
+    if (!exploreCurrentBatch) return;
+
+    const urls = exploreCurrentBatch.urlList || [];
+    if (urls.length === 0) return;
+
+    const count = urls.length;
+    exploreCurrentBatch.urlList = [];
+    exploreCurrentBatch.backlinkDetails = [];
+    exploreCurrentBatch.updatedAt = new Date().toISOString();
+
+    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+    renderExploreUrlList();
+    showExploreMessage(`已清空 ${count} 条 URL`, 'success');
+
+  } catch (e) {
+    console.error('[Explore] Failed to clear URL list:', e);
+    showExploreMessage('清空失败: ' + e.message, 'error');
+  }
+}
 
 function renderExploreDiscoveredList() {
   const listEl = elements.exploreDiscoveredList;
@@ -1092,6 +1165,10 @@ function renderExploreDiscoveredList() {
   // 更新写入飞书按钮状态
   if (elements.exploreWriteFeishuBtn) {
     elements.exploreWriteFeishuBtn.disabled = !hasSites;
+  }
+  // 更新清空按钮状态
+  if (elements.exploreClearDiscoveredBtn) {
+    elements.exploreClearDiscoveredBtn.disabled = !hasSites;
   }
 }
 
@@ -2794,10 +2871,6 @@ function setupEventListeners() {
       // 保存到 Ahrefs 域名列表并渲染
       exploreAhrefsDomains = domainDates.filter(d => filtered.includes(d.domain));
       renderExploreAhrefsDomainList();
-      // 同时填充到输入框（用于 debug）
-      if (elements.exploreAhrefsDomain) {
-        elements.exploreAhrefsDomain.value = filtered.join(', ');
-      }
       showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，已添加到列表`, 'success');
       console.log('[Explore] WHOIS 筛选结果:', { filtered, domainDates, cutoffDate });
     } catch (e) {
@@ -2873,6 +2946,33 @@ function setupEventListeners() {
   // 点击写入飞书按钮（待检测 URL 列表）
   elements.exploreWriteUrlListToFeishuBtn?.addEventListener('click', async () => {
     await writeUrlListToFeishu();
+  });
+
+  // 点击清空列表按钮
+  elements.exploreClearUrlListBtn?.addEventListener('click', async () => {
+    if (confirm('确定要清空待检测 URL 列表吗？此操作不可撤销。 ')) {
+      await clearExploreUrlList();
+    }
+  });
+
+  // 点击清空已发现可评论站列表按钮
+  elements.exploreClearDiscoveredBtn?.addEventListener('click', async () => {
+    if (confirm('确定要清空已发现可评论站列表吗？此操作不可撤销。 ')) {
+      exploreCurrentBatch.discoveredSites = [];
+      renderExploreDiscoveredList();
+      saveExploreCurrentBatch();
+      showExploreMessage('已发现可评论站列表已清空', 'success');
+    }
+  });
+
+  // 点击清空已发现可评论站列表按钮
+  elements.exploreClearDiscoveredBtn?.addEventListener('click', async () => {
+    if (confirm('确定要清空已发现可评论站列表吗？此操作不可撤销。 ')) {
+      exploreCurrentBatch.discoveredSites = [];
+      renderExploreDiscoveredList();
+      saveExploreCurrentBatch();
+      showExploreMessage('已发现可评论站列表已清空', 'success');
+    }
   });
 
   // 监听 storage 变更
@@ -3483,7 +3583,7 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
     }
 
     console.log('[Ahrefs] 飞书写入成功, 共', rows.length, '条');
-    return { success: true, count: rows.length };
+    return { success: true, count: rows.length, range: range };
 
   } catch (error) {
     console.error('[Ahrefs] 飞书写入异常:', error);

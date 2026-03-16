@@ -942,7 +942,8 @@ body {
 }
 
 .explore-url-list .explore-url-item {
-  padding: 6px 10px;
+  position: relative;
+  padding: 6px 24px 6px 10px;
   border-bottom: 1px solid var(--border-color);
   font-size: 12px;
 }
@@ -1146,6 +1147,30 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* URL 列表项删除按钮 */
+.explore-url-item .btn-delete-url {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  font-size: 12px;
+}
+
+.explore-url-item:hover .btn-delete-url {
+  opacity: 1;
+}
+
+.explore-url-item .btn-delete-url:hover {
+  background: #ffe4e6;
 }
 
 /* Ahrefs 域名列表 */
