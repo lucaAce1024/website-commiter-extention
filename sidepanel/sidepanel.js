@@ -1077,7 +1077,8 @@ async function writeUrlListToFeishu() {
 
     showExploreMessage(`正在写入 ${backlinks.length} 条 URL 到飞书...`, 'info');
 
-    const result = await writeAhrefsBacklinksToFeishu(domain, backlinks, {});
+    const overviewForSheet = (exploreCurrentBatch && exploreCurrentBatch.ahrefsOverview) || {};
+    const result = await writeAhrefsBacklinksToFeishu(domain, backlinks, overviewForSheet);
 
     if (result.success) {
       const rangeInfo = result.range ? ` (${result.range})` : '';
@@ -3609,8 +3610,21 @@ async function writeBacklinksToFeishu(queryDomain, backlinks, config) {
     }
   }
 
-  // 写入数据到普通电子表格
-  const range = `${sheetId}!A${startRow}:G${startRow + rows.length - 1}`;
+  // 写入数据到普通电子表格（列数根据 rows 长度动态计算）
+  const colCount = rows[0]?.length || 1;
+  // 将 0 -> A, 1 -> B, ... 转为列字母
+  function toColLetter(idx) {
+    let n = idx + 1;
+    let s = '';
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      s = String.fromCharCode(65 + rem) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  }
+  const endCol = toColLetter(colCount - 1);
+  const range = `${sheetId}!A${startRow}:${endCol}${startRow + rows.length - 1}`;
   const response = await fetch(
     `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
     {
@@ -3786,15 +3800,22 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
     const now = new Date().toISOString();
 
     // 构建行数据
-    const rows = backlinks.map(b => [
-      domain || '',
-      b.urlFrom || '',
-      b.urlTo || '',
-      b.anchor || '',
-      b.domainRating?.toString() || '',
-      b.title || '',
-      now
-    ]);
+  const ovDr = overview && overview.domainRating !== undefined ? String(overview.domainRating) : '';
+  const ovRefdomains = overview && overview.refdomains !== undefined ? String(overview.refdomains) : '';
+  const ovDofollowRefdomains = overview && overview.dofollowRefdomains !== undefined ? String(overview.dofollowRefdomains) : '';
+
+  const rows = backlinks.map(b => [
+    domain || '',
+    ovDr,
+    ovRefdomains,
+    ovDofollowRefdomains,
+    b.urlFrom || '',
+    b.urlTo || '',
+    b.anchor || '',
+    b.domainRating?.toString() || '',
+    b.title || '',
+    now
+  ]);
 
     // 获取当前行数
     const metaResponse = await fetch(
