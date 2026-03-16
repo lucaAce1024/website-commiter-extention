@@ -1149,20 +1149,143 @@ body {
   white-space: nowrap;
 }
 
-/* URL 列表项删除按钮 */
+/* URL 列表多选栏 */
+.explore-url-list-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  background: linear-gradient(to bottom, #f8f9fa, #f1f3f4);
+  border-bottom: 1px solid #e0e0e0;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.explore-url-list-header .select-all-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #4a90e4;
+}
+
+.explore-url-list-header .select-all-label {
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+}
+
+.explore-url-list-header .selected-count {
+  font-size: 12px;
+  color: #1890ff;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.explore-url-list-header .batch-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  background: #ff4d4f;
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: auto;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.explore-url-list-header .batch-delete-btn.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.explore-url-list-header .batch-delete-btn:not(:disabled):hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.3);
+}
+
+.explore-url-list-header .batch-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.explore-url-list-header .batch-delete-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* URL 列表项 */
+.explore-url-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 8px 36px 8px 8px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.15s;
+  gap: 8px;
+}
+
+.explore-url-item:hover {
+  background: #f9fafb;
+}
+
+.explore-url-item.selected {
+  background: #e3f2fd;
+  border-bottom-color: #bbdefb;
+}
+
+.explore-url-item.selected:hover {
+  background: #bbdefb;
+}
+
+.explore-url-item .url-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #4a90e4;
+  flex-shrink: 0;
+}
+
+.explore-url-item a {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1a73e8;
+}
+
+.explore-url-item a:hover {
+  text-decoration: underline;
+}
+
+/* URL 列表项删除按钮 - 美化版本 */
 .explore-url-item .btn-delete-url {
   position: absolute;
-  right: 0;
+  right: 8px;
   top: 50%;
   transform: translateY(-50%);
-  padding: 2px 6px;
-  background: transparent;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
   color: #999;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s;
-  font-size: 12px;
+  transition: all 0.2s ease;
+  font-size: 16px;
+  font-weight: 300;
 }
 
 .explore-url-item:hover .btn-delete-url {
@@ -1170,7 +1293,54 @@ body {
 }
 
 .explore-url-item .btn-delete-url:hover {
-  background: #ffe4e6;
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+  transform: translateY(-50%) scale(1.05);
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.15);
+}
+
+.explore-url-item .btn-delete-url:active {
+  background: #fecaca;
+  color: #b91c1c;
+  transform: translateY(-50%) scale(0.95);
+}
+
+/* Rich 样式 - 详情视图 */
+.explore-url-item.rich {
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px 36px 10px 32px;
+}
+
+.explore-url-item.rich .url-checkbox {
+  position: absolute;
+  left: 8px;
+  top: 12px;
+}
+
+.explore-url-item.rich a {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.explore-url-item.rich .backlink-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: #888;
+  flex-wrap: wrap;
+  padding-left: 0;
+}
+
+/* 主操作按钮区域 */
+.explore-url-list-main-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
 }
 
 /* Ahrefs 域名列表 */

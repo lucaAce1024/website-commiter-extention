@@ -167,6 +167,7 @@ let batchPaused = false;
 let feishuSyncLimit = 10; // 默认同步 10 条
 
 let exploreCurrentBatch = null;
+let exploreSelectedUrls = new Set(); // 多选选中的 URL 索引集合
 let exploreAhrefsDomains = []; // Ahrefs 域名列表
 
 let exploreAhrefsRunning = false; // 拉取反链是否运行中
@@ -1042,16 +1043,35 @@ function renderExploreUrlList() {
 
   if (!hasUrls) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入，或从缓存批次加载</div>';
+    // 清空选中状态
+    exploreSelectedUrls.clear();
   } else if (exploreUrlListDetailView && hasDetails) {
     const detailMap = new Map();
     for (const bl of details) {
       if (bl.urlFrom) detailMap.set(bl.urlFrom, bl);
     }
-    listEl.innerHTML = urls.map((u, idx) => {
+    // 多选栏头部
+    const selectedCount = exploreSelectedUrls.size;
+    const headerHtml = `
+      <div class="explore-url-list-header">
+        <input type="checkbox" class="select-all-checkbox" id="exploreSelectAllCheckbox" ${selectedCount === urls.length ? 'checked' : ''}>
+        <label for="exploreSelectAllCheckbox" class="select-all-label">全选</label>
+        <span class="selected-count" id="exploreSelectedCount">${selectedCount > 0 ? `已选 ${selectedCount} 项` : ''}</span>
+        <button type="button" class="batch-delete-btn ${selectedCount > 0 ? 'active' : ''}" id="exploreBatchDeleteBtn" ${selectedCount === 0 ? 'disabled' : ''}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/>
+          </svg>
+          删除选中
+        </button>
+      </div>`;
+
+    listEl.innerHTML = headerHtml + urls.map((u, idx) => {
       const bl = detailMap.get(u);
+      const isSelected = exploreSelectedUrls.has(idx);
       if (bl) {
         const drClass = drBadgeClass(bl.domainRating);
-        return `<div class="explore-url-item rich" data-index="${idx}">
+        return `<div class="explore-url-item rich ${isSelected ? 'selected' : ''}" data-index="${idx}">
+          <input type="checkbox" class="url-checkbox" data-index="${idx}" ${isSelected ? 'checked' : ''}>
           <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
           <div class="backlink-meta">
             <span class="dr-badge ${drClass}">DR ${bl.domainRating}</span>
@@ -1061,30 +1081,169 @@ function renderExploreUrlList() {
           <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
         </div>`;
       }
-      return `<div class="explore-url-item" data-index="${idx}">
+      return `<div class="explore-url-item ${isSelected ? 'selected' : ''}" data-index="${idx}">
+        <input type="checkbox" class="url-checkbox" data-index="${idx}" ${isSelected ? 'checked' : ''}>
         <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
         <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
       </div>`;
     }).join('');
   } else {
-    listEl.innerHTML = urls.map((u, idx) => `<div class="explore-url-item" data-index="${idx}">
-      <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
-      <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
-    </div>`).join('');
+    // 简略视图 - 也添加多选栏
+    const selectedCount = exploreSelectedUrls.size;
+    const headerHtml = `
+      <div class="explore-url-list-header">
+        <input type="checkbox" class="select-all-checkbox" id="exploreSelectAllCheckbox" ${selectedCount === urls.length ? 'checked' : ''}>
+        <label for="exploreSelectAllCheckbox" class="select-all-label">全选</label>
+        <span class="selected-count" id="exploreSelectedCount">${selectedCount > 0 ? `已选 ${selectedCount} 项` : ''}</span>
+        <button type="button" class="batch-delete-btn ${selectedCount > 0 ? 'active' : ''}" id="exploreBatchDeleteBtn" ${selectedCount === 0 ? 'disabled' : ''}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/>
+          </svg>
+          删除选中
+        </button>
+      </div>`;
+
+    listEl.innerHTML = headerHtml + urls.map((u, idx) => {
+      const isSelected = exploreSelectedUrls.has(idx);
+      return `<div class="explore-url-item ${isSelected ? 'selected' : ''}" data-index="${idx}">
+        <input type="checkbox" class="url-checkbox" data-index="${idx}" ${isSelected ? 'checked' : ''}>
+        <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
+        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+      </div>`;
+    }).join('');
   }
 
-  // 绑定删除按钮事件
+  // 绑定事件
+  bindExploreUrlListEvents();
+
+  // 更新按钮状态
+  if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = !hasUrls;
+  if (elements.exploreWriteUrlListToFeishuBtn) elements.exploreWriteUrlListToFeishuBtn.disabled = !hasUrls;
+  if (elements.exploreClearUrlListBtn) elements.exploreClearUrlListBtn.disabled = !hasUrls;
+}
+
+/**
+ * 绑定 URL 列表多选相关事件
+ */
+function bindExploreUrlListEvents() {
+  const listEl = elements.exploreUrlList;
+  if (!listEl) return;
+
+  // 全选复选框事件
+  const selectAllCheckbox = document.getElementById('exploreSelectAllCheckbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', (e) => {
+      const urls = exploreCurrentBatch?.urlList || [];
+      if (e.target.checked) {
+        // 全选
+        exploreSelectedUrls = new Set(urls.map((_, i) => i));
+      } else {
+        // 取消全选
+        exploreSelectedUrls.clear();
+      }
+      renderExploreUrlList();
+    });
+  }
+
+  // 单个复选框事件
+  listEl.querySelectorAll('.url-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const index = parseInt(e.target.dataset.index, 10);
+      const itemEl = e.target.closest('.explore-url-item');
+      if (e.target.checked) {
+        exploreSelectedUrls.add(index);
+        itemEl?.classList.add('selected');
+      } else {
+        exploreSelectedUrls.delete(index);
+        itemEl?.classList.remove('selected');
+      }
+      updateExploreSelectAllState();
+      updateExploreBatchDeleteBtn();
+      updateExploreSelectedCount();
+    });
+  });
+
+  // 批量删除按钮事件
+  const batchDeleteBtn = document.getElementById('exploreBatchDeleteBtn');
+  if (batchDeleteBtn) {
+    batchDeleteBtn.addEventListener('click', async () => {
+      await batchDeleteExploreUrls();
+    });
+  }
+
+  // 单个删除按钮事件
   listEl.querySelectorAll('.btn-delete-url').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const index = parseInt(e.target.dataset.index, 10);
       await deleteUrlFromList(index);
     });
   });
+}
 
-  // 更新按钮状态
-  if (elements.exploreStartTraverseBtn) elements.exploreStartTraverseBtn.disabled = !hasUrls;
-  if (elements.exploreWriteUrlListToFeishuBtn) elements.exploreWriteUrlListToFeishuBtn.disabled = !hasUrls;
-  if (elements.exploreClearUrlListBtn) elements.exploreClearUrlListBtn.disabled = !hasUrls;
+/**
+ * 更新全选复选框状态
+ */
+function updateExploreSelectAllState() {
+  const checkbox = document.getElementById('exploreSelectAllCheckbox');
+  if (!checkbox) return;
+  const urls = exploreCurrentBatch?.urlList || [];
+  checkbox.checked = exploreSelectedUrls.size === urls.length && urls.length > 0;
+}
+
+/**
+ * 更新批量删除按钮状态
+ */
+function updateExploreBatchDeleteBtn() {
+  const btn = document.getElementById('exploreBatchDeleteBtn');
+  if (!btn) return;
+  const hasSelected = exploreSelectedUrls.size > 0;
+  btn.disabled = !hasSelected;
+  btn.classList.toggle('active', hasSelected);
+}
+
+/**
+ * 更新选中数量显示
+ */
+function updateExploreSelectedCount() {
+  const countEl = document.getElementById('exploreSelectedCount');
+  if (!countEl) return;
+  const count = exploreSelectedUrls.size;
+  countEl.textContent = count > 0 ? `已选 ${count} 项` : '';
+}
+
+/**
+ * 批量删除选中的 URL
+ */
+async function batchDeleteExploreUrls() {
+  try {
+    if (!exploreCurrentBatch || exploreSelectedUrls.size === 0) return;
+
+    const urls = exploreCurrentBatch.urlList || [];
+    const details = exploreCurrentBatch.backlinkDetails || [];
+
+    // 从大到小排序索引，避免删除时索引错乱
+    const indicesToDelete = Array.from(exploreSelectedUrls).sort((a, b) => b - a);
+    const deletedUrls = indicesToDelete.map(i => urls[i]);
+
+    // 从后往前删除
+    for (const idx of indicesToDelete) {
+      urls.splice(idx, 1);
+    }
+
+    // 删除对应的 backlinkDetails
+    exploreCurrentBatch.backlinkDetails = details.filter(d => !deletedUrls.includes(d.urlFrom));
+    exploreCurrentBatch.updatedAt = new Date().toISOString();
+
+    await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
+
+    // 清空选中状态
+    exploreSelectedUrls.clear();
+    renderExploreUrlList();
+    showExploreMessage(`已删除 ${deletedUrls.length} 条 URL`, 'success');
+  } catch (e) {
+    console.error('[Explore] Failed to batch delete URLs:', e);
+    showExploreMessage('批量删除失败: ' + e.message, 'error');
+  }
 }
 
 /**
