@@ -1088,6 +1088,11 @@ function renderExploreDiscoveredList() {
       return `<div class="explore-url-item"><a href="${u}" target="_blank" rel="noopener">${u}</a></div>`;
     }).join('');
   }
+
+  // 更新写入飞书按钮状态
+  if (elements.exploreWriteFeishuBtn) {
+    elements.exploreWriteFeishuBtn.disabled = !hasSites;
+  }
 }
 
 function renderExploreDugDomainsList() {
