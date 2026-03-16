@@ -143,13 +143,13 @@ const elements = {
   exploreFeishuConfigBtn: document.getElementById('exploreFeishuConfigBtn'),
   exploreWriteFeishuBtn: document.getElementById('exploreWriteFeishuBtn'),
   exploreClearDiscoveredBtn: document.getElementById('exploreClearDiscoveredBtn'),
- exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
+  exploreDugDomainsList: document.getElementById('exploreDugDomainsList'),
   exploreDugDomainsCount: document.getElementById('exploreDugDomainsCount'),
   exploreAddDugToAhrefsBtn: document.getElementById('exploreAddDugToAhrefsBtn'),
-  exploreAddDugToUrlListBtn: document.getElementById('exploreAddDugToUrlListBtn'),
   exploreExcludeFromBlogSites: document.getElementById('exploreExcludeFromBlogSites'),
   exploreAhrefsDomainList: document.getElementById('exploreAhrefsDomainList'),
   exploreAhrefsDomainCount: document.getElementById('exploreAhrefsDomainCount'),
+  exploreClearAhrefsDomainListBtn: document.getElementById('exploreClearAhrefsDomainListBtn'),
   exploreUrlListCount: document.getElementById('exploreUrlListCount'),
   exploreDiscoveredCount: document.getElementById('exploreDiscoveredCount'),
   // 批次选择
@@ -323,6 +323,10 @@ function renderExploreAhrefsDomainList() {
     elements.exploreAhrefsDomainCount.classList.toggle('hidden', !hasDomains);
   }
 
+  if (elements.exploreClearAhrefsDomainListBtn) {
+    elements.exploreClearAhrefsDomainListBtn.disabled = !hasDomains;
+  }
+
   if (!hasDomains) {
     listEl.innerHTML = '<div class="empty-list-hint">暂无域名</div>';
     listEl.classList.add('hidden');
@@ -390,23 +394,31 @@ async function queryWhoisCreationDate(domain, cache) {
   }
   const { name, suffix } = parsed;
   const url = `https://whois.freeaiapi.xyz/?name=${name}&suffix=${suffix}&c=1`;
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    let result = null;
-    if (data && data.status === 'ok' && data.creation_datetime) {
-      const dateStr = data.creation_datetime.trim();
-      const date = new Date(dateStr);
-      if (!isNaN(date.getTime())) {
-        result = date.toISOString().split('T')[0];
+  const maxAttempts = 3;
+  const retryDelayMs = 2000;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+      let result = null;
+      if (data && data.status === 'ok' && data.creation_datetime) {
+        const dateStr = data.creation_datetime.trim();
+        const date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+          result = date.toISOString().split('T')[0];
+        }
       }
+      cache[domain] = result;
+      return result;
+    } catch (e) {
+      console.error('[WHOIS] Query failed:', { url, domain, attempt: attempt + 1, error: e });
+      if (attempt < maxAttempts - 1) {
+        await new Promise(r => setTimeout(r, retryDelayMs));
+        continue;
+      }
+      cache[domain] = null;
+      return null;
     }
-    cache[domain] = result;
-    return result;
-  } catch (e) {
-    console.error('[WHOIS] Query failed:', domain, e);
-    cache[domain] = null;
-    return null;
   }
 }
 
@@ -462,38 +474,66 @@ async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
     }
   }
 
-  showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：正在通过 API 获取反链…`, 'info');
+  const maxAttempts = 3;
+  const baseDelayMs = 3000;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain}：正在通过 API 获取反链…（第 ${attempt + 1} 次尝试）`, 'info');
+    try {
+      const resp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'ahrefsDirectBacklinks', domain }, resolve);
+      });
+      if (resp?.success && Array.isArray(resp.urlFromList)) {
+        const result = {
+          urlFromList: resp.urlFromList,
+          backlinks: resp.backlinks || [],
+          overview: resp.overview || {},
+          fromCache: false
+        };
 
-  try {
-    const resp = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'ahrefsDirectBacklinks', domain }, resolve);
-    });
-    if (resp?.success && Array.isArray(resp.urlFromList)) {
-      const result = {
-        urlFromList: resp.urlFromList,
-        backlinks: resp.backlinks || [],
-        overview: resp.overview || {},
-        fromCache: false
-      };
-
-      // 保存到缓存（如果支持）
-      if (typeof saveAhrefsCacheForDomain === 'function') {
-        try {
-          await saveAhrefsCacheForDomain(domain, result);
-        } catch (cacheErr) {
-          console.warn('[Ahrefs] Failed to save cache:', cacheErr);
+        // 保存到缓存（如果支持）
+        if (typeof saveAhrefsCacheForDomain === 'function') {
+          try {
+            await saveAhrefsCacheForDomain(domain, result);
+          } catch (cacheErr) {
+            console.warn('[Ahrefs] Failed to save cache:', cacheErr);
+          }
         }
+
+        showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
+        return result;
       }
 
-      showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ✓`, 'success');
-      return result;
+      console.error('[Ahrefs] 请求失败', {
+        action: 'ahrefsDirectBacklinks',
+        domain,
+        attempt: attempt + 1,
+        response: resp
+      });
+      showExploreMessage(
+        `[${idx + 1}/${total}] 域名 ${domain} 拉取反链失败: ${resp?.error || '未知错误'}（第 ${attempt + 1} 次尝试）`,
+        'error'
+      );
+    } catch (e) {
+      console.error('[Ahrefs] 请求异常', {
+        action: 'ahrefsDirectBacklinks',
+        domain,
+        attempt: attempt + 1,
+        error: e
+      });
+      showExploreMessage(
+        `[${idx + 1}/${total}] 域名 ${domain} 拉取反链异常: ${e?.message || e}（第 ${attempt + 1} 次尝试）`,
+        'error'
+      );
     }
-    showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链失败: ${resp?.error || '未知错误'}`, 'error');
-    return { urlFromList: [], backlinks: [], overview: {}, fromCache: false };
-  } catch (e) {
-    showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 拉取反链异常: ${e?.message || e}`, 'error');
-    return { urlFromList: [], backlinks: [], overview: {}, fromCache: false };
+
+    if (attempt < maxAttempts - 1) {
+      const delay = baseDelayMs * (attempt + 1);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
+
+  showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 多次尝试仍未成功，跳过该域名`, 'warning');
+  return { urlFromList: [], backlinks: [], overview: {}, fromCache: false };
 }
 
 // ========== 初始化 ==========
@@ -815,14 +855,40 @@ function renderAhrefsOverview(overview, domains) {
     return;
   }
   const domainLabel = domains && domains.length === 1 ? domains[0] : `${domains?.length || '?'} 个域名`;
+  const dr = Number(overview.domainRating ?? 0) || 0;
+  let drClass = 'overview-value-dr-low';
+  if (dr >= 60) drClass = 'overview-value-dr-high';
+  else if (dr >= 40) drClass = 'overview-value-dr-mid';
+  else if (dr >= 20) drClass = 'overview-value-dr-low';
+  else drClass = 'overview-value-dr-very-low';
+
+  const totalBacklinks = Number(overview.backlinks ?? 0) || 0;
+  const dofollowBacklinks = Number(overview.dofollowBacklinks ?? 0) || 0;
+  const totalRefdomains = Number(overview.refdomains ?? 0) || 0;
+  const dofollowRefdomains = Number(overview.dofollowRefdomains ?? 0) || 0;
+
+  const backlinkPct = totalBacklinks > 0 ? Math.round((dofollowBacklinks / totalBacklinks) * 100) : null;
+  const refdomainPct = totalRefdomains > 0 ? Math.round((dofollowRefdomains / totalRefdomains) * 100) : null;
+
   el.innerHTML = `
     <div class="overview-title">${domainLabel} — Ahrefs 概览</div>
     <div class="overview-grid">
-      <div class="overview-item"><span class="overview-label">DR</span><span class="overview-value">${overview.domainRating}</span></div>
-      <div class="overview-item"><span class="overview-label">总反链</span><span class="overview-value">${overview.backlinks ?? '—'}</span></div>
-      <div class="overview-item"><span class="overview-label">引用域名</span><span class="overview-value">${overview.refdomains ?? '—'}</span></div>
-      <div class="overview-item"><span class="overview-label">Dofollow 反链</span><span class="overview-value">${overview.dofollowBacklinks ?? '—'}</span></div>
-      <div class="overview-item"><span class="overview-label">Dofollow 域名</span><span class="overview-value">${overview.dofollowRefdomains ?? '—'}</span></div>
+      <div class="overview-item">
+        <span class="overview-label">DR</span>
+        <span class="overview-value overview-value-dr ${drClass}">${dr}</span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-label">引用域名</span>
+        <span class="overview-value">
+          ${totalRefdomains || '—'}${refdomainPct !== null ? ` , ${refdomainPct}% dofollow` : ''}
+        </span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-label">总反链</span>
+        <span class="overview-value">
+          ${totalBacklinks || '—'}${backlinkPct !== null ? ` , ${backlinkPct}% dofollow` : ''}
+        </span>
+      </div>
     </div>`;
   el.classList.remove('hidden');
 }
@@ -1086,13 +1152,13 @@ function renderExploreUrlList() {
             <span class="anchor-text" title="锚文本: ${escHtml(bl.anchor)}">${escHtml(bl.anchor || '—')}</span>
             <span class="page-title" title="${escHtml(bl.title)}">${escHtml(bl.title || '')}</span>
           </div>
-          <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+          <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">✕</button>
         </div>`;
       }
       return `<div class="explore-url-item ${isSelected ? 'selected' : ''}" data-index="${idx}">
         <input type="checkbox" class="url-checkbox" data-index="${idx}" ${isSelected ? 'checked' : ''}>
         <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
-        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">✕</button>
       </div>`;
     }).join('');
   } else {
@@ -1116,7 +1182,7 @@ function renderExploreUrlList() {
       return `<div class="explore-url-item ${isSelected ? 'selected' : ''}" data-index="${idx}">
         <input type="checkbox" class="url-checkbox" data-index="${idx}" ${isSelected ? 'checked' : ''}>
         <a href="${escHtml(u)}" target="_blank" rel="noopener">${escHtml(u)}</a>
-        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">×</button>
+        <button type="button" class="btn-delete-url" data-index="${idx}" title="删除">✕</button>
       </div>`;
     }).join('');
   }
@@ -1356,9 +1422,6 @@ function renderExploreDugDomainsList() {
   // 更新按钮状态
   if (elements.exploreAddDugToAhrefsBtn) {
     elements.exploreAddDugToAhrefsBtn.disabled = !hasDomains;
-  }
-  if (elements.exploreAddDugToUrlListBtn) {
-    elements.exploreAddDugToUrlListBtn.disabled = !hasDomains;
   }
 
   if (!hasDomains) {
@@ -2574,6 +2637,10 @@ function setupEventListeners() {
         ? storage.blogCommentSiteThreshold
         : 3;
       if (!response?.success) {
+        if (response?.error && response.error.includes('Could not establish connection. Receiving end does not exist.') && tab.id) {
+          console.warn('[Explore] recognizeCommentForm 连接失败，自动刷新当前标签页', { tabId: tab.id, error: response.error });
+          chrome.tabs.reload(tab.id);
+        }
         showExploreMessage('检测失败: ' + (response?.error || '未注入或页面未加载'), 'error');
         return;
       }
@@ -2689,6 +2756,10 @@ function setupEventListeners() {
       showExploreMessage('正在从当前页面提取评论区链接…', 'info');
       const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCommentUrls' }).catch((e) => ({ success: false, error: e?.message || '无法与页面通信' }));
       if (!response || !response.success) {
+        if (response?.error && response.error.includes('Could not establish connection. Receiving end does not exist.') && tab.id) {
+          console.warn('[Explore] extractCommentUrls 连接失败，自动刷新当前标签页', { tabId: tab.id, error: response.error });
+          chrome.tabs.reload(tab.id);
+        }
         showExploreMessage(response?.error || '提取失败（请刷新当前页后重试）', 'error');
         return;
       }
@@ -2741,12 +2812,10 @@ function setupEventListeners() {
     if (exploreAhrefsDomains.length > 0) {
       domains = exploreAhrefsDomains.map(d => d.domain).filter(Boolean);
     } else {
-      // 回退到从输入框获取
+      // 仅从输入框获取；不再从批次 URL 列表推断域名，避免在「Ahrefs 域名列表为空」时隐式加载缓存
       const inputDomain = elements.exploreAhrefsDomain?.value?.trim() || '';
       if (inputDomain) {
         domains = inputDomain.split(/[,，\s]+/).map(d => normalizeDomain(d.trim())).filter(Boolean);
-      } else if (exploreCurrentBatch?.urlList?.length) {
-        domains = dedupeDomains((exploreCurrentBatch.urlList || []).map(u => normalizeDomain(u)));
       }
     }
     if (domains.length === 0) {
@@ -3107,6 +3176,8 @@ function setupEventListeners() {
   elements.exploreWriteFeishuBtn?.addEventListener('click', async () => {
     await writeExploreDiscoveredSitesToFeishu();
   });
+
+  let exploreDugAhrefsIndex = 0;
   elements.exploreAddDugToAhrefsBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
     const domains = exploreCurrentBatch?.dugDomains || [];
@@ -3115,69 +3186,33 @@ function setupEventListeners() {
       return;
     }
     try {
-      showExploreMessage(`开始查询 ${domains.length} 个域名的注册时间，筛选近5年的域名…`, 'info');
-      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge(domains, 5);
-      if (filtered.length === 0) {
-        showExploreMessage(`所有域名都超过5年（截止日期 ${cutoffDate}），无符合条件的域名`, 'warning');
+      if (exploreDugAhrefsIndex >= domains.length) {
+        showExploreMessage('所有挖到的域名都已尝试加入 Ahrefs 输入列表', 'info');
         return;
       }
-      // 保存到 Ahrefs 域名列表并渲染
-      exploreAhrefsDomains = domainDates.filter(d => filtered.includes(d.domain));
+      const domain = domains[exploreDugAhrefsIndex];
+      showExploreMessage(`开始查询域名 ${domain} 的注册时间，筛选近5年的域名…`, 'info');
+      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge([domain], 5);
+      if (filtered.length === 0) {
+        showExploreMessage(`域名 ${domain} 超过5年（截止日期 ${cutoffDate}），未加入 Ahrefs 列表`, 'warning');
+        exploreDugAhrefsIndex += 1;
+        return;
+      }
+      const toAdd = domainDates.filter(d => filtered.includes(d.domain));
+      exploreAhrefsDomains = [...(exploreAhrefsDomains || []), ...toAdd];
       renderExploreAhrefsDomainList();
-      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，已添加到列表`, 'success');
-      console.log('[Explore] WHOIS 筛选结果:', { filtered, domainDates, cutoffDate });
+      exploreDugAhrefsIndex += 1;
+      showExploreMessage(`域名 ${domain} 已通过近5年筛选，已加入 Ahrefs 域名列表`, 'success');
+      console.log('[Explore] WHOIS 筛选结果(单个):', { filtered, domainDates, cutoffDate });
     } catch (e) {
       showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');
     }
   });
-  elements.exploreAddDugToUrlListBtn?.addEventListener('click', async () => {
-    if (currentMode !== 'explore') return;
-    const domains = exploreCurrentBatch?.dugDomains || [];
-    if (domains.length === 0) {
-      showExploreMessage('暂无挖到的域名', 'warning');
-      return;
-    }
-    try {
-      showExploreMessage(`开始查询 ${domains.length} 个域名的注册时间，筛选近5年的域名…`, 'info');
-      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge(domains, 5);
-      if (filtered.length === 0) {
-        showExploreMessage(`所有域名都超过5年（截止日期 ${cutoffDate}），无符合条件的域名`, 'warning');
-        return;
-      }
-      // 将域名转换为 URL 并加入待检测列表
-      const urls = filtered.map(d => `https://${d}`);
-      if (typeof dedupeUrls !== 'function') {
-        showExploreMessage('dedupeUrls 函数不可用', 'error');
-        return;
-      }
-      let batch = exploreCurrentBatch;
-      if (!batch) {
-        if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function') {
-          showExploreMessage('批次创建函数不可用', 'error');
-          return;
-        }
-        const batchId = await generateBatchId();
-        batch = createBatch(batchId, { type: 'dug_domains', sourceUrl: 'comment_extract' });
-        exploreCurrentBatch = batch;
-        if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
-        if (elements.exploreBatchStatus) {
-          elements.exploreBatchStatus.textContent = batch.status + ' · ' + (batch.phase || 'idle');
-          elements.exploreBatchStatus.classList.remove('hidden');
-        }
-        updateExploreControls(batch.status);
-      }
-      const prevLen = (batch.urlList || []).length;
-      const merged = dedupeUrls([...(batch.urlList || []), ...urls]);
-      batch.urlList = merged;
-      batch.updatedAt = new Date().toISOString();
-      await saveExploreBatchWithExcludeFilter(batch);
-      if (exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) exploreCurrentBatch = batch;
-      renderExploreUrlList();
-      const addedCount = merged.length - prevLen;
-      showExploreMessage(`已筛选出 ${filtered.length}/${domains.length} 个近5年域名，新增 ${addedCount} 条至待检测列表（共 ${merged.length} 条）`, 'success');
-    } catch (e) {
-      showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');
-    }
+
+  elements.exploreClearAhrefsDomainListBtn?.addEventListener('click', () => {
+    exploreAhrefsDomains = [];
+    renderExploreAhrefsDomainList();
+    showExploreMessage('Ahrefs 域名列表已清空', 'success');
   });
   elements.exploreExcludeFromBlogSites?.addEventListener('change', async () => {
     const checked = !!elements.exploreExcludeFromBlogSites?.checked;

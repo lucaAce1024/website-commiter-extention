@@ -143,6 +143,12 @@ body {
   margin-bottom: 8px;
 }
 
+.section-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .label {
   font-size: 12px;
   font-weight: 500;
@@ -1014,6 +1020,7 @@ body {
   flex-wrap: wrap;
   margin-top: 8px;
   align-items: center;
+  justify-content: flex-end;
 }
 /* 嵌入式子模块样式 */
 .explore-embedded-section {
@@ -1109,6 +1116,32 @@ body {
 .ahrefs-overview .overview-value {
   font-weight: 600;
   color: #333;
+}
+
+/* DR 颜色标签 */
+.overview-value-dr {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.overview-value-dr-high {
+  background: #e8f5e9;
+  color: #1b5e20;
+}
+.overview-value-dr-mid {
+  background: #fff8e1;
+  color: #f57f17;
+}
+.overview-value-dr-low {
+  background: #fff3e0;
+  color: #e65100;
+}
+.overview-value-dr-very-low {
+  background: #ffebee;
+  color: #c62828;
 }
 
 .label-action {
@@ -1291,25 +1324,23 @@ body {
 
 /* URL 列表项删除按钮 - 美化版本 */
 .explore-url-item .btn-delete-url {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
+  margin-left: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
   padding: 0;
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: transparent;
+  border: 1px solid #fecaca;
   border-radius: 6px;
-  color: #999;
+  color: #dc2626;
   cursor: pointer;
   opacity: 0;
   transition: all 0.2s ease;
-  font-size: 16px;
-  font-weight: 300;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .explore-url-item:hover .btn-delete-url {
@@ -1320,14 +1351,14 @@ body {
   background: #fee2e2;
   border-color: #fca5a5;
   color: #dc2626;
-  transform: translateY(-50%) scale(1.05);
+  transform: scale(1.05);
   box-shadow: 0 2px 4px rgba(220, 38, 38, 0.15);
 }
 
 .explore-url-item .btn-delete-url:active {
   background: #fecaca;
   color: #b91c1c;
-  transform: translateY(-50%) scale(0.95);
+  transform: scale(0.95);
 }
 
 /* Rich 样式 - 详情视图 */
@@ -1371,6 +1402,14 @@ body {
 .explore-ahrefs-domain-list {
   max-height: 200px;
   margin-top: 8px;
+}
+
+.explore-ahrefs-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
 }
 
 .domain-date-label {

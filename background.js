@@ -194,12 +194,36 @@ async function ahrefsSaveToCache(domain, urlFromList, backlinks, overview) {
   try {
     const stored = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
     const cache = stored[AHREFS_CACHE_KEY] || {};
+
+    // 每个域名的 urlFromList / backlinks 做上限裁剪，避免单域缓存过大
+    const MAX_URLS_PER_DOMAIN = 1000;
+    const MAX_BACKLINKS_PER_DOMAIN = 1000;
+    const safeUrlFromList = Array.isArray(urlFromList)
+      ? urlFromList.slice(0, MAX_URLS_PER_DOMAIN)
+      : [];
+    const safeBacklinks = Array.isArray(backlinks)
+      ? backlinks.slice(0, MAX_BACKLINKS_PER_DOMAIN)
+      : [];
+
     cache[normalized] = {
-      urlFromList,
-      backlinks,
+      urlFromList: safeUrlFromList,
+      backlinks: safeBacklinks,
       overview,
       timestamp: Date.now()
     };
+
+    // 整体缓存也做滚动清理：只保留最近 20 个域名
+    const entries = Object.entries(cache);
+    if (entries.length > 20) {
+      entries.sort(([, a], [, b]) => (b.timestamp || 0) - (a.timestamp || 0));
+      const keepKeys = new Set(entries.slice(0, 20).map(([k]) => k));
+      for (const key of Object.keys(cache)) {
+        if (!keepKeys.has(key)) {
+          delete cache[key];
+        }
+      }
+    }
+
     await chrome.storage.local.set({ [AHREFS_CACHE_KEY]: cache });
     console.log('[Ahrefs Cache] 已缓存:', normalized, '反链数:', urlFromList?.length);
   } catch (e) {
