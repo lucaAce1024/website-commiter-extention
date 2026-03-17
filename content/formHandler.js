@@ -173,7 +173,17 @@ function isBlogCommentSite(url, html, threshold) {
     }
   } catch (_) {}
 
+  // 排除关键词检测：如果页面包含反垃圾评论服务关键词，直接判定为不可评论
+  const SPAM_SERVICE_KEYWORDS = ['Akismet', 'CleanTalk', 'OOPSpam'];
   const bodyOnly = stripNonBodyForCommentDetection(html);
+  for (const keyword of SPAM_SERVICE_KEYWORDS) {
+    if (bodyOnly.includes(keyword)) {
+      console.log(TAG + ' [Blog评论站] 检测到反垃圾服务关键词 "' + keyword + '"，直接判定为不可评论');
+      out.score = 0;
+      out.isBlogCommentSite = false;
+      return out;
+    }
+  }
 
   const urlHasCommentKeyword = /\/(comment|comments|评论|留言|讨论|反馈|评论区)/.test(url) ||
     /unapproved=/.test(url) ||
@@ -349,11 +359,26 @@ function isBlogCommentSite(url, html, threshold) {
 }
 
 /**
+ * 滚动页面到最底部，触发懒加载内容
+ * @param {number} waitMs 滚动到底部后等待的毫秒数
+ * @returns {Promise<void>}
+ */
+async function scrollToBottomAndWait(waitMs = 500) {
+  // 滚动到页面最底部
+  window.scrollTo(0, document.body.scrollHeight);
+  // 等待指定时间
+  await new Promise(resolve => setTimeout(resolve, waitMs));
+}
+
+/**
  * 从当前页评论区提取评论者留下的网站 URL（外链采集 FR-2）
- * 先匹配评论区，再匹配论坛/主内容区，最后回退到 body（大页限制处理数量）。
+ * 先滚动页面到底部触发懒加载，再匹配评论区，再匹配论坛/主内容区，最后回退到 body（大页限制处理数量）。
  * @returns {Promise<string[]>} 原始 href 列表，由 sidepanel 做标准化与去重
  */
-function extractCommentUrlsFromPage() {
+async function extractCommentUrlsFromPage() {
+  // 先滚动到页面底部，等待懒加载内容
+  await scrollToBottomAndWait(500);
+
   const pageHost = window.location.hostname.toLowerCase();
   const seen = new Set();
   const out = [];
@@ -403,7 +428,7 @@ function extractCommentUrlsFromPage() {
   }
   const rootLabel = root.id ? `#${root.id}` : (root.className && typeof root.className === 'string' ? root.className.split(/\s+/)[0] : root.tagName || 'body');
   console.log(TAG, 'extractCommentUrls:', { root: rootLabel, scanned: links.length, extracted: out.length });
-  return Promise.resolve(out);
+  return out;
 }
 
 // Listen for messages from popup/background

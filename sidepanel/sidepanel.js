@@ -2944,9 +2944,21 @@ function setupEventListeners() {
 
   async function runTraverseLoopOnly(currentBatchId) {
     const TRAVERSE_DELAY_MS = 800;
+    const DR_MIN_THRESHOLD = 20; // DR 权重阈值，低于此值直接跳过
     let batch = await loadBatch(currentBatchId);
     if (!batch || !batch.traverseBacklinkList || batch.traverseBacklinkList.length === 0) return;
     const traverseList = batch.traverseBacklinkList;
+
+    // 构建 URL -> DR 映射表（用于 DR 过滤）
+    const backlinkDetails = batch.backlinkDetails || [];
+    const urlToDrMap = new Map();
+    for (const detail of backlinkDetails) {
+      if (detail.urlFrom) {
+        const normUrl = normalizeUrl(detail.urlFrom);
+        urlToDrMap.set(normUrl, detail.domainRating || 0);
+      }
+    }
+
     for (let i = batch.lastProcessedIndex || 0; i < traverseList.length; i++) {
       const loaded = await loadBatch(currentBatchId);
       if (loaded && (loaded.status === 'paused' || loaded.status === 'stopped')) {
@@ -2958,6 +2970,20 @@ function setupEventListeners() {
       if (loaded) batch = loaded;
       const url = traverseList[i];
       const urlNorm = normalizeUrl(url);
+
+      // DR 过滤：如果 DR < 20，跳过检测，不写入飞书
+      const urlDr = urlToDrMap.get(urlNorm) ?? 0;
+      if (urlDr < DR_MIN_THRESHOLD) {
+        console.log(`[Traverse] 跳过 DR=${urlDr} < ${DR_MIN_THRESHOLD}: ${urlNorm}`);
+        batch.urlProgress = batch.urlProgress || {};
+        batch.urlProgress[urlNorm] = { commentable: false, blogCommentScore: 0, requiresLogin: false, skipped: true, skipReason: `DR ${urlDr} < ${DR_MIN_THRESHOLD}` };
+        batch.lastProcessedIndex = i + 1;
+        batch.updatedAt = new Date().toISOString();
+        await saveExploreBatchWithExcludeFilter(batch);
+        if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
+        continue;
+      }
+
       showExploreMessage(`检测可评论 (${i + 1}/${traverseList.length}): ${urlNorm.slice(0, 50)}…`, 'info');
       let tab;
       try {
