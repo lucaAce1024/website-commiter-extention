@@ -3027,24 +3027,38 @@ function setupEventListeners() {
       const commentable = response?.success && response?.result?.isBlogCommentSite === true;
       const blogCommentScore = response?.result?.blogCommentScore;
       const requiresLogin = response?.result?.requiresLogin === true;
+      // TODO: 导航站检测待实现，目前默认为 false
+      const isNavigationSite = false;
+
       batch.urlProgress = batch.urlProgress || {};
-      batch.urlProgress[urlNorm] = { commentable, blogCommentScore, requiresLogin };
+      batch.urlProgress[urlNorm] = { commentable, blogCommentScore, requiresLogin, isNavigationSite };
+
+      // 回写标记到第一个飞书表格（Ahrefs 反链表）
+      if (typeof updateBacklinkFlagsInFeishu === 'function') {
+        try {
+          const flagsResult = await updateBacklinkFlagsInFeishu(urlNorm, {
+            isBlogComment: commentable,
+            requiresLogin: requiresLogin,
+            isNavigationSite: isNavigationSite,
+            blogCommentScore: blogCommentScore
+          });
+          if (!flagsResult.ok && !flagsResult.skipped && flagsResult.error) {
+            console.warn('[Traverse] 回写飞书标记失败:', flagsResult.error);
+          } else if (flagsResult.updated) {
+            console.log('[Traverse] 已回写飞书标记:', urlNorm);
+          }
+        } catch (e) {
+          console.warn('[Traverse] 回写飞书标记异常:', e);
+        }
+      }
+
+      // 仍然保留 discoveredSites 用于本地展示
       if (commentable) {
         batch.discoveredSites = batch.discoveredSites || [];
         const exists = batch.discoveredSites.some((s) => normalizeUrl((s && s.url) || s) === urlNorm);
         if (!exists) {
-          const newSite = { url: urlNorm, discoveredAt: new Date().toISOString(), blogCommentScore, requiresLogin };
+          const newSite = { url: urlNorm, discoveredAt: new Date().toISOString(), blogCommentScore, requiresLogin, isNavigationSite };
           batch.discoveredSites.push(newSite);
-          if (typeof appendDiscoveredSitesToFeishu === 'function') {
-            try {
-              const feishuResult = await appendDiscoveredSitesToFeishu(batch, [newSite]);
-              if (!feishuResult.ok && !feishuResult.skipped && feishuResult.error) {
-                showExploreMessage('飞书写入失败: ' + feishuResult.error, 'error');
-              }
-            } catch (e) {
-              showExploreMessage('飞书写入异常: ' + (e && e.message ? e.message : String(e)), 'error');
-            }
-          }
         }
       }
       batch.lastProcessedIndex = i + 1;
@@ -3757,6 +3771,128 @@ async function appendDiscoveredSitesToFeishu(batch, sitesToAppend) {
     return { ok: true, written: rows.length };
   } catch (e) {
     return { ok: false, written: 0, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+/**
+ * 将检测结果的标记回写到第一个 Ahrefs 反链飞书表格中
+ * 通过 URL 匹配找到对应行，更新三个标记字段：
+ * - 是否为 Blog Comment 评论外链
+ * - 是否需要登录
+ * - 是否是导航站
+ * @param {string} url - 要标记的 URL
+ * @param {object} flags - 标记值 { isBlogComment: boolean, requiresLogin: boolean, isNavigationSite: boolean }
+ * @returns {Promise<{ok:boolean, updated:boolean, error?:string, skipped?:boolean}>}
+ */
+async function updateBacklinkFlagsInFeishu(url, flags) {
+  if (!url) return { ok: false, updated: false, error: 'URL 为空' };
+
+  const result = await chrome.storage.local.get(['feishuConfig']);
+  const config = result.feishuConfig || {};
+
+  // 检查必要配置
+  if (!config.appId || !config.appSecret) {
+    return { ok: false, updated: false, skipped: true, error: '请先配置飞书应用凭证' };
+  }
+  if (!config.ahrefsSheetToken || !config.ahrefsSheetId) {
+    return { ok: false, updated: false, skipped: true, error: '请先配置「外链采集 - Ahrefs 反链」表格' };
+  }
+
+  // 获取标记列配置，默认为 K、L、M 列，blogcommentScore 在 N 列
+  const blogCommentCol = config.ahrefsBlogCommentCol || 'K';
+  const requiresLoginCol = config.ahrefsRequiresLoginCol || 'L';
+  const navigationSiteCol = config.ahrefsNavigationSiteCol || 'M';
+  const blogCommentScoreCol = config.ahrefsBlogCommentScoreCol || 'N';
+
+  try {
+    const accessToken = await getFeishuAccessToken();
+    const spreadsheetToken = config.ahrefsSheetToken;
+    const sheetId = config.ahrefsSheetId;
+
+    // 标准化 URL 用于匹配
+    const normalizedUrl = typeof normalizeUrl === 'function' ? normalizeUrl(url) : url;
+
+    // 1. 使用 Find API 查找 URL 对应的行
+    const findResponse = await fetch(
+      `https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/${sheetId}/find`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          find_condition: {
+            range: `${sheetId}!A:A`,
+            match_case: false,
+            match_entire_cell: true,
+            search_by_regex: false
+          },
+          find: normalizedUrl
+        })
+      }
+    );
+
+    const findData = await findResponse.json();
+
+    if (findData.code !== 0) {
+      console.warn('[Ahrefs] 查找 URL 失败:', findData.msg);
+      return { ok: false, updated: false, error: findData.msg || '查找失败' };
+    }
+
+    const matchedCells = findData.data?.find_result?.matched_cells || [];
+
+    if (matchedCells.length === 0) {
+      // URL 不在表格中，不报错但返回未更新
+      console.log('[Ahrefs] URL 不在飞书表格中:', normalizedUrl);
+      return { ok: true, updated: false, skipped: true };
+    }
+
+    // 提取行号
+    const rowNumbers = matchedCells.map(cell => parseInt(cell.replace(/^[A-Z]+/, ''), 10));
+
+    // 2. 更新每个匹配行的标记列
+    const blogCommentValue = flags.isBlogComment === true ? '是' : '否';
+    const requiresLoginValue = flags.requiresLogin === true ? '是' : '否';
+    const navigationSiteValue = flags.isNavigationSite === true ? '是' : '否';
+    const blogCommentScoreValue = flags.blogCommentScore != null ? String(flags.blogCommentScore) : '';
+
+    let updatedCount = 0;
+
+    for (const rowNum of rowNumbers) {
+      // 更新四个标记列：K(是否评论)、L(是否登录)、M(是否导航站)、N(评分)
+      const updateResponse = await fetch(
+        `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
+        {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            valueRange: {
+              range: `${sheetId}!${blogCommentCol}${rowNum}:${blogCommentScoreCol}${rowNum}`,
+              values: [[blogCommentValue, requiresLoginValue, navigationSiteValue, blogCommentScoreValue]]
+            }
+          })
+        }
+      );
+
+      const updateData = await updateResponse.json();
+
+      if (updateData.code === 0) {
+        updatedCount++;
+      } else {
+        console.warn('[Ahrefs] 更新行失败:', rowNum, updateData.msg);
+      }
+    }
+
+    console.log(`[Ahrefs] 成功更新 ${updatedCount} 行标记:`, normalizedUrl);
+    return { ok: true, updated: updatedCount > 0, updatedCount };
+
+  } catch (e) {
+    console.error('[Ahrefs] 更新飞书标记异常:', e);
+    return { ok: false, updated: false, error: e && e.message ? e.message : String(e) };
   }
 }
 

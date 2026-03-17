@@ -359,6 +359,145 @@ function isBlogCommentSite(url, html, threshold) {
 }
 
 /**
+ * 检测当前页面是否为导航站（目录站/书签站/资源站）
+ * @param {string} url - 页面 URL
+ * @param {string} html - 页面 HTML 内容
+ * @returns {boolean} 是否为导航站
+ */
+function isNavigationSite(url, html) {
+  if (!url || !html) return false;
+
+  // ==================== 强判定规则（命中即返回 true） ====================
+
+  // 强判定 1：URL 路径包含 /tool/ /tools/ /directory/ /directories/（完整路径片段）
+  try {
+    const urlPath = new URL(url).pathname || '';
+    // 正则：匹配完整路径片段（以 / 开头和结尾，或处于 URL 末尾）
+    const navPathPattern = /(?:^|\/)(?:tool|tools|directory|directories)(?:\/|$)/i;
+    if (navPathPattern.test(urlPath)) {
+      console.log(TAG + ' [导航站检测] 强判定命中：URL路径包含 /tool|tools|directory|directories/ → ' + urlPath);
+      return true;
+    }
+  } catch (e) {}
+
+  // 强判定 2：Navbar 包含 Submit 按钮（多语言）
+  const navbarSelectors = ['nav', 'header', '.navbar', '#navbar', '[role="navigation"]'];
+  const submitKeywords = [
+    // 英语
+    'submit', 'add url', 'add site', 'suggest', 'submit site', 'submit url', 'add your site',
+    // 中文
+    '提交', '收录', '提交网站', '添加网址', '网站提交', '网址收录',
+    // 德语
+    'einreichen', 'hinzufügen', 'vorschlagen',
+    // 法语
+    'soumettre', 'ajouter', 'proposer',
+    // 西班牙语
+    'enviar', 'añadir', 'sugerir',
+    // 意大利语
+    'invia', 'aggiungi', 'suggerisci',
+    // 日语
+    '送信', '追加', '提案',
+    // 韩语
+    '제출', '추가', '제안'
+  ];
+
+  for (const selector of navbarSelectors) {
+    try {
+      const navElements = document.querySelectorAll(selector);
+      for (const navEl of navElements) {
+        const navText = (navEl.innerText || '').toLowerCase();
+        for (const keyword of submitKeywords) {
+          if (navText.includes(keyword.toLowerCase())) {
+            console.log(TAG + ' [导航站检测] 强判定命中：Navbar包含Submit按钮"' + keyword + '" → 是导航站');
+            return true;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // ==================== 计分规则（未命中强判定时使用） ====================
+
+  // 导航站常见关键词（域名、标题、描述）
+  const NAV_KEYWORDS = [
+    'directory', 'directories', 'link directory', 'web directory',
+    'bookmark', 'bookmarks', 'site list', 'website list', 'useful links',
+    '导航', '网址', '网站目录', '网址导航', '网址大全', '链接导航', '资源站',
+    'best sites', 'top sites', 'recommended sites', 'cool sites',
+    'submit site', 'add site', 'add url', 'submit url', 'suggest site',
+    'web directory', 'internet directory', 'url directory',
+    '资源导航', '网站收录', '提交网站'
+  ];
+
+  // URL 路径特征（计分）
+  const urlPathLc = url.toLowerCase();
+  const urlHasNavPath = /\/(?:directory|directories|links|resources|bookmarks|submit|add-url|add-site|导航|网址)/.test(urlPathLc);
+
+  // 提取 title 和 description
+  let title = '';
+  let description = '';
+  if (html && typeof html === 'string') {
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    title = titleMatch ? titleMatch[1] : '';
+    const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["']/i);
+    description = descMatch ? descMatch[1] : '';
+  }
+
+  // 计分
+  let score = 0;
+
+  // URL 路径命中
+  if (urlHasNavPath) score += 2;
+
+  // 标题命中导航站关键词
+  const titleLc = title.toLowerCase();
+  for (const kw of NAV_KEYWORDS) {
+    if (titleLc.includes(kw.toLowerCase())) {
+      score += 3;
+      break;
+    }
+  }
+
+  // 描述命中导航站关键词
+  const descLc = description.toLowerCase();
+  for (const kw of NAV_KEYWORDS) {
+    if (descLc.includes(kw.toLowerCase())) {
+      score += 2;
+      break;
+    }
+  }
+
+  // 页面 body 包含导航站关键词
+  const bodyOnly = stripNonBodyForCommentDetection(html);
+  const bodyLc = bodyOnly.toLowerCase();
+  let keywordHits = 0;
+  for (const kw of NAV_KEYWORDS) {
+    if (bodyLc.includes(kw.toLowerCase())) {
+      keywordHits++;
+    }
+  }
+  if (keywordHits >= 3) score += 2;
+  else if (keywordHits >= 1) score += 1;
+
+  // 有"提交网站"表单
+  if (/<form[^>]*>[\s\S]*?(?:submit|add|suggest|提交|收录)[\s\S]*?(?:site|url|link|网站|网址)[\s\S]*?<\/form>/i.test(html)) {
+    score += 3;
+  }
+
+  // 链接密集：链接数 > 100（导航站特征）
+  const linkCount = (html.match(/<a\s+/gi) || []).length;
+  if (linkCount > 150) score += 2;
+  else if (linkCount > 80) score += 1;
+
+  // 阈值：≥ 5 分判定为导航站
+  const isNav = score >= 5;
+  console.log(TAG + ' [导航站检测] URL=' + url.slice(0, 60) + ' | 得分=' + score + ' | 结果=' + (isNav ? '是' : '否'));
+
+  return isNav;
+}
+
+/**
  * 滚动页面到最底部，自动检测懒加载是否完成
  * @param {number} stabilityCheckMs 检测页面高度稳定的间隔（毫秒）
  * @param {number} maxWaitMs 最大等待时间（毫秒），防止无限等待
@@ -506,16 +645,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const url = window.location.href;
             const html = document.documentElement.outerHTML;
             const requiresLogin = detectRequiresLoginToComment(html);
+            const isNav = isNavigationSite(url, html);
             return new Promise(function (resolve) {
               chrome.storage.local.get(['blogCommentSiteThreshold'], function (storageResult) {
                 const threshold = storageResult.blogCommentSiteThreshold;
                 const effectiveThreshold = typeof threshold === 'number' && threshold >= 0 ? threshold : BLOG_COMMENT_SITE_THRESHOLD_DEFAULT;
                 const blogResult = isBlogCommentSite(url, html, effectiveThreshold);
-                resolve({ blogResult, requiresLogin });
+                resolve({ blogResult, requiresLogin, isNavigationSite: isNav });
               });
             }).then(function (payload) {
               return recognizeCommentForm(request.useLlm).then(function (result) {
-                return { blogResult: payload.blogResult, requiresLogin: payload.requiresLogin, result };
+                return { blogResult: payload.blogResult, requiresLogin: payload.requiresLogin, isNavigationSite: payload.isNavigationSite, result };
               });
             });
           })
@@ -526,7 +666,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 result: Object.assign({}, data.result, {
                   isBlogCommentSite: data.blogResult.isBlogCommentSite,
                   blogCommentScore: data.blogResult.score,
-                  requiresLogin: data.requiresLogin
+                  requiresLogin: data.requiresLogin,
+                  isNavigationSite: data.isNavigationSite
                 })
               });
             } catch (e) {
