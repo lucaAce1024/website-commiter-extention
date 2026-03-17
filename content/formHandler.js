@@ -359,15 +359,43 @@ function isBlogCommentSite(url, html, threshold) {
 }
 
 /**
- * 滚动页面到最底部，触发懒加载内容
- * @param {number} waitMs 滚动到底部后等待的毫秒数
+ * 滚动页面到最底部，自动检测懒加载是否完成
+ * @param {number} stabilityCheckMs 检测页面高度稳定的间隔（毫秒）
+ * @param {number} maxWaitMs 最大等待时间（毫秒），防止无限等待
  * @returns {Promise<void>}
  */
-async function scrollToBottomAndWait(waitMs = 500) {
-  // 滚动到页面最底部
-  window.scrollTo(0, document.body.scrollHeight);
-  // 等待指定时间
-  await new Promise(resolve => setTimeout(resolve, waitMs));
+async function scrollToBottomAndWait(stabilityCheckMs = 200, maxWaitMs = 5000) {
+  const startTime = Date.now();
+
+  const doScroll = () => window.scrollTo(0, document.body.scrollHeight);
+
+  // 第一次滚动到底部
+  doScroll();
+  // 等待一小段时间
+  await new Promise(resolve => setTimeout(resolve, 100));
+  // 第二次滚动（确保触发懒加载）
+  doScroll();
+
+  let lastHeight = document.body.scrollHeight;
+
+  while (Date.now() - startTime < maxWaitMs) {
+    // 等待一个检测周期
+    await new Promise(resolve => setTimeout(resolve, stabilityCheckMs));
+
+    const currentHeight = document.body.scrollHeight;
+
+    // 如果页面高度稳定（没有新内容加载）
+    if (currentHeight === lastHeight) {
+      break;
+    }
+
+    // 高度有变化，说明有新内容加载，继续滚动
+    lastHeight = currentHeight;
+    doScroll();
+  }
+
+  // 最终再滚动一次确保到底
+  doScroll();
 }
 
 /**
@@ -376,8 +404,8 @@ async function scrollToBottomAndWait(waitMs = 500) {
  * @returns {Promise<string[]>} 原始 href 列表，由 sidepanel 做标准化与去重
  */
 async function extractCommentUrlsFromPage() {
-  // 先滚动到页面底部，等待懒加载内容
-  await scrollToBottomAndWait(500);
+  // 先滚动到页面底部，自动检测懒加载完成
+  await scrollToBottomAndWait();
 
   const pageHost = window.location.hostname.toLowerCase();
   const seen = new Set();
