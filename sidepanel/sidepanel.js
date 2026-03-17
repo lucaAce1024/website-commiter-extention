@@ -3805,16 +3805,16 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
   const ovDofollowRefdomains = overview && overview.dofollowRefdomains !== undefined ? String(overview.dofollowRefdomains) : '';
 
   const rows = backlinks.map(b => [
-    domain || '',
-    ovDr,
-    ovRefdomains,
-    ovDofollowRefdomains,
     b.urlFrom || '',
     b.urlTo || '',
     b.anchor || '',
     b.domainRating?.toString() || '',
     b.title || '',
-    now
+    now,
+    domain || '',
+    ovDr,
+    ovRefdomains,
+    ovDofollowRefdomains
   ]);
 
     // 获取当前行数
@@ -3848,8 +3848,8 @@ async function writeAhrefsBacklinksToFeishu(domain, backlinks, overview) {
       firstRow: rows[0]
     });
 
-    // 写入数据
-    const range = `${sheetId}!A${startRow}:G${startRow + rows.length - 1}`;
+    // 写入数据（A-J 共10列）
+    const range = `${sheetId}!A${startRow}:J${startRow + rows.length - 1}`;
     console.log('[Ahrefs] 写入范围:', range);
 
     const response = await fetch(

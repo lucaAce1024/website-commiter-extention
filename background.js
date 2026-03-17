@@ -295,7 +295,7 @@ async function ahrefsGetSignature(token, domain) {
     signature: signedInput.signature,
     validUntil: signedInput.input?.validUntil,
     domain,
-    overview: data[1]
+    overview: overview  // 修复：返回 data[1].data 而不是 data[1]
   };
 }
 
@@ -369,7 +369,7 @@ async function handleAhrefsDirectBacklinks(domain, forceRefresh = false) {
   ahrefsSendProgress('步骤 3/3: 正在获取反链数据…');
   const backlinks = await ahrefsGetBacklinks(sigData);
 
-  const overview = sigData.overview?.data || {};
+  const overview = sigData.overview || {};
   ahrefsSendProgress(`成功获取 ${backlinks.length} 条反链 (DR ${overview.domainRating || '?'})`, 'success');
   console.log('[Ahrefs API] 完成:', domain, '反链', backlinks.length, 'DR', overview.domainRating);
 
