@@ -264,7 +264,7 @@ async function runAhrefsFetchingLoop(domains, startIndex = 0) {
       if (hasFeishuConfig && result.backlinks.length > 0) {
         showExploreMessage(`[${i + 1}/${domains.length}] 正在写入 ${result.backlinks.length} 条反链到飞书…`, 'info');
         try {
-          await writeBacklinksToFeishu(d, result.backlinks, exploreAhrefsFeishuConfig);
+          await writeBacklinksToFeishu(d, result.backlinks, result.overview, exploreAhrefsFeishuConfig);
           showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，已同步飞书`, 'success');
         } catch (feishuErr) {
           console.warn('[Ahrefs] 飞书写入失败:', feishuErr);
@@ -2563,6 +2563,11 @@ function setupEventListeners() {
       if (exploreCurrentBatch && typeof deleteBatch === 'function') {
         await deleteBatch(exploreCurrentBatch.batchId);
       }
+      // 清除 Ahrefs 域名缓存
+      if (typeof clearAllAhrefsCache === 'function') {
+        await clearAllAhrefsCache();
+        console.log('[Explore] Ahrefs 域名缓存已清除');
+      }
       exploreCurrentBatch = null;
       // 重置 UI
       if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
@@ -2913,7 +2918,7 @@ function setupEventListeners() {
           if (hasFeishuConfig && result.backlinks.length > 0) {
             showExploreMessage(`[${i + 1}/${domains.length}] 正在写入 ${result.backlinks.length} 条反链到飞书…`, 'info');
             try {
-              await writeBacklinksToFeishu(d, result.backlinks, feishuConfig);
+              await writeBacklinksToFeishu(d, result.backlinks, result.overview, feishuConfig);
               showExploreMessage(`[${i + 1}/${domains.length}] ${d} 完成：${addedUrls.length} 条新反链，已同步飞书`, 'success');
             } catch (feishuErr) {
               console.warn('[Ahrefs] 飞书写入失败:', feishuErr);
@@ -3558,9 +3563,10 @@ function formatDateTime(date) {
  * 写入 Ahrefs 反链数据到飞书表格（增量写入）
  * @param {string} queryDomain - 查询的种子域名
  * @param {Array} backlinks - 反链数据数组
+ * @param {object} overview - 域名概览数据（domainRating, refdomains, dofollowRefdomains）
  * @param {object} config - 飞书配置对象
  */
-async function writeBacklinksToFeishu(queryDomain, backlinks, config) {
+async function writeBacklinksToFeishu(queryDomain, backlinks, overview, config) {
   if (!backlinks || backlinks.length === 0) {
     return;
   }
@@ -3570,16 +3576,19 @@ async function writeBacklinksToFeishu(queryDomain, backlinks, config) {
 
   const now = new Date().toISOString();
 
-  // 构建行数据：查询域名、反链 URL、目标 URL、锚文本、来源 DR、来源标题、拉取时间
+  // 构建行数据：反链 URL、目标 URL、锚文本、来源 DR、来源标题、拉取时间、查询域名、域名 DR、引用域名数、Dofollow 域名数
   const rows = backlinks.map(bl => {
     return [
-      queryDomain || '',
-      bl.urlFrom || '',
-      bl.urlTo || '',
-      bl.anchor || '',
-      bl.domainRating || '',
-      bl.title || '',
-      now
+      bl.urlFrom || '',                              // 反链 URL
+      bl.urlTo || '',                                // 目标 URL
+      bl.anchor || '',                               // 锚文本
+      bl.domainRating || '',                         // 来源 DR
+      bl.title || '',                                // 来源标题
+      now,                                           // 拉取时间
+      queryDomain || '',                             // 查询域名
+      overview?.domainRating || '',                  // 域名 DR
+      overview?.refdomains || '',                    // 引用域名数
+      overview?.dofollowRefdomains || ''             // Dofollow 域名数
     ];
   });
 

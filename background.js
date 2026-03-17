@@ -274,23 +274,38 @@ async function ahrefsSolveTurnstile(capsolverKey, domain) {
 
 async function ahrefsGetSignature(token, domain) {
   const reqBody = { captcha: token, mode: 'subdomains', url: domain };
+  console.log('[Ahrefs API] ========== Step 2 请求明细 ==========');
+  console.log('[Ahrefs API] 请求 URL:', AHREFS_OVERVIEW_URL);
+  console.log('[Ahrefs API] 请求 Body:', JSON.stringify(reqBody, null, 2));
   const res = await fetch(AHREFS_OVERVIEW_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(reqBody)
   });
   const resText = await res.text();
+  console.log('[Ahrefs API] 响应状态:', res.status);
+  console.log('[Ahrefs API] 响应原文 (前 2000 字符):', resText.slice(0, 2000));
   if (!res.ok) {
     console.error('[Ahrefs API] Step 2 失败:', res.status, resText.slice(0, 500));
     throw new Error(`stGetFreeBacklinksOverview 失败: HTTP ${res.status} — ${resText.slice(0, 500)}`);
   }
   const data = JSON.parse(resText);
+  console.log('[Ahrefs API] 响应 JSON 结构:');
+  console.log('  - data 类型:', Array.isArray(data) ? `Array[${data.length}]` : typeof data);
+  if (Array.isArray(data)) {
+    data.forEach((item, idx) => {
+      console.log(`  - data[${idx}] keys:`, item ? Object.keys(item) : 'null');
+    });
+  }
+  console.log('[Ahrefs API] data[1] 完整内容:', JSON.stringify(data[1], null, 2));
   if (!Array.isArray(data) || data.length < 2 || !data[1]?.signedInput) {
     throw new Error('stGetFreeBacklinksOverview 响应格式异常: ' + resText.slice(0, 500));
   }
   const overview = data[1].data || {};
   const signedInput = data[1].signedInput;
-  console.log('[Ahrefs API] Step 2 完成, DR:', overview.domainRating, '总反链:', overview.backlinks, '引用域名:', overview.refdomains);
+  console.log('[Ahrefs API] ========== Step 2 解析结果 ==========');
+  console.log('[Ahrefs API] overview 对象:', JSON.stringify(overview, null, 2));
+  console.log('[Ahrefs API] DR:', overview.domainRating, '总反链:', overview.backlinks, '引用域名:', overview.refdomains);
   return {
     signature: signedInput.signature,
     validUntil: signedInput.input?.validUntil,
@@ -308,17 +323,28 @@ async function ahrefsGetBacklinks({ signature, validUntil, domain }) {
       input: { validUntil, mode: 'subdomains', url: urlWithSlash }
     }
   };
+  console.log('[Ahrefs API] ========== Step 3 请求明细 ==========');
+  console.log('[Ahrefs API] 请求 URL:', AHREFS_BACKLINKS_URL);
+  console.log('[Ahrefs API] 请求 Body:', JSON.stringify(payload, null, 2));
   const res = await fetch(AHREFS_BACKLINKS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
   const resText = await res.text();
+  console.log('[Ahrefs API] 响应状态:', res.status);
+  console.log('[Ahrefs API] 响应原文 (前 2000 字符):', resText.slice(0, 2000));
   if (!res.ok) {
     console.error('[Ahrefs API] Step 3 失败:', res.status, resText.slice(0, 500));
     throw new Error(`stGetFreeBacklinksList 失败: HTTP ${res.status} — ${resText.slice(0, 500)}`);
   }
   const data = JSON.parse(resText);
+  console.log('[Ahrefs API] 响应 JSON 结构:');
+  console.log('  - data 类型:', Array.isArray(data) ? `Array[${data.length}]` : typeof data);
+  if (Array.isArray(data) && data.length >= 2) {
+    console.log('  - data[1] keys:', data[1] ? Object.keys(data[1]) : 'null');
+    console.log('[Ahrefs API] data[1] 完整内容 (前 3000 字符):', JSON.stringify(data[1], null, 2).slice(0, 3000));
+  }
 
   let backlinks = [];
   if (Array.isArray(data) && data.length >= 2) {
@@ -329,7 +355,11 @@ async function ahrefsGetBacklinks({ signature, validUntil, domain }) {
       backlinks = obj.backlinks;
     }
   }
-  console.log('[Ahrefs API] Step 3 完成, 反链数量:', backlinks.length);
+  console.log('[Ahrefs API] ========== Step 3 解析结果 ==========');
+  console.log('[Ahrefs API] 反链数量:', backlinks.length);
+  if (backlinks.length > 0) {
+    console.log('[Ahrefs API] 第一条反链示例:', JSON.stringify(backlinks[0], null, 2));
+  }
   return backlinks;
 }
 
@@ -338,12 +368,20 @@ function ahrefsSendProgress(msg, type = 'info') {
 }
 
 async function handleAhrefsDirectBacklinks(domain, forceRefresh = false) {
+  console.log('[Ahrefs API] ========== handleAhrefsDirectBacklinks 入口 ==========');
+  console.log('[Ahrefs API] 请求域名:', domain, '强制刷新:', forceRefresh);
   const normalized = ahrefsNormalizeDomainForCache(domain);
+  console.log('[Ahrefs API] 标准化域名:', normalized);
 
   // 1. 检查缓存（非强制刷新时）
   if (!forceRefresh && normalized) {
     const cached = await ahrefsGetFromCache(domain);
+    console.log('[Ahrefs API] 缓存查询结果:', cached ? '命中' : '未命中');
     if (cached) {
+      console.log('[Ahrefs API] ========== 缓存命中，返回缓存数据 ==========');
+      console.log('[Ahrefs API] 缓存内容 overview:', JSON.stringify(cached.overview, null, 2));
+      console.log('[Ahrefs API] 缓存 urlFromList 数量:', cached.urlFromList?.length || 0);
+      console.log('[Ahrefs API] 缓存 backlinks:', cached.backlinks || []);
       ahrefsSendProgress(`命中缓存：${normalized}（${cached.urlFromList?.length || 0} 条反链）`, 'success');
       return {
         urlFromList: cached.urlFromList || [],
@@ -384,7 +422,9 @@ async function handleAhrefsDirectBacklinks(domain, forceRefresh = false) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('[Background] 收到消息:', request.action, request.domain || '');
   if (request.action === 'ahrefsDirectBacklinks') {
+    console.log('[Background] 开始处理 ahrefsDirectBacklinks, domain:', request.domain);
     handleAhrefsDirectBacklinks(request.domain)
       .then(result => sendResponse({ success: true, ...result }))
       .catch(error => {
