@@ -315,6 +315,85 @@
 
     <!-- ========== 外链采集模式 ========== -->
     <div id="panel-explore" class="mode-panel hidden">
+      <!-- 自动采集控制区 -->
+      <section class="section auto-collect-section">
+        <div class="auto-collect-header">
+          <span class="label">🤖 自动采集</span>
+          <button type="button" id="autoCollectStartBtn" class="btn btn-primary btn-sm">
+            <span class="btn-icon">▶</span> 开始
+          </button>
+        </div>
+        <!-- 循环模式开关 -->
+        <div class="loop-mode-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="loopModeEnabled">
+            <span class="toggle-slider"></span>
+          </label>
+          <div class="loop-mode-info">
+            <span class="loop-mode-label">🔄 循环模式</span>
+            <span class="loop-mode-desc">将发现的 Blog 站点作为下一轮输入</span>
+          </div>
+        </div>
+        <!-- 循环模式配置 -->
+        <div id="loopModeConfig" class="loop-mode-config hidden">
+          <div class="config-row">
+            <label class="config-label">最大深度:</label>
+            <select id="loopMaxDepth" class="select select-sm">
+              <option value="1">1 轮</option>
+              <option value="2">2 轮</option>
+              <option value="3" selected>3 轮</option>
+              <option value="5">5 轮</option>
+            </select>
+          </div>
+          <div class="config-row">
+            <label class="config-label">每轮最多处理:</label>
+            <select id="loopMaxSites" class="select select-sm">
+              <option value="10">10 个站点</option>
+              <option value="20">20 个站点</option>
+              <option value="50" selected>50 个站点</option>
+              <option value="100">100 个站点</option>
+            </select>
+          </div>
+        </div>
+        <!-- 进度显示 -->
+        <div id="autoCollectProgress" class="auto-collect-progress hidden">
+          <div class="progress-bar">
+            <div id="autoCollectProgressBar" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div id="autoCollectStatusText" class="progress-status">准备中...</div>
+          <div class="progress-controls">
+            <button type="button" id="autoCollectPauseBtn" class="btn btn-secondary btn-sm" disabled>⏸ 暂停</button>
+            <button type="button" id="autoCollectResumeBtn" class="btn btn-secondary btn-sm" disabled>▶ 继续</button>
+            <button type="button" id="autoCollectStopBtn" class="btn btn-danger btn-sm" disabled>⏹ 停止</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 批次队列视图 -->
+      <section id="autoCollectQueueSection" class="section hidden">
+        <div class="section-header">
+          <span class="label">📋 任务队列</span>
+          <span id="autoCollectQueueStats" class="queue-stats">—</span>
+        </div>
+        <div id="autoCollectQueueList" class="batch-queue-list">
+          <div class="empty-list-hint">暂无任务</div>
+        </div>
+      </section>
+
+      <!-- 实时日志 -->
+      <section id="autoCollectLogSection" class="section hidden">
+        <div class="section-header">
+          <span class="label">📜 实时日志</span>
+          <button type="button" id="autoCollectClearLogBtn" class="btn-link btn-sm">清除</button>
+        </div>
+        <div id="autoCollectLogContainer" class="log-container">
+          <div class="empty-log-hint">暂无日志</div>
+        </div>
+      </section>
+
+      <!-- 分隔线 -->
+      <hr class="section-divider">
+
       <section class="section">
         <div class="section-header">
           <span class="label">任务批次</span>

@@ -1517,3 +1517,336 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ========== 自动采集模式 ========== */
+
+.auto-collect-section {
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius);
+}
+
+.auto-collect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.auto-collect-header .label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0369a1;
+}
+
+/* 循环模式开关 */
+.loop-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--card-bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  margin-top: 8px;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: #cbd5e1;
+  transition: 0.3s;
+  border-radius: 24px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background-color: #22c55e;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(20px);
+}
+
+.loop-mode-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.loop-mode-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.loop-mode-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* 循环模式配置 */
+.loop-mode-config {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--card-bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.loop-mode-config.hidden {
+  display: none;
+}
+
+.loop-mode-config .config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.loop-mode-config .config-row:last-child {
+  margin-bottom: 0;
+}
+
+.loop-mode-config .config-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 90px;
+}
+
+/* 进度显示 */
+.auto-collect-progress {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--card-bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.auto-collect-progress.hidden {
+  display: none;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6 0%, #22c55e 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.progress-controls .btn {
+  flex: 1;
+}
+
+/* 分隔线 */
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+/* 批次队列 */
+.batch-queue-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-color);
+}
+
+.queue-stats {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-color);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.queue-round {
+  margin-bottom: 8px;
+}
+
+.queue-round-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.queue-round-header.completed {
+  color: #16a34a;
+}
+
+.queue-round-header.running {
+  color: #2563eb;
+}
+
+.queue-round-header.pending {
+  color: var(--text-secondary);
+}
+
+.queue-batch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 20px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+}
+
+.queue-batch-item:last-child {
+  border-bottom: none;
+}
+
+.queue-batch-item.completed {
+  background: #f0fdf4;
+}
+
+.queue-batch-item.running {
+  background: #eff6ff;
+}
+
+.queue-batch-item.pending {
+  background: var(--bg-color);
+  color: var(--text-secondary);
+}
+
+.queue-batch-status {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.queue-batch-status.status-completed {
+  background: #bbf7d0;
+  color: #166534;
+}
+
+.queue-batch-status.status-running {
+  background: #bfdbfe;
+  color: #1e40af;
+}
+
+.queue-batch-status.status-pending {
+  background: var(--bg-color);
+  color: var(--text-secondary);
+}
+
+.queue-batch-url {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: monospace;
+}
+
+.queue-batch-count {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* 实时日志 */
+.log-container {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: #1e293b;
+  color: #e2e8f0;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.log-item {
+  padding: 4px 8px;
+  border-bottom: 1px solid #334155;
+}
+
+.log-item:last-child {
+  border-bottom: none;
+}
+
+.log-time {
+  color: #64748b;
+  margin-right: 6px;
+}
+
+.log-item.log-success {
+  color: #4ade80;
+}
+
+.log-item.log-warning {
+  color: #fbbf24;
+}
+
+.log-item.log-error {
+  color: #f87171;
+}
+
+.log-item.log-info {
+  color: #93c5fd;
+}
+
+.empty-log-hint {
+  padding: 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 12px;
+}

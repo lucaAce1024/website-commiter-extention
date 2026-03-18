@@ -159,6 +159,25 @@ const elements = {
   exploreWriteUrlListToFeishuBtn: document.getElementById('exploreWriteUrlListToFeishuBtn'),
   // 清空列表按钮
   exploreClearUrlListBtn: document.getElementById('exploreClearUrlListBtn'),
+
+  // 自动采集模式
+  autoCollectStartBtn: document.getElementById('autoCollectStartBtn'),
+  loopModeEnabled: document.getElementById('loopModeEnabled'),
+  loopModeConfig: document.getElementById('loopModeConfig'),
+  loopMaxDepth: document.getElementById('loopMaxDepth'),
+  loopMaxSites: document.getElementById('loopMaxSites'),
+  autoCollectProgress: document.getElementById('autoCollectProgress'),
+  autoCollectProgressBar: document.getElementById('autoCollectProgressBar'),
+  autoCollectStatusText: document.getElementById('autoCollectStatusText'),
+  autoCollectPauseBtn: document.getElementById('autoCollectPauseBtn'),
+  autoCollectResumeBtn: document.getElementById('autoCollectResumeBtn'),
+  autoCollectStopBtn: document.getElementById('autoCollectStopBtn'),
+  autoCollectQueueSection: document.getElementById('autoCollectQueueSection'),
+  autoCollectQueueStats: document.getElementById('autoCollectQueueStats'),
+  autoCollectQueueList: document.getElementById('autoCollectQueueList'),
+  autoCollectLogSection: document.getElementById('autoCollectLogSection'),
+  autoCollectClearLogBtn: document.getElementById('autoCollectClearLogBtn'),
+  autoCollectLogContainer: document.getElementById('autoCollectLogContainer'),
 };
 
 // ========== State ==========
@@ -184,6 +203,24 @@ let exploreAhrefsAborted = false; // 拉取反链是否中止
 let exploreAhrefsDomainsQueue = []; // 待拉取的域名队列
 let exploreAhrefsCurrentIndex = 0; // 当前正在拉取的域名索引
 let exploreAhrefsFeishuConfig = null; // 飞书配置缓存
+
+// ========== 自动采集模式状态 ==========
+let autoCollectTask = null; // 当前自动采集任务
+let autoCollectRunning = false; // 是否正在运行
+let autoCollectPaused = false; // 是否暂停
+let autoCollectStopped = false; // 是否停止
+let autoCollectCurrentBatchIndex = 0; // 当前执行的批次索引
+let autoCollectLogs = []; // 实时日志
+const AUTO_COLLECT_TASK_KEY = 'autoCollectTask';
+const AUTO_COLLECT_LOG_MAX = 100; // 最大日志条数
+
+// 循环模式配置
+const LOOP_CONFIG = {
+  maxDepth: 3,              // 最大循环深度（防止无限循环）
+  maxSitesPerRound: 50,     // 每轮最多处理的站点数
+  dedupEnabled: true,       // 是否去重（避免重复处理同一站点）
+  stopOnNoNewSites: true    // 无新站点时自动停止
+};
 
 // ========== Ahrefs 拉取反链核心逻辑 ==========
 async function runAhrefsFetchingLoop(domains, startIndex = 0) {
@@ -1480,6 +1517,9 @@ async function loadExploreState() {
   renderExploreDugDomainsList();
   // 渲染批次选择下拉框
   await renderExploreBatchSelect();
+
+  // 恢复自动采集任务状态
+  await restoreAutoCollectState();
 }
 
 async function saveExploreBatchWithExcludeFilter(batch) {
@@ -3317,14 +3357,39 @@ function setupEventListeners() {
     }
   });
 
-  // 点击清空已发现可评论站列表按钮
-  elements.exploreClearDiscoveredBtn?.addEventListener('click', async () => {
-    if (confirm('确定要清空已发现可评论站列表吗？此操作不可撤销。 ')) {
-      exploreCurrentBatch.discoveredSites = [];
-      renderExploreDiscoveredList();
-      saveExploreCurrentBatch();
-      showExploreMessage('已发现可评论站列表已清空', 'success');
+  // ========== 自动采集模式事件绑定 ==========
+  // 循环模式开关
+  elements.loopModeEnabled?.addEventListener('change', (e) => {
+    const configEl = elements.loopModeConfig;
+    if (configEl) {
+      configEl.classList.toggle('hidden', !e.target.checked);
     }
+  });
+
+  // 开始自动采集
+  elements.autoCollectStartBtn?.addEventListener('click', async () => {
+    await startAutoCollect();
+  });
+
+  // 暂停自动采集
+  elements.autoCollectPauseBtn?.addEventListener('click', () => {
+    pauseAutoCollect();
+  });
+
+  // 继续自动采集
+  elements.autoCollectResumeBtn?.addEventListener('click', () => {
+    resumeAutoCollect();
+  });
+
+  // 停止自动采集
+  elements.autoCollectStopBtn?.addEventListener('click', () => {
+    stopAutoCollect();
+  });
+
+  // 清除自动采集日志
+  elements.autoCollectClearLogBtn?.addEventListener('click', () => {
+    autoCollectLogs = [];
+    renderAutoCollectLogs();
   });
 
   // 监听 storage 变更
@@ -4514,3 +4579,833 @@ function handleBatchComplete(data) {
 
 // ========== 初始化 ==========
 document.addEventListener('DOMContentLoaded', init);
+
+// ========== 自动采集模式核心函数 ==========
+
+/**
+ * 生成唯一 ID
+ */
+function generateAutoCollectId() {
+  return 'ac_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+/**
+ * 创建自动采集任务
+ */
+async function createAutoCollectTask(config) {
+  const taskId = generateAutoCollectId();
+  const task = {
+    taskId,
+    taskType: config.loopMode ? 'loop' : 'single',
+    loopConfig: config.loopMode ? {
+      enabled: true,
+      maxDepth: config.maxDepth || LOOP_CONFIG.maxDepth,
+      currentDepth: 0,
+      stopOnNoNewSites: LOOP_CONFIG.stopOnNoNewSites
+    } : null,
+    batches: [],
+    currentBatchIndex: 0,
+    pendingBatches: [],
+    completedBatches: [],
+    processedSites: [],
+    totalStats: {
+      rounds: 0,
+      batches: 0,
+      discoveredSites: 0,
+      newSites: 0
+    },
+    status: 'pending',
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await saveAutoCollectTask(task);
+  return task;
+}
+
+/**
+ * 保存自动采集任务
+ */
+async function saveAutoCollectTask(task) {
+  try {
+    await chrome.storage.local.set({ [AUTO_COLLECT_TASK_KEY]: task });
+    autoCollectTask = task;
+  } catch (e) {
+    console.error('[AutoCollect] Failed to save task:', e);
+  }
+}
+
+/**
+ * 加载自动采集任务
+ */
+async function loadAutoCollectTask() {
+  try {
+    const result = await chrome.storage.local.get([AUTO_COLLECT_TASK_KEY]);
+    autoCollectTask = result[AUTO_COLLECT_TASK_KEY] || null;
+    return autoCollectTask;
+  } catch (e) {
+    console.error('[AutoCollect] Failed to load task:', e);
+    return null;
+  }
+}
+
+/**
+ * 创建批次
+ */
+function createAutoCollectBatch(config) {
+  return {
+    batchId: generateAutoCollectId(),
+    autoCollectTaskId: config.autoCollectTaskId,
+    parentBatchId: config.parentBatchId || null,
+    depth: config.depth || 0,
+    roundIndex: config.roundIndex || 1,
+    batchIndexInRound: config.batchIndexInRound || 0,
+    sourceUrl: config.sourceUrl || '',
+    sourceType: config.sourceType || 'initial',
+    status: 'pending',
+    currentStep: 1,
+    currentPosition: {
+      step: 1,
+      phase: 'domain',
+      index: 0,
+      total: 0,
+      currentItem: ''
+    },
+    stepOutputs: {
+      step1: { domains: [], count: 0 },
+      step2: { filteredDomains: [], passed: 0, failed: 0, domainDates: [] },
+      step3: { backlinks: [], count: 0 },
+      step4: { discoveredSites: [], count: 0 }
+    },
+    stats: {
+      extractedDomains: 0,
+      filteredDomains: 0,
+      backlinks: 0,
+      discoveredSites: 0,
+      newSites: 0
+    },
+    startedAt: null,
+    updatedAt: new Date().toISOString(),
+    completedAt: null
+  };
+}
+
+/**
+ * 添加自动采集日志
+ */
+function addAutoCollectLog(message, type = 'info') {
+  const now = new Date();
+  const timeStr = now.toTimeString().slice(0, 8);
+  const logEntry = { time: timeStr, message, type };
+  autoCollectLogs.unshift(logEntry);
+  if (autoCollectLogs.length > AUTO_COLLECT_LOG_MAX) {
+    autoCollectLogs.pop();
+  }
+  renderAutoCollectLogs();
+}
+
+/**
+ * 渲染自动采集日志
+ */
+function renderAutoCollectLogs() {
+  const container = elements.autoCollectLogContainer;
+  if (!container) return;
+
+  if (autoCollectLogs.length === 0) {
+    container.innerHTML = '<div class="empty-log-hint">暂无日志</div>';
+    return;
+  }
+
+  container.innerHTML = autoCollectLogs.map(log => {
+    const icon = log.type === 'success' ? '✅' : log.type === 'error' ? '❌' : log.type === 'warning' ? '⚠️' : '🔄';
+    return `<div class="log-item log-${log.type}"><span class="log-time">[${log.time}]</span>${icon} ${escHtml(log.message)}</div>`;
+  }).join('');
+}
+
+/**
+ * 更新进度显示
+ */
+function updateAutoCollectProgress(progress, statusText) {
+  if (elements.autoCollectProgressBar) {
+    elements.autoCollectProgressBar.style.width = `${Math.min(100, Math.max(0, progress))}%`;
+  }
+  if (elements.autoCollectStatusText) {
+    elements.autoCollectStatusText.textContent = statusText || '准备中...';
+  }
+}
+
+/**
+ * 更新自动采集控制按钮状态
+ */
+function updateAutoCollectControls(running, paused) {
+  const startBtn = elements.autoCollectStartBtn;
+  const pauseBtn = elements.autoCollectPauseBtn;
+  const resumeBtn = elements.autoCollectResumeBtn;
+  const stopBtn = elements.autoCollectStopBtn;
+  const progressEl = elements.autoCollectProgress;
+  const queueSection = elements.autoCollectQueueSection;
+  const logSection = elements.autoCollectLogSection;
+
+  if (startBtn) {
+    startBtn.disabled = running;
+    startBtn.innerHTML = running ? '<span class="btn-icon">⏳</span> 运行中' : '<span class="btn-icon">▶</span> 开始';
+  }
+  if (pauseBtn) {
+    pauseBtn.disabled = !running || paused;
+    pauseBtn.classList.toggle('hidden', paused);
+  }
+  if (resumeBtn) {
+    resumeBtn.disabled = !paused;
+    resumeBtn.classList.toggle('hidden', !paused);
+  }
+  if (stopBtn) {
+    stopBtn.disabled = !running;
+  }
+  if (progressEl) {
+    progressEl.classList.toggle('hidden', !running && !paused);
+  }
+  if (queueSection) {
+    queueSection.classList.toggle('hidden', !running && !paused && (!autoCollectTask || autoCollectTask.batches.length === 0));
+  }
+  if (logSection) {
+    logSection.classList.toggle('hidden', !running && !paused && autoCollectLogs.length === 0);
+  }
+}
+
+/**
+ * 渲染批次队列
+ */
+function renderAutoCollectQueue() {
+  const container = elements.autoCollectQueueList;
+  const statsEl = elements.autoCollectQueueStats;
+  if (!container) return;
+
+  const task = autoCollectTask;
+  if (!task || task.batches.length === 0) {
+    container.innerHTML = '<div class="empty-list-hint">暂无任务</div>';
+    if (statsEl) statsEl.textContent = '—';
+    return;
+  }
+
+  // 按轮次分组
+  const rounds = {};
+  for (const batchId of task.batches) {
+    // 简化：从 batchId 无法直接获取 batch 数据，需要从 storage 加载
+    // 这里我们用 task 中的 batches 数组存储完整的 batch 数据
+  }
+
+  // 统计
+  const completed = task.completedBatches?.length || 0;
+  const total = task.batches?.length || 0;
+  if (statsEl) statsEl.textContent = `${completed}/${total} 完成`;
+
+  // 简化显示：直接显示当前状态
+  const statusText = task.status === 'completed' ? '✅ 已完成' :
+                     task.status === 'running' ? '🔄 运行中' :
+                     task.status === 'paused' ? '⏸️ 已暂停' : '⏳ 待执行';
+
+  container.innerHTML = `
+    <div class="queue-batch-item ${task.status}">
+      <span class="queue-batch-status status-${task.status}">${statusText}</span>
+      <span class="queue-batch-url">任务 ${task.taskId.slice(-8)}</span>
+      <span class="queue-batch-count">${task.totalStats?.discoveredSites || 0} 个站点</span>
+    </div>
+  `;
+}
+
+/**
+ * 步骤一：从当前活动页面提取域名
+ */
+async function autoCollectStep1_ExtractDomains(batch) {
+  addAutoCollectLog(`步骤1: 开始从页面提取域名`, 'info');
+  batch.currentStep = 1;
+  batch.status = 'in_progress';
+  batch.startedAt = new Date().toISOString();
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.id || !tab.url) {
+      throw new Error('无法获取当前活动页');
+    }
+
+    batch.sourceUrl = tab.url;
+    updateAutoCollectProgress(10, `正在从页面提取域名...`);
+
+    const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCommentUrls' })
+      .catch(e => ({ success: false, error: e?.message }));
+
+    if (!response?.success) {
+      throw new Error(response?.error || '提取失败');
+    }
+
+    const rawUrls = response.urls || [];
+    const exclude = await getExploreExcludeDomainsForFilter();
+    const filtered = filterUrlsExcludingDomains ? filterUrlsExcludingDomains(rawUrls, exclude) : rawUrls;
+
+    // 提取域名
+    const domains = rawUrls.map(u => {
+      try {
+        return new URL(u.startsWith('http') ? u : 'https://' + u).hostname;
+      } catch { return null; }
+    }).filter(Boolean);
+    const uniqueDomains = [...new Set(domains)];
+
+    batch.stepOutputs.step1 = { domains: uniqueDomains, count: uniqueDomains.length };
+    batch.stats.extractedDomains = uniqueDomains.length;
+    batch.updatedAt = new Date().toISOString();
+
+    addAutoCollectLog(`步骤1: 提取到 ${uniqueDomains.length} 个域名`, 'success');
+    return { success: true, domains: uniqueDomains };
+  } catch (e) {
+    addAutoCollectLog(`步骤1 失败: ${e.message}`, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * 步骤二：WHOIS 筛选
+ */
+async function autoCollectStep2_FilterByWhois(batch, domains) {
+  addAutoCollectLog(`步骤2: 开始 WHOIS 筛选 (${domains.length} 个域名)`, 'info');
+  batch.currentStep = 2;
+  updateAutoCollectProgress(25, `正在进行 WHOIS 筛选...`);
+
+  try {
+    const result = await filterDomainsByAge(domains, 5);
+    const filtered = result.filtered || [];
+    const domainDates = result.domainDates || [];
+
+    batch.stepOutputs.step2 = {
+      filteredDomains: filtered,
+      passed: filtered.length,
+      failed: domains.length - filtered.length,
+      domainDates
+    };
+    batch.stats.filteredDomains = filtered.length;
+    batch.updatedAt = new Date().toISOString();
+
+    addAutoCollectLog(`步骤2: 通过 WHOIS 筛选 ${filtered.length}/${domains.length} 个域名`, 'success');
+    return { success: true, filteredDomains: filtered };
+  } catch (e) {
+    addAutoCollectLog(`步骤2 失败: ${e.message}`, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * 步骤三：拉取反链
+ */
+async function autoCollectStep3_FetchBacklinks(batch, domains) {
+  addAutoCollectLog(`步骤3: 开始拉取反链 (${domains.length} 个域名)`, 'info');
+  batch.currentStep = 3;
+  updateAutoCollectProgress(40, `正在拉取反链...`);
+
+  try {
+    // 设置 Ahrefs 域名队列
+    exploreAhrefsDomains = domains.map(d => ({ domain: d, creationDate: '' }));
+    exploreAhrefsDomainsQueue = domains;
+    exploreAhrefsRunning = true;
+    exploreAhrefsPaused = false;
+    exploreAhrefsAborted = false;
+    exploreAhrefsCurrentIndex = 0;
+
+    // 执行拉取
+    const result = await runAhrefsFetchingLoop(domains, 0);
+
+    if (result.stopped) {
+      addAutoCollectLog(`步骤3: 已停止`, 'warning');
+      return { success: false, stopped: true };
+    }
+
+    const backlinks = exploreCurrentBatch?.urlList || [];
+    batch.stepOutputs.step3 = { backlinks, count: backlinks.length };
+    batch.stats.backlinks = backlinks.length;
+    batch.urlList = backlinks;
+    batch.updatedAt = new Date().toISOString();
+
+    addAutoCollectLog(`步骤3: 拉取到 ${backlinks.length} 条反链`, 'success');
+    return { success: true, backlinks };
+  } catch (e) {
+    addAutoCollectLog(`步骤3 失败: ${e.message}`, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * 步骤四：遍历检测可评论站点
+ */
+async function autoCollectStep4_TraverseDetect(batch, urls) {
+  addAutoCollectLog(`步骤4: 开始遍历检测 (${urls.length} 个 URL)`, 'info');
+  batch.currentStep = 4;
+  batch.traverseBacklinkList = urls;
+  updateAutoCollectProgress(60, `正在遍历检测可评论站点...`);
+
+  try {
+    // 使用现有的遍历检测逻辑
+    if (typeof startTraverseDetection === 'function') {
+      // 保存当前批次，启动遍历
+      await saveExploreBatchWithExcludeFilter(batch);
+      exploreCurrentBatch = batch;
+
+      // 调用现有的遍历函数
+      await startTraverseDetection();
+
+      // 等待遍历完成
+      while (exploreCurrentBatch?.status === 'running') {
+        await new Promise(r => setTimeout(r, 1000));
+        if (autoCollectStopped) {
+          addAutoCollectLog(`步骤4: 已停止`, 'warning');
+          return { success: false, stopped: true };
+        }
+      }
+
+      const discovered = exploreCurrentBatch?.discoveredSites || [];
+      batch.stepOutputs.step4 = { discoveredSites: discovered, count: discovered.length };
+      batch.stats.discoveredSites = discovered.length;
+      batch.discoveredSites = discovered;
+    } else {
+      throw new Error('遍历检测函数不可用');
+    }
+
+    batch.updatedAt = new Date().toISOString();
+    addAutoCollectLog(`步骤4: 发现 ${batch.stats.discoveredSites} 个可评论站点`, 'success');
+    return { success: true, discoveredSites: batch.discoveredSites };
+  } catch (e) {
+    addAutoCollectLog(`步骤4 失败: ${e.message}`, 'error');
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * 执行单个批次
+ */
+async function executeAutoCollectBatch(batch) {
+  addAutoCollectLog(`开始执行批次: ${batch.batchId.slice(-8)}`, 'info');
+  batch.status = 'in_progress';
+  batch.startedAt = new Date().toISOString();
+
+  try {
+    // 步骤1: 提取域名
+    if (autoCollectStopped) return { stopped: true };
+    const step1Result = await autoCollectStep1_ExtractDomains(batch);
+    if (!step1Result.success) throw new Error(step1Result.error || '步骤1失败');
+    await saveAutoCollectTask(autoCollectTask);
+
+    // 步骤2: WHOIS 筛选
+    if (autoCollectStopped) return { stopped: true };
+    while (autoCollectPaused) {
+      await new Promise(r => setTimeout(r, 500));
+      if (autoCollectStopped) return { stopped: true };
+    }
+    const step2Result = await autoCollectStep2_FilterByWhois(batch, step1Result.domains);
+    if (!step2Result.success) throw new Error(step2Result.error || '步骤2失败');
+    await saveAutoCollectTask(autoCollectTask);
+
+    // 步骤3: 拉取反链
+    if (autoCollectStopped) return { stopped: true };
+    while (autoCollectPaused) {
+      await new Promise(r => setTimeout(r, 500));
+      if (autoCollectStopped) return { stopped: true };
+    }
+    const step3Result = await autoCollectStep3_FetchBacklinks(batch, step2Result.filteredDomains);
+    if (!step3Result.success) {
+      if (step3Result.stopped) return { stopped: true };
+      throw new Error(step3Result.error || '步骤3失败');
+    }
+    await saveAutoCollectTask(autoCollectTask);
+
+    // 步骤4: 遍历检测
+    if (autoCollectStopped) return { stopped: true };
+    while (autoCollectPaused) {
+      await new Promise(r => setTimeout(r, 500));
+      if (autoCollectStopped) return { stopped: true };
+    }
+    const step4Result = await autoCollectStep4_TraverseDetect(batch, step3Result.backlinks);
+    if (!step4Result.success) {
+      if (step4Result.stopped) return { stopped: true };
+      throw new Error(step4Result.error || '步骤4失败');
+    }
+    await saveAutoCollectTask(autoCollectTask);
+
+    // 批次完成
+    batch.status = 'completed';
+    batch.completedAt = new Date().toISOString();
+    updateAutoCollectProgress(100, '批次完成');
+    addAutoCollectLog(`批次 ${batch.batchId.slice(-8)} 完成: 发现 ${batch.stats.discoveredSites} 个可评论站点`, 'success');
+
+    return { success: true, batch };
+  } catch (e) {
+    batch.status = 'failed';
+    batch.completedAt = new Date().toISOString();
+    addAutoCollectLog(`批次 ${batch.batchId.slice(-8)} 失败: ${e.message}`, 'error');
+    return { success: false, error: e.message, batch };
+  }
+}
+
+/**
+ * 创建下一轮批次（循环模式）
+ */
+async function createNextRoundBatches(task) {
+  const { currentDepth, maxDepth } = task.loopConfig;
+
+  // 检查深度限制
+  if (currentDepth >= maxDepth) {
+    addAutoCollectLog(`已达到最大深度 ${maxDepth}，停止循环`, 'info');
+    return null;
+  }
+
+  // 收集所有已发现但未处理的站点
+  const discoveredSites = [];
+  for (const batchId of task.completedBatches || []) {
+    const batch = task.batches?.find(b => b.batchId === batchId);
+    if (batch?.stepOutputs?.step4?.discoveredSites) {
+      discoveredSites.push(...batch.stepOutputs.step4.discoveredSites);
+    }
+  }
+
+  // 去重
+  const newSites = discoveredSites.filter(site => {
+    const normalized = site.url || site;
+    return !task.processedSites.includes(normalized);
+  });
+
+  // 无新站点，停止循环
+  if (newSites.length === 0) {
+    addAutoCollectLog('没有发现新的可评论站点，停止循环', 'info');
+    return null;
+  }
+
+  // 限制每轮处理的站点数
+  const sitesToProcess = newSites.slice(0, LOOP_CONFIG.maxSitesPerRound);
+
+  addAutoCollectLog(`创建第 ${currentDepth + 2} 轮批次: ${sitesToProcess.length} 个站点`, 'info');
+
+  // 为每个新站点创建批次
+  const roundIndex = currentDepth + 1;
+  for (let i = 0; i < sitesToProcess.length; i++) {
+    const site = sitesToProcess[i];
+    const siteUrl = site.url || site;
+
+    const batch = createAutoCollectBatch({
+      autoCollectTaskId: task.taskId,
+      depth: currentDepth + 1,
+      roundIndex,
+      batchIndexInRound: i,
+      sourceUrl: siteUrl,
+      sourceType: 'discovered'
+    });
+
+    task.batches.push(batch);
+    task.pendingBatches.push(batch.batchId);
+    task.processedSites.push(siteUrl);
+  }
+
+  // 更新深度
+  task.loopConfig.currentDepth = roundIndex;
+  await saveAutoCollectTask(task);
+
+  return sitesToProcess.length;
+}
+
+/**
+ * 启动自动采集任务
+ */
+async function startAutoCollect() {
+  if (autoCollectRunning) {
+    showExploreMessage('自动采集已在运行中', 'warning');
+    return;
+  }
+
+  const loopMode = elements.loopModeEnabled?.checked || false;
+  const maxDepth = parseInt(elements.loopMaxDepth?.value || '3', 10);
+
+  try {
+    // 创建任务
+    const task = await createAutoCollectTask({
+      loopMode,
+      maxDepth
+    });
+
+    // 创建初始批次
+    const batch = createAutoCollectBatch({
+      autoCollectTaskId: task.taskId,
+      depth: 0,
+      roundIndex: 1,
+      batchIndexInRound: 0,
+      sourceType: 'initial'
+    });
+
+    task.batches.push(batch);
+    task.pendingBatches.push(batch.batchId);
+    await saveAutoCollectTask(task);
+
+    autoCollectRunning = true;
+    autoCollectPaused = false;
+    autoCollectStopped = false;
+    autoCollectLogs = [];
+
+    updateAutoCollectControls(true, false);
+    addAutoCollectLog(`自动采集任务已启动 (${loopMode ? '循环模式' : '单次模式'})`, 'success');
+
+    // 开始执行
+    await runAutoCollectLoop();
+
+  } catch (e) {
+    showExploreMessage('启动失败: ' + e.message, 'error');
+    addAutoCollectLog('启动失败: ' + e.message, 'error');
+    autoCollectRunning = false;
+    updateAutoCollectControls(false, false);
+  }
+}
+
+/**
+ * 运行自动采集循环
+ */
+async function runAutoCollectLoop() {
+  const task = autoCollectTask;
+  if (!task) return;
+
+  while (!autoCollectStopped) {
+    // 检查暂停
+    while (autoCollectPaused) {
+      await new Promise(r => setTimeout(r, 500));
+      if (autoCollectStopped) break;
+    }
+    if (autoCollectStopped) break;
+
+    // 获取下一个待执行的批次
+    const nextBatchId = task.pendingBatches.shift();
+    if (!nextBatchId) {
+      // 没有待执行的批次，检查是否需要创建下一轮（循环模式）
+      if (task.taskType === 'loop' && task.loopConfig?.enabled) {
+        const newBatchesCount = await createNextRoundBatches(task);
+        if (!newBatchesCount) {
+          // 无新批次，任务完成
+          break;
+        }
+        continue;
+      } else {
+        // 单次模式，任务完成
+        break;
+      }
+    }
+
+    // 执行批次
+    const batch = task.batches.find(b => b.batchId === nextBatchId);
+    if (!batch) continue;
+
+    task.currentBatchIndex = task.batches.indexOf(batch);
+    await saveAutoCollectTask(task);
+    renderAutoCollectQueue();
+
+    const result = await executeAutoCollectBatch(batch);
+
+    if (result.stopped) break;
+
+    // 更新任务状态
+    if (result.success) {
+      task.completedBatches.push(batch.batchId);
+      task.totalStats.discoveredSites += batch.stats.discoveredSites;
+      task.totalStats.newSites += batch.stats.newSites || batch.stats.discoveredSites;
+    }
+    task.totalStats.batches = task.batches.length;
+    await saveAutoCollectTask(task);
+    renderAutoCollectQueue();
+  }
+
+  // 任务完成
+  task.status = autoCollectStopped ? 'stopped' : 'completed';
+  task.updatedAt = new Date().toISOString();
+  await saveAutoCollectTask(task);
+
+  autoCollectRunning = false;
+  updateAutoCollectControls(false, false);
+  updateAutoCollectProgress(100, task.status === 'completed' ? '任务完成' : '任务已停止');
+  addAutoCollectLog(`自动采集任务${task.status === 'completed' ? '完成' : '已停止'}: 共发现 ${task.totalStats.discoveredSites} 个可评论站点`, 'success');
+}
+
+/**
+ * 暂停自动采集
+ */
+function pauseAutoCollect() {
+  if (!autoCollectRunning || autoCollectPaused) return;
+  autoCollectPaused = true;
+  exploreAhrefsPaused = true;
+  updateAutoCollectControls(true, true);
+  addAutoCollectLog('自动采集已暂停', 'warning');
+}
+
+/**
+ * 继续自动采集
+ */
+function resumeAutoCollect() {
+  if (!autoCollectPaused) return;
+  autoCollectPaused = false;
+  exploreAhrefsPaused = false;
+  updateAutoCollectControls(true, false);
+  addAutoCollectLog('自动采集已继续', 'info');
+}
+
+/**
+ * 停止自动采集
+ */
+function stopAutoCollect() {
+  if (!autoCollectRunning) return;
+  autoCollectStopped = true;
+  autoCollectPaused = false;
+  exploreAhrefsAborted = true;
+  addAutoCollectLog('正在停止自动采集...', 'warning');
+}
+
+/**
+ * 恢复自动采集状态（页面刷新后恢复）
+ */
+async function restoreAutoCollectState() {
+  try {
+    const task = await loadAutoCollectTask();
+    if (!task) return;
+
+    // 检查任务是否还在运行或暂停中
+    if (task.status === 'running' || task.status === 'paused') {
+      autoCollectTask = task;
+
+      // 显示进度区域
+      if (elements.autoCollectProgress) {
+        elements.autoCollectProgress.classList.remove('hidden');
+      }
+      if (elements.autoCollectQueueSection) {
+        elements.autoCollectQueueSection.classList.remove('hidden');
+      }
+      if (elements.autoCollectLogSection) {
+        elements.autoCollectLogSection.classList.remove('hidden');
+      }
+
+      // 更新进度显示
+      const totalBatches = task.batches?.length || 0;
+      const completedBatches = task.completedBatches?.length || 0;
+      const progress = totalBatches > 0 ? (completedBatches / totalBatches * 100) : 0;
+      updateAutoCollectProgress(progress, `任务 ${task.status === 'paused' ? '已暂停' : '运行中'}: ${completedBatches}/${totalBatches} 批次`);
+
+      // 更新控制按钮状态
+      if (task.status === 'paused') {
+        autoCollectPaused = true;
+        autoCollectRunning = true;
+      } else {
+        autoCollectPaused = false;
+        autoCollectRunning = true;
+      }
+      updateAutoCollectControls(autoCollectRunning, autoCollectPaused);
+
+      // 渲染队列
+      renderAutoCollectQueue();
+
+      addAutoCollectLog(`已恢复自动采集任务 (${task.status === 'paused' ? '暂停中' : '运行中'})`, 'info');
+    }
+  } catch (e) {
+    console.error('[AutoCollect] Failed to restore state:', e);
+  }
+}
+
+/**
+ * 渲染批次队列
+ */
+function renderAutoCollectQueue() {
+  const container = elements.autoCollectQueueList;
+  const statsEl = elements.autoCollectQueueStats;
+  if (!container) return;
+
+  const task = autoCollectTask;
+  if (!task || !task.batches || task.batches.length === 0) {
+    container.innerHTML = '<div class="empty-list-hint">暂无任务</div>';
+    if (statsEl) statsEl.textContent = '—';
+    return;
+  }
+
+  // 按轮次分组
+  const roundMap = new Map();
+  for (const batch of task.batches) {
+    const round = batch.roundIndex || 1;
+    if (!roundMap.has(round)) {
+      roundMap.set(round, []);
+    }
+    roundMap.get(round).push(batch);
+  }
+
+  // 渲染统计
+  const completedCount = task.completedBatches?.length || 0;
+  const totalCount = task.batches.length;
+  if (statsEl) {
+    statsEl.textContent = `${completedCount}/${totalCount} 批次`;
+  }
+
+  // 渲染队列列表
+  let html = '';
+  for (const [round, batches] of roundMap) {
+    const roundCompleted = batches.filter(b => b.status === 'completed').length;
+    const roundRunning = batches.some(b => b.status === 'in_progress');
+    const roundStatus = roundCompleted === batches.length ? 'completed' : (roundRunning ? 'running' : 'pending');
+
+    html += `<div class="queue-round">
+      <div class="queue-round-header ${roundStatus}">
+        <span>第 ${round} 轮</span>
+        <span>${roundCompleted}/${batches.length}</span>
+      </div>`;
+
+    for (const batch of batches) {
+      const statusIcon = batch.status === 'completed' ? '✅' :
+                         batch.status === 'in_progress' ? '🔄' :
+                         batch.status === 'failed' ? '❌' : '⏳';
+      const siteCount = batch.stats?.discoveredSites || 0;
+      const sourceUrl = batch.sourceUrl ? truncateUrl(batch.sourceUrl, 35) : '—';
+
+      html += `<div class="queue-batch-item ${batch.status}">
+        <span class="queue-batch-status status-${batch.status}">${statusIcon}</span>
+        <span class="queue-batch-url" title="${batch.sourceUrl || ''}">${sourceUrl}</span>
+        <span class="queue-batch-count">${siteCount} 站点</span>
+      </div>`;
+    }
+
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+/**
+ * 更新自动采集控制按钮状态
+ */
+function updateAutoCollectControls(running, paused) {
+  const startBtn = elements.autoCollectStartBtn;
+  const pauseBtn = elements.autoCollectPauseBtn;
+  const resumeBtn = elements.autoCollectResumeBtn;
+  const stopBtn = elements.autoCollectStopBtn;
+  const progressEl = elements.autoCollectProgress;
+  const queueSection = elements.autoCollectQueueSection;
+  const logSection = elements.autoCollectLogSection;
+
+  if (startBtn) {
+    startBtn.disabled = running;
+    startBtn.textContent = running ? '运行中...' : '开始';
+  }
+  if (pauseBtn) {
+    pauseBtn.disabled = !running || paused;
+    pauseBtn.classList.toggle('hidden', paused);
+  }
+  if (resumeBtn) {
+    resumeBtn.disabled = !paused;
+    resumeBtn.classList.toggle('hidden', !paused);
+  }
+  if (stopBtn) {
+    stopBtn.disabled = !running;
+  }
+
+  // 显示/隐藏进度区域
+  if (progressEl) {
+    progressEl.classList.toggle('hidden', !running && !paused);
+  }
+  if (queueSection) {
+    queueSection.classList.toggle('hidden', !running && !paused);
+  }
+  if (logSection) {
+    logSection.classList.toggle('hidden', !running && !paused);
+  }
+}
