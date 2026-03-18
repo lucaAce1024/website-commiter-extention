@@ -381,14 +381,17 @@ async function saveWhoisCache(cache) {
 
 async function queryWhoisCreationDate(domain, cache) {
   if (cache[domain] !== undefined) {
+    console.log('[WHOIS] 命中缓存:', { domain, creationDate: cache[domain] });
     return cache[domain];
   }
   if (!isWhoisSuffixSupported(domain)) {
+    console.log('[WHOIS] 后缀不支持:', { domain });
     cache[domain] = null;
     return null;
   }
   const parsed = parseWhoisDomain(domain);
   if (!parsed) {
+    console.log('[WHOIS] 域名解析失败:', { domain });
     cache[domain] = null;
     return null;
   }
@@ -398,8 +401,10 @@ async function queryWhoisCreationDate(domain, cache) {
   const retryDelayMs = 2000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      console.log('[WHOIS] 发起请求:', { domain, url, attempt: attempt + 1 });
       const response = await fetch(url);
       const data = await response.json();
+      console.log('[WHOIS] API 响应:', { domain, status: data?.status, creation_datetime: data?.creation_datetime });
       let result = null;
       if (data && data.status === 'ok' && data.creation_datetime) {
         const dateStr = data.creation_datetime.trim();
@@ -427,6 +432,8 @@ async function filterDomainsByAge(domains, maxYearsAgo = 5) {
   cutoffDate.setFullYear(cutoffDate.getFullYear() - maxYearsAgo);
   const cutoffStr = cutoffDate.toISOString().split('T')[0];
 
+  console.log('[WHOIS] 开始批量筛选，截止日期:', cutoffStr, '待查询域名数:', domains.length);
+
   const cache = await loadWhoisCache();
   const results = [];
   const domainDates = [];
@@ -435,11 +442,16 @@ async function filterDomainsByAge(domains, maxYearsAgo = 5) {
     const domain = domains[i];
     showExploreMessage(`[${i + 1}/${domains.length}] 查询 ${domain} 注册时间…`, 'info');
     const creationDate = await queryWhoisCreationDate(domain, cache);
+
     if (creationDate) {
       domainDates.push({ domain, creationDate });
-      if (creationDate >= cutoffStr) {
+      const passed = creationDate >= cutoffStr;
+      console.log('[WHOIS] 查询结果:', { domain, creationDate, passed, cutoff: cutoffStr });
+      if (passed) {
         results.push(domain);
       }
+    } else {
+      console.log('[WHOIS] 查询结果:', { domain, creationDate: null, passed: false, reason: '无法获取注册时间' });
     }
     // 域名间随机延迟 500-1000ms，避免触发限流
     if (i < domains.length - 1) {
@@ -448,6 +460,7 @@ async function filterDomainsByAge(domains, maxYearsAgo = 5) {
   }
 
   await saveWhoisCache(cache);
+  console.log('[WHOIS] 批量筛选完成:', { total: domains.length, passed: results.length, cutoffDate: cutoffStr });
   return { filtered: results, domainDates, cutoffDate: cutoffStr };
 }
 
@@ -3223,7 +3236,6 @@ function setupEventListeners() {
     await writeExploreDiscoveredSitesToFeishu();
   });
 
-  let exploreDugAhrefsIndex = 0;
   elements.exploreAddDugToAhrefsBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
     const domains = exploreCurrentBatch?.dugDomains || [];
@@ -3232,25 +3244,31 @@ function setupEventListeners() {
       return;
     }
     try {
-      if (exploreDugAhrefsIndex >= domains.length) {
-        showExploreMessage('所有挖到的域名都已尝试加入 Ahrefs 输入列表', 'info');
-        return;
-      }
-      const domain = domains[exploreDugAhrefsIndex];
-      showExploreMessage(`开始查询域名 ${domain} 的注册时间，筛选近5年的域名…`, 'info');
-      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge([domain], 5);
+      console.log('[Explore] 开始批量 WHOIS 查询，待处理域名:', domains);
+      showExploreMessage(`开始批量查询 ${domains.length} 个域名的注册时间，筛选近5年的域名…`, 'info');
+      const { filtered, domainDates, cutoffDate } = await filterDomainsByAge(domains, 5);
+
+      console.log('[Explore] WHOIS 查询完成:', {
+        total: domains.length,
+        passed: filtered.length,
+        cutoffDate,
+        allResults: domainDates,
+        passedDomains: filtered
+      });
+
       if (filtered.length === 0) {
-        showExploreMessage(`域名 ${domain} 超过5年（截止日期 ${cutoffDate}），未加入 Ahrefs 列表`, 'warning');
-        exploreDugAhrefsIndex += 1;
+        showExploreMessage(`所有 ${domains.length} 个域名都超过5年（截止日期 ${cutoffDate}），未加入 Ahrefs 列表`, 'warning');
         return;
       }
+
       const toAdd = domainDates.filter(d => filtered.includes(d.domain));
       exploreAhrefsDomains = [...(exploreAhrefsDomains || []), ...toAdd];
       renderExploreAhrefsDomainList();
-      exploreDugAhrefsIndex += 1;
-      showExploreMessage(`域名 ${domain} 已通过近5年筛选，已加入 Ahrefs 域名列表`, 'success');
-      console.log('[Explore] WHOIS 筛选结果(单个):', { filtered, domainDates, cutoffDate });
+
+      console.log('[Explore] 已加入 Ahrefs 域名列表:', toAdd);
+      showExploreMessage(`${filtered.length}/${domains.length} 个域名通过近5年筛选，已加入 Ahrefs 域名列表`, 'success');
     } catch (e) {
+      console.error('[Explore] WHOIS 批量查询失败:', e);
       showExploreMessage(e?.message || 'WHOIS 查询失败', 'error');
     }
   });
