@@ -3827,31 +3827,46 @@ async function updateBacklinkFlagsInFeishu(url, flags) {
     const spreadsheetToken = config.ahrefsSheetToken;
     const sheetId = config.ahrefsSheetId;
 
-    // 标准化 URL 用于匹配
+    // 标准化 URL 用于匹配（移除尾部斜杠）
     const normalizedUrl = typeof normalizeUrl === 'function' ? normalizeUrl(url) : url;
+    // 同时准备带尾部斜杠的版本，以应对飞书表格中可能存在的斜杠差异
+    const normalizedUrlWithSlash = normalizedUrl + '/';
 
-    // 1. 使用 Find API 查找 URL 对应的行
-    const findResponse = await fetch(
-      `https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/${sheetId}/find`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          find_condition: {
-            range: `${sheetId}!A:A`,
-            match_case: false,
-            match_entire_cell: true,
-            search_by_regex: false
+    // 辅助函数：执行查找请求
+    async function findUrlInSheet(searchUrl) {
+      const findResponse = await fetch(
+        `https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/${sheetId}/find`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
           },
-          find: normalizedUrl
-        })
-      }
-    );
+          body: JSON.stringify({
+            find_condition: {
+              range: `${sheetId}!A:A`,
+              match_case: false,
+              match_entire_cell: true,
+              search_by_regex: false
+            },
+            find: searchUrl
+          })
+        }
+      );
+      return await findResponse.json();
+    }
 
-    const findData = await findResponse.json();
+    // 1. 使用 Find API 查找 URL 对应的行（先尝试无尾部斜杠版本）
+    let findData = await findUrlInSheet(normalizedUrl);
+
+    // 如果没找到，再尝试带尾部斜杠版本
+    if (findData.code === 0) {
+      const matchedCells = findData.data?.find_result?.matched_cells || [];
+      if (matchedCells.length === 0) {
+        // 尝试带尾部斜杠的版本
+        findData = await findUrlInSheet(normalizedUrlWithSlash);
+      }
+    }
 
     if (findData.code !== 0) {
       console.warn('[Ahrefs] 查找 URL 失败:', findData.msg);
@@ -3862,7 +3877,7 @@ async function updateBacklinkFlagsInFeishu(url, flags) {
 
     if (matchedCells.length === 0) {
       // URL 不在表格中，不报错但返回未更新
-      console.log('[Ahrefs] URL 不在飞书表格中:', normalizedUrl);
+      console.log('[Ahrefs] URL 不在飞书表格中:', normalizedUrl, '(也尝试过带斜杠版本)');
       return { ok: true, updated: false, skipped: true };
     }
 
