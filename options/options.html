@@ -501,6 +501,17 @@
           <p>展示从缓存中获取的数据，包括 WHOIS 域名年龄查询结果和 Ahrefs 反链采集数据。</p>
         </div>
 
+        <!-- 外链采集任务状态（storage 快照；实际执行在侧栏） -->
+        <div class="cache-section">
+          <div class="cache-section-header">
+            <h3>🧭 外链采集 · 任务状态</h3>
+          </div>
+          <p class="section-desc">自动采集在扩展<strong>侧栏</strong>中运行；关闭侧栏后脚本会暂停，以下为 <code>chrome.storage.local</code> 中的<strong>最后保存状态</strong>，便于排查「是否有未完成任务 / 批次」。</p>
+          <div id="extensionExploreTaskStatus" class="extension-task-status">
+            <p class="muted">加载中…</p>
+          </div>
+        </div>
+
         <!-- WHOIS 域名年龄缓存 -->
         <div class="cache-section">
           <div class="cache-section-header">
@@ -525,7 +536,7 @@
             <h3>🔗 Ahrefs 域名缓存</h3>
             <span id="ahrefsCacheCount" class="cache-count">0 个域名</span>
           </div>
-          <p class="section-desc">已拉取的域名反链缓存（有效期15天），包含查询域名、缓存日期、反链数量</p>
+          <p class="section-desc">此处为 <strong>chrome.storage</strong> 中的<strong>轻量元数据</strong>（域名、缓存时间、条数、DR），用于列表展示；完整反链在 Background 的 <strong>IndexedDB</strong>，约 7 天内不重复请求 API。</p>
           <div id="ahrefsCacheList" class="cache-list cache-list-domains">
             <div class="empty-cache-hint">暂无缓存数据</div>
           </div>

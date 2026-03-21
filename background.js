@@ -251,6 +251,27 @@ async function ahrefsGetFromCache(domain) {
  * @param {object[]} backlinks
  * @param {object} overview
  */
+/**
+ * 清空 Ahrefs 反链 IndexedDB（与设置页 / clearAllAhrefsCache 联动）
+ */
+async function ahrefsClearAllCacheIDB() {
+  try {
+    const db = await openAhrefsCacheIDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(AHREFS_CACHE_IDB_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(AHREFS_CACHE_IDB_STORE_NAME);
+      const req = store.clear();
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    console.log('[Ahrefs Cache] IndexedDB 已清空');
+  } catch (e) {
+    console.warn('[Ahrefs Cache] 清空 IndexedDB 失败:', e?.message);
+    throw e;
+  }
+}
+
 async function ahrefsSaveToCache(domain, urlFromList, backlinks, overview) {
   const normalized = ahrefsNormalizeDomainForCache(domain);
   if (!normalized) return;
@@ -481,6 +502,12 @@ async function handleAhrefsDirectBacklinks(domain, forceRefresh = false) {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Background] 收到消息:', request.action, request.domain || '');
+  if (request.action === 'clearAhrefsCacheIDB') {
+    ahrefsClearAllCacheIDB()
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => sendResponse({ success: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (request.action === 'ahrefsDirectBacklinks') {
     console.log('[Background] 开始处理 ahrefsDirectBacklinks, domain:', request.domain);
     handleAhrefsDirectBacklinks(request.domain)

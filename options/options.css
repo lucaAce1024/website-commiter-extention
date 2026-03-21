@@ -960,6 +960,29 @@ body {
   color: var(--text-primary);
 }
 
+.extension-task-status {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.extension-task-status p {
+  margin: 0 0 8px;
+}
+
+.extension-task-status p:last-child {
+  margin-bottom: 0;
+}
+
+.extension-status-list {
+  margin: 8px 0 0 1.25em;
+  padding: 0;
+}
+
+.extension-status-list li {
+  margin-bottom: 4px;
+}
+
 .cache-subsection {
   margin-top: 16px;
   padding: 16px;

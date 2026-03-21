@@ -317,9 +317,14 @@
     <div id="panel-explore" class="mode-panel hidden">
       <section class="section">
         <div class="section-header">
-          <span class="label">任务批次</span>
-          <span id="exploreBatchId" class="explore-batch-id">—</span>
-          <button type="button" id="exploreClearCacheBtn" class="btn-link btn-sm" title="清除所有采集数据">清除缓存</button>
+          <div class="explore-batch-header-left">
+            <span class="label">任务批次</span>
+            <span id="exploreBatchId" class="explore-batch-id">—</span>
+          </div>
+          <div class="section-header-right">
+            <button type="button" id="exploreResetStateBtn" class="btn-link btn-sm" title="清空任务与批次并重置侧栏，保留 Ahrefs 缓存">重置状态</button>
+            <button type="button" id="exploreClearCacheBtn" class="btn-link btn-sm" title="仅清除 Ahrefs 元数据与 IndexedDB 缓存">清除缓存</button>
+          </div>
         </div>
         <div id="exploreBatchStatus" class="explore-batch-status hidden">—</div>
 
@@ -438,8 +443,17 @@
           <span class="label">📜 实时日志</span>
           <button type="button" id="autoCollectClearLogBtn" class="btn-link btn-sm">清除</button>
         </div>
-        <div id="autoCollectLogContainer" class="log-container">
-          <div class="empty-log-hint">暂无日志</div>
+        <!-- 外层视口负责 max-height + 滚动，避免 ul 在部分布局下高度不生效导致撑满整页 -->
+        <div class="auto-collect-log-viewport" id="autoCollectLogViewport">
+          <ul
+            id="autoCollectLogContainer"
+            class="auto-collect-log-list"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+          >
+            <li class="empty-log-hint">暂无日志</li>
+          </ul>
         </div>
       </section>
 

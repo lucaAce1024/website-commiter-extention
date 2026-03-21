@@ -116,6 +116,7 @@ const elements = {
   // 外链采集模式
   exploreBatchId: document.getElementById('exploreBatchId'),
   exploreBatchStatus: document.getElementById('exploreBatchStatus'),
+  exploreResetStateBtn: document.getElementById('exploreResetStateBtn'),
   exploreClearCacheBtn: document.getElementById('exploreClearCacheBtn'),
   exploreManualDetectBtn: document.getElementById('exploreManualDetectBtn'),
   exploreManualDetectModal: document.getElementById('exploreManualDetectModal'),
@@ -183,6 +184,7 @@ const elements = {
   autoCollectQueueList: document.getElementById('autoCollectQueueList'),
   autoCollectLogSection: document.getElementById('autoCollectLogSection'),
   autoCollectClearLogBtn: document.getElementById('autoCollectClearLogBtn'),
+  autoCollectLogViewport: document.getElementById('autoCollectLogViewport'),
   autoCollectLogContainer: document.getElementById('autoCollectLogContainer'),
 };
 
@@ -223,7 +225,9 @@ let autoCollectLastErrorText = ''; // 最近一次错误信息
 let autoCollectLastKnownStep = 0; // 用于在 currentBatchId 清空时仍可显示“到哪一步”
 let autoCollectHistoryTask = null; // 页面恢复时用于“加载历史批次”
 const AUTO_COLLECT_TASK_KEY = 'autoCollectTask';
-const AUTO_COLLECT_LOG_MAX = 100; // 最大日志条数
+const AUTO_COLLECT_LOG_MAX = 50; // 最大日志条数（仅保留最近 N 条）
+/** 用户点击「重置状态」后，阻止 saveAutoCollectTask 把任务写回 storage（避免收尾循环覆盖清空） */
+let autoCollectStorageSuppressed = false;
 
 // 循环模式配置
 const LOOP_CONFIG = {
@@ -284,6 +288,9 @@ async function runAhrefsFetchingLoop(domains, startIndex = 0) {
 
     const d = domains[i];
     showExploreMessage(`[${i + 1}/${domains.length}] 正在拉取 ${d} 的反链…`, 'info');
+    if (autoCollectRunning) {
+      addAutoCollectLog(`步骤3: 域名进度 ${i + 1}/${domains.length}（${d}）`, 'info');
+    }
 
     const result = await fetchAhrefsBacklinksForDomain(d, i, domains.length);
     if (result.urlFromList.length > 0) {
@@ -597,6 +604,15 @@ async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
           overview: resp.overview || {},
           fromCache: !!resp.fromCache
         };
+        // Background 实际缓存在 IndexedDB；设置页「Ahrefs 域名缓存」读 chrome.storage 的 ahrefs_domain_cache，需同步一份供展示
+        if (typeof saveAhrefsCacheForDomain === 'function') {
+          try {
+            const cacheKey = typeof normalizeDomain === 'function' ? normalizeDomain(domain) : domain;
+            await saveAhrefsCacheForDomain(cacheKey, result);
+          } catch (syncErr) {
+            console.warn('[Ahrefs] 同步到 storage 缓存失败（设置页展示用）:', syncErr);
+          }
+        }
         const cacheText = result.fromCache ? '（缓存命中）' : '';
         showExploreMessage(`[${idx + 1}/${total}] 域名 ${domain} 获取到 ${resp.urlFromList.length} 条反链 ${cacheText} ✓`, 'success');
         return result;
@@ -1603,11 +1619,80 @@ async function loadExploreState() {
   await restoreAutoCollectState();
 }
 
+/**
+ * 写入 backlinkExplorationBatches 前裁剪批次，避免 chrome.storage.local QuotaBytes。
+ * 根因：自动采集 step3 会把整表 backlinks 放进 stepOutputs.step3.backlinks，与 urlList 同量级；
+ * prepareAutoCollectTaskForStorage 只裁剪 autoCollectTask，不会处理本存储键。
+ * @param {object} batch
+ * @returns {object} 可安全持久化的新对象（不修改入参）
+ */
+function prepareExploreBatchForStorage(batch) {
+  if (!batch || typeof batch !== 'object') return batch;
+  const b = { ...batch };
+
+  if (b.stepOutputs && typeof b.stepOutputs === 'object') {
+    const so = { ...b.stepOutputs };
+
+    if (so.step1 && typeof so.step1 === 'object') {
+      so.step1 = {
+        count: typeof so.step1.count === 'number'
+          ? so.step1.count
+          : (Array.isArray(so.step1.domains) ? so.step1.domains.length : 0)
+      };
+    }
+    if (so.step2 && typeof so.step2 === 'object') {
+      so.step2 = {
+        passed: so.step2.passed,
+        failed: so.step2.failed || 0
+      };
+    }
+    if (so.step3 && typeof so.step3 === 'object') {
+      so.step3 = {
+        count: typeof so.step3.count === 'number'
+          ? so.step3.count
+          : (Array.isArray(so.step3.backlinks) ? so.step3.backlinks.length : 0)
+      };
+    }
+    if (so.step4 && typeof so.step4 === 'object') {
+      const ds = Array.isArray(so.step4.discoveredSites) ? so.step4.discoveredSites : [];
+      const trimmed = ds.slice(0, 500).map((item) => {
+        if (!item) return null;
+        if (typeof item === 'string') return { url: item };
+        if (typeof item === 'object' && item.url) return { url: item.url };
+        const url = item.urlFrom || item.siteUrl || item.link;
+        return url ? { url } : null;
+      }).filter(Boolean);
+      so.step4 = {
+        count: typeof so.step4.count === 'number' ? so.step4.count : ds.length,
+        discoveredSites: trimmed
+      };
+    }
+    b.stepOutputs = so;
+  }
+
+  // 仅保留「待遍历 URL」所需的 DR 行，避免 backlinkDetails 与全量反链同体积
+  if (Array.isArray(b.traverseBacklinkList) && b.traverseBacklinkList.length > 0 && Array.isArray(b.backlinkDetails)) {
+    const need = new Set();
+    for (const u of b.traverseBacklinkList) {
+      const n = typeof normalizeUrl === 'function' ? normalizeUrl(u) : u;
+      if (n) need.add(n);
+    }
+    b.backlinkDetails = b.backlinkDetails.filter((d) => {
+      if (!d || !d.urlFrom) return false;
+      const n = typeof normalizeUrl === 'function' ? normalizeUrl(d.urlFrom) : d.urlFrom;
+      return need.has(n);
+    });
+  }
+
+  return b;
+}
+
 async function saveExploreBatchWithExcludeFilter(batch) {
   if (!batch || typeof saveBatch !== 'function') return;
   const exclude = await getExploreExcludeDomainsForFilter();
+  let b;
   if (exclude && typeof filterUrlsExcludingDomains === 'function' && typeof filterDomainsExcludingDomains === 'function') {
-    const b = { ...batch };
+    b = { ...batch };
     b.urlList = filterUrlsExcludingDomains(b.urlList || [], exclude);
     b.dugDomains = filterDomainsExcludingDomains(b.dugDomains || [], exclude);
     if (Array.isArray(b.discoveredSites) && typeof normalizeDomain === 'function' && typeof getExcludeDomainSet === 'function') {
@@ -1618,10 +1703,39 @@ async function saveExploreBatchWithExcludeFilter(batch) {
         return !host || !set.has(host);
       });
     }
-    await saveBatch(b);
-    if (exploreCurrentBatch && exploreCurrentBatch.batchId === b.batchId) exploreCurrentBatch = b;
   } else {
-    await saveBatch(batch);
+    b = { ...batch };
+  }
+
+  const toSave = prepareExploreBatchForStorage(b);
+  try {
+    await saveBatch(toSave);
+  } catch (e) {
+    if (isQuotaExceededError(e)) {
+      console.warn('[Explore] saveBatch 配额超限，尝试极简裁剪后重试:', e?.message);
+      const minimal = prepareExploreBatchForStorage(b);
+      if (minimal.urlProgress && typeof minimal.urlProgress === 'object' && !Array.isArray(minimal.urlProgress)) {
+        const keys = Object.keys(minimal.urlProgress);
+        if (keys.length > 2000) {
+          const keep = new Set(keys.slice(-1500));
+          const np = {};
+          for (const k of keys) {
+            if (keep.has(k)) np[k] = minimal.urlProgress[k];
+          }
+          minimal.urlProgress = np;
+        }
+      }
+      if (Array.isArray(minimal.traverseBacklinkList) && minimal.traverseBacklinkList.length > 8000) {
+        minimal.traverseBacklinkList = minimal.traverseBacklinkList.slice(0, 8000);
+      }
+      await saveBatch(minimal);
+    } else {
+      throw e;
+    }
+  }
+  // 有排除域名时：与旧逻辑一致，用浅拷贝更新列表（避免污染原引用）
+  if (exclude && exploreCurrentBatch && exploreCurrentBatch.batchId === batch.batchId) {
+    exploreCurrentBatch = b;
   }
 }
 
@@ -2095,6 +2209,230 @@ function showFeishuMessage(message, type = 'info') {
       if (elements.feishuStatusMessage) elements.feishuStatusMessage.classList.add('hidden');
     }, 5000);
   }
+}
+
+/**
+ * 仅执行遍历检测循环（与「遍历检测可评论站点」按钮共用）
+ * 必须在 setupEventListeners 之前定义为顶层函数，供自动采集步骤4调用。
+ * @param {string} currentBatchId
+ */
+async function runTraverseLoopOnly(currentBatchId) {
+  const TRAVERSE_DELAY_MS = 800;
+  const DR_MIN_THRESHOLD = 20;
+  let batch = await loadBatch(currentBatchId);
+  if (!batch || !batch.traverseBacklinkList || batch.traverseBacklinkList.length === 0) return;
+  const traverseList = batch.traverseBacklinkList;
+
+  const backlinkDetails = batch.backlinkDetails || [];
+  const urlToDrMap = new Map();
+  for (const detail of backlinkDetails) {
+    if (detail.urlFrom) {
+      const normUrl = normalizeUrl(detail.urlFrom);
+      urlToDrMap.set(normUrl, detail.domainRating || 0);
+    }
+  }
+
+  for (let i = batch.lastProcessedIndex || 0; i < traverseList.length; i++) {
+    if (autoCollectStopped) {
+      const b = await loadBatch(currentBatchId);
+      if (b) {
+        b.status = 'stopped';
+        b.updatedAt = new Date().toISOString();
+        await saveExploreBatchWithExcludeFilter(b);
+        if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = b;
+      }
+      addAutoCollectLog('步骤4: 已停止', 'warning');
+      return;
+    }
+    if (autoCollectRunning) {
+      addAutoCollectLog(`步骤4: 待检测 URL ${i + 1}/${traverseList.length}`, 'info');
+    }
+    const loaded = await loadBatch(currentBatchId);
+    if (loaded && (loaded.status === 'paused' || loaded.status === 'stopped')) {
+      exploreCurrentBatch = loaded;
+      updateExploreControls(loaded.status);
+      showExploreMessage(loaded.status === 'stopped' ? '已停止' : '已暂停', 'info');
+      return;
+    }
+    if (loaded) batch = loaded;
+    const url = traverseList[i];
+    const urlNorm = normalizeUrl(url);
+
+    const urlDr = urlToDrMap.get(urlNorm) ?? 0;
+    if (urlDr < DR_MIN_THRESHOLD) {
+      console.log(`[Traverse] 跳过 DR=${urlDr} < ${DR_MIN_THRESHOLD}: ${urlNorm}`);
+      batch.urlProgress = batch.urlProgress || {};
+      batch.urlProgress[urlNorm] = { commentable: false, blogCommentScore: 0, requiresLogin: false, skipped: true, skipReason: `DR ${urlDr} < ${DR_MIN_THRESHOLD}` };
+      batch.lastProcessedIndex = i + 1;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
+      continue;
+    }
+
+    showExploreMessage(`检测可评论 (${i + 1}/${traverseList.length}): ${urlNorm.slice(0, 50)}…`, 'info');
+    let tab;
+    try {
+      tab = await new Promise((resolve) => chrome.tabs.create({ url: urlNorm || url }, resolve));
+    } catch (e) {
+      batch.urlProgress = batch.urlProgress || {};
+      batch.urlProgress[urlNorm] = { commentable: false, error: e?.message };
+      batch.lastProcessedIndex = i + 1;
+      batch.updatedAt = new Date().toISOString();
+      await saveExploreBatchWithExcludeFilter(batch);
+      if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
+      continue;
+    }
+    const tabId = tab.id;
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }, 12000);
+      const listener = (id, changeInfo) => {
+        if (id === tabId && changeInfo.status === 'complete') {
+          clearTimeout(timeout);
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    const response = await chrome.tabs.sendMessage(tabId, { action: 'recognizeCommentForm', useLlm: false }).catch(() => null);
+    chrome.tabs.remove(tabId).catch(() => {});
+
+    const loadedAfter = await loadBatch(currentBatchId);
+    if (loadedAfter && (loadedAfter.status === 'paused' || loadedAfter.status === 'stopped')) {
+      exploreCurrentBatch = loadedAfter;
+      updateExploreControls(loadedAfter.status);
+      showExploreMessage(loadedAfter.status === 'stopped' ? '已停止' : '已暂停', 'info');
+      return;
+    }
+
+    const commentable = response?.success && response?.result?.isBlogCommentSite === true;
+    const blogCommentScore = response?.result?.blogCommentScore;
+    const requiresLogin = response?.result?.requiresLogin === true;
+    const isNavigationSite = false;
+
+    batch.urlProgress = batch.urlProgress || {};
+    batch.urlProgress[urlNorm] = { commentable, blogCommentScore, requiresLogin, isNavigationSite };
+
+    if (typeof updateBacklinkFlagsInFeishu === 'function') {
+      try {
+        const flagsResult = await updateBacklinkFlagsInFeishu(urlNorm, {
+          isBlogComment: commentable,
+          requiresLogin: requiresLogin,
+          isNavigationSite: isNavigationSite,
+          blogCommentScore: blogCommentScore
+        });
+        if (!flagsResult.ok && !flagsResult.skipped && flagsResult.error) {
+          console.warn('[Traverse] 回写飞书标记失败:', flagsResult.error);
+        } else if (flagsResult.updated) {
+          console.log('[Traverse] 已回写飞书标记:', urlNorm);
+        }
+      } catch (e) {
+        console.warn('[Traverse] 回写飞书标记异常:', e);
+      }
+    }
+
+    if (commentable) {
+      batch.discoveredSites = batch.discoveredSites || [];
+      const exists = batch.discoveredSites.some((s) => normalizeUrl((s && s.url) || s) === urlNorm);
+      if (!exists) {
+        const newSite = { url: urlNorm, discoveredAt: new Date().toISOString(), blogCommentScore, requiresLogin, isNavigationSite };
+        batch.discoveredSites.push(newSite);
+      }
+    }
+    batch.lastProcessedIndex = i + 1;
+    batch.updatedAt = new Date().toISOString();
+    await saveExploreBatchWithExcludeFilter(batch);
+    if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
+    renderExploreDiscoveredList();
+    await new Promise((r) => setTimeout(r, TRAVERSE_DELAY_MS));
+  }
+  batch.phase = 'idle';
+  batch.status = 'idle';
+  batch.updatedAt = new Date().toISOString();
+  await saveExploreBatchWithExcludeFilter(batch);
+  if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
+  updateExploreControls(batch.status);
+  const total = (batch.discoveredSites || []).length;
+  showExploreMessage(`遍历结束：已发现 ${total} 个可评论站`, 'success');
+  if (autoCollectRunning) {
+    addAutoCollectLog(`步骤4: 遍历结束，发现 ${total} 个可评论站`, 'success');
+  }
+}
+
+/**
+ * 重置外链采集「运行状态」：清空 storage 中的外链批次与自动采集任务，并重置侧栏内存与 UI。
+ * 不调用 clearAllAhrefsCache，保留 Ahrefs 域名/反链缓存以便继续复用。
+ */
+async function resetExploreCollectionState() {
+  if (autoCollectRunning) {
+    autoCollectStopped = true;
+  }
+  exploreAhrefsAborted = true;
+  exploreAhrefsPaused = false;
+
+  autoCollectStorageSuppressed = true;
+
+  await chrome.storage.local.remove(['backlinkExplorationBatches', AUTO_COLLECT_TASK_KEY]);
+
+  exploreCurrentBatch = null;
+  exploreSelectedUrls = new Set();
+  exploreAhrefsDomains = [];
+  exploreAhrefsRunning = false;
+  exploreAhrefsPaused = false;
+  exploreAhrefsAborted = false;
+  exploreAhrefsDomainsQueue = [];
+  exploreAhrefsCurrentIndex = 0;
+  exploreAhrefsFeishuConfig = null;
+
+  autoCollectTask = null;
+  autoCollectRunning = false;
+  autoCollectPaused = false;
+  autoCollectStopped = false;
+  autoCollectLoopRunning = false;
+  autoCollectRunStuck = false;
+  autoCollectHistoryTask = null;
+  autoCollectLogs = [];
+  autoCollectLastKnownStep = 0;
+  setAutoCollectErrorText('');
+
+  if (elements.autoCollectProgress) {
+    elements.autoCollectProgress.classList.add('hidden');
+  }
+  if (elements.autoCollectQueueSection) {
+    elements.autoCollectQueueSection.classList.add('hidden');
+  }
+  if (elements.autoCollectLogSection) {
+    elements.autoCollectLogSection.classList.add('hidden');
+  }
+  renderAutoCollectLogs();
+  updateAutoCollectProgress(0, '准备中...');
+  updateAutoCollectControls(false, false);
+  updateAutoCollectStatusDetails();
+  renderAutoCollectQueue();
+
+  if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
+  if (elements.exploreBatchStatus) {
+    elements.exploreBatchStatus.textContent = '';
+    elements.exploreBatchStatus.classList.add('hidden');
+  }
+  if (elements.exploreAhrefsOverview) {
+    elements.exploreAhrefsOverview.innerHTML = '';
+    elements.exploreAhrefsOverview.classList.add('hidden');
+  }
+  if (elements.exploreAhrefsProgress) {
+    elements.exploreAhrefsProgress.innerHTML = '';
+    elements.exploreAhrefsProgress.classList.add('hidden');
+  }
+  renderExploreUrlList();
+  renderExploreDiscoveredList();
+  renderExploreDugDomainsList();
+  await renderExploreBatchSelect();
+  updateExploreControls(null);
 }
 
 // ========== 事件监听设置 ==========
@@ -2689,42 +3027,38 @@ function setupEventListeners() {
   });
 
   // ========== 外链采集模式事件 ==========
+  /** 仅清除 Ahrefs 域名缓存（storage 元数据 + IndexedDB），不影响批次与自动采集任务 */
   elements.exploreClearCacheBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
-    if (!confirm('确定要清除外链采集的所有数据吗？此操作不可撤销。')) return;
+    if (!confirm(
+      '确定清除 Ahrefs 域名缓存吗？\n\n' +
+      '将删除元数据（storage）与 IndexedDB 中的反链缓存；不会清空外链批次与自动采集任务。'
+    )) return;
     try {
-      // 清除当前批次数据
-      if (exploreCurrentBatch && typeof deleteBatch === 'function') {
-        await deleteBatch(exploreCurrentBatch.batchId);
-      }
-      // 清除 Ahrefs 域名缓存
       if (typeof clearAllAhrefsCache === 'function') {
         await clearAllAhrefsCache();
         console.log('[Explore] Ahrefs 域名缓存已清除');
       }
-      exploreCurrentBatch = null;
-      // 重置 UI
-      if (elements.exploreBatchId) elements.exploreBatchId.textContent = '—';
-      if (elements.exploreBatchStatus) {
-        elements.exploreBatchStatus.textContent = '';
-        elements.exploreBatchStatus.classList.add('hidden');
-      }
-      if (elements.exploreAhrefsOverview) {
-        elements.exploreAhrefsOverview.innerHTML = '';
-        elements.exploreAhrefsOverview.classList.add('hidden');
-      }
-      if (elements.exploreAhrefsProgress) {
-        elements.exploreAhrefsProgress.innerHTML = '';
-        elements.exploreAhrefsProgress.classList.add('hidden');
-      }
-      // 重新渲染列表
-      renderExploreUrlList();
-      renderExploreDiscoveredList();
-      renderExploreDugDomainsList();
-      updateExploreControls(null);
-      showExploreMessage('已清除外链采集缓存', 'success');
+      showExploreMessage('已清除 Ahrefs 域名缓存', 'success');
     } catch (e) {
       showExploreMessage(e?.message || '清除失败', 'error');
+    }
+  });
+
+  /** 清空任务/批次并重置侧栏，保留 Ahrefs 缓存，便于重新开始采集 */
+  elements.exploreResetStateBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'explore') return;
+    if (!confirm(
+      '确定要重置外链采集运行状态吗？\n\n' +
+      '将删除：全部外链批次（storage）、自动采集任务记录（若存在）；\n' +
+      '不会删除 Ahrefs 域名缓存。\n' +
+      '若自动采集正在运行，会先请求停止再清空。\n\n此操作不可撤销。'
+    )) return;
+    try {
+      await resetExploreCollectionState();
+      showExploreMessage('已重置外链采集状态（已保留 Ahrefs 缓存）', 'success');
+    } catch (e) {
+      showExploreMessage(e?.message || '重置失败', 'error');
     }
   });
 
@@ -3075,141 +3409,6 @@ function setupEventListeners() {
       showExploreMessage(e?.message || '拉取反链失败', 'error');
     }
   });
-
-  async function runTraverseLoopOnly(currentBatchId) {
-    const TRAVERSE_DELAY_MS = 800;
-    const DR_MIN_THRESHOLD = 20; // DR 权重阈值，低于此值直接跳过
-    let batch = await loadBatch(currentBatchId);
-    if (!batch || !batch.traverseBacklinkList || batch.traverseBacklinkList.length === 0) return;
-    const traverseList = batch.traverseBacklinkList;
-
-    // 构建 URL -> DR 映射表（用于 DR 过滤）
-    const backlinkDetails = batch.backlinkDetails || [];
-    const urlToDrMap = new Map();
-    for (const detail of backlinkDetails) {
-      if (detail.urlFrom) {
-        const normUrl = normalizeUrl(detail.urlFrom);
-        urlToDrMap.set(normUrl, detail.domainRating || 0);
-      }
-    }
-
-    for (let i = batch.lastProcessedIndex || 0; i < traverseList.length; i++) {
-      const loaded = await loadBatch(currentBatchId);
-      if (loaded && (loaded.status === 'paused' || loaded.status === 'stopped')) {
-        exploreCurrentBatch = loaded;
-        updateExploreControls(loaded.status);
-        showExploreMessage(loaded.status === 'stopped' ? '已停止' : '已暂停', 'info');
-        return;
-      }
-      if (loaded) batch = loaded;
-      const url = traverseList[i];
-      const urlNorm = normalizeUrl(url);
-
-      // DR 过滤：如果 DR < 20，跳过检测，不写入飞书
-      const urlDr = urlToDrMap.get(urlNorm) ?? 0;
-      if (urlDr < DR_MIN_THRESHOLD) {
-        console.log(`[Traverse] 跳过 DR=${urlDr} < ${DR_MIN_THRESHOLD}: ${urlNorm}`);
-        batch.urlProgress = batch.urlProgress || {};
-        batch.urlProgress[urlNorm] = { commentable: false, blogCommentScore: 0, requiresLogin: false, skipped: true, skipReason: `DR ${urlDr} < ${DR_MIN_THRESHOLD}` };
-        batch.lastProcessedIndex = i + 1;
-        batch.updatedAt = new Date().toISOString();
-        await saveExploreBatchWithExcludeFilter(batch);
-        if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
-        continue;
-      }
-
-      showExploreMessage(`检测可评论 (${i + 1}/${traverseList.length}): ${urlNorm.slice(0, 50)}…`, 'info');
-      let tab;
-      try {
-        tab = await new Promise((resolve) => chrome.tabs.create({ url: urlNorm || url }, resolve));
-      } catch (e) {
-        batch.urlProgress = batch.urlProgress || {};
-        batch.urlProgress[urlNorm] = { commentable: false, error: e?.message };
-        batch.lastProcessedIndex = i + 1;
-        batch.updatedAt = new Date().toISOString();
-        await saveExploreBatchWithExcludeFilter(batch);
-        if (exploreCurrentBatch?.batchId === currentBatchId) exploreCurrentBatch = batch;
-        continue;
-      }
-      const tabId = tab.id;
-      await new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }, 12000);
-        const listener = (id, changeInfo) => {
-          if (id === tabId && changeInfo.status === 'complete') {
-            clearTimeout(timeout);
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve();
-          }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-      });
-      await new Promise((r) => setTimeout(r, 1500));
-      const response = await chrome.tabs.sendMessage(tabId, { action: 'recognizeCommentForm', useLlm: false }).catch(() => null);
-      chrome.tabs.remove(tabId).catch(() => {});
-
-      const loadedAfter = await loadBatch(currentBatchId);
-      if (loadedAfter && (loadedAfter.status === 'paused' || loadedAfter.status === 'stopped')) {
-        exploreCurrentBatch = loadedAfter;
-        updateExploreControls(loadedAfter.status);
-        showExploreMessage(loadedAfter.status === 'stopped' ? '已停止' : '已暂停', 'info');
-        return;
-      }
-
-      const commentable = response?.success && response?.result?.isBlogCommentSite === true;
-      const blogCommentScore = response?.result?.blogCommentScore;
-      const requiresLogin = response?.result?.requiresLogin === true;
-      // TODO: 导航站检测待实现，目前默认为 false
-      const isNavigationSite = false;
-
-      batch.urlProgress = batch.urlProgress || {};
-      batch.urlProgress[urlNorm] = { commentable, blogCommentScore, requiresLogin, isNavigationSite };
-
-      // 回写标记到第一个飞书表格（Ahrefs 反链表）
-      if (typeof updateBacklinkFlagsInFeishu === 'function') {
-        try {
-          const flagsResult = await updateBacklinkFlagsInFeishu(urlNorm, {
-            isBlogComment: commentable,
-            requiresLogin: requiresLogin,
-            isNavigationSite: isNavigationSite,
-            blogCommentScore: blogCommentScore
-          });
-          if (!flagsResult.ok && !flagsResult.skipped && flagsResult.error) {
-            console.warn('[Traverse] 回写飞书标记失败:', flagsResult.error);
-          } else if (flagsResult.updated) {
-            console.log('[Traverse] 已回写飞书标记:', urlNorm);
-          }
-        } catch (e) {
-          console.warn('[Traverse] 回写飞书标记异常:', e);
-        }
-      }
-
-      // 仍然保留 discoveredSites 用于本地展示
-      if (commentable) {
-        batch.discoveredSites = batch.discoveredSites || [];
-        const exists = batch.discoveredSites.some((s) => normalizeUrl((s && s.url) || s) === urlNorm);
-        if (!exists) {
-          const newSite = { url: urlNorm, discoveredAt: new Date().toISOString(), blogCommentScore, requiresLogin, isNavigationSite };
-          batch.discoveredSites.push(newSite);
-        }
-      }
-      batch.lastProcessedIndex = i + 1;
-      batch.updatedAt = new Date().toISOString();
-      await saveExploreBatchWithExcludeFilter(batch);
-      if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
-      renderExploreDiscoveredList();
-      await new Promise((r) => setTimeout(r, TRAVERSE_DELAY_MS));
-    }
-    batch.phase = 'idle';
-    batch.updatedAt = new Date().toISOString();
-    await saveExploreBatchWithExcludeFilter(batch);
-    if (exploreCurrentBatch && exploreCurrentBatch.batchId === currentBatchId) exploreCurrentBatch = batch;
-    updateExploreControls(batch.status);
-    const total = (batch.discoveredSites || []).length;
-    showExploreMessage(`遍历结束：已发现 ${total} 个可评论站`, 'success');
-  }
 
   elements.exploreStartTraverseBtn?.addEventListener('click', async () => {
     if (currentMode !== 'explore') return;
@@ -4835,6 +5034,9 @@ function prepareAutoCollectTaskForStorage(task, opts = {}) {
  * 保存自动采集任务
  */
 async function saveAutoCollectTask(task) {
+  if (autoCollectStorageSuppressed) {
+    return;
+  }
   try {
     // 先走常规裁剪
     let toSave = prepareAutoCollectTaskForStorage(task);
@@ -4932,9 +5134,9 @@ function addAutoCollectLog(message, type = 'info') {
   const now = new Date();
   const timeStr = now.toTimeString().slice(0, 8);
   const logEntry = { time: timeStr, message, type };
-  autoCollectLogs.unshift(logEntry);
+  autoCollectLogs.push(logEntry);
   if (autoCollectLogs.length > AUTO_COLLECT_LOG_MAX) {
-    autoCollectLogs.pop();
+    autoCollectLogs.shift();
   }
   if (type === 'error') {
     setAutoCollectErrorText(message);
@@ -4951,14 +5153,18 @@ function renderAutoCollectLogs() {
   if (!container) return;
 
   if (autoCollectLogs.length === 0) {
-    container.innerHTML = '<div class="empty-log-hint">暂无日志</div>';
+    container.innerHTML = '<li class="empty-log-hint">暂无日志</li>';
     return;
   }
 
   container.innerHTML = autoCollectLogs.map(log => {
     const icon = log.type === 'success' ? '✅' : log.type === 'error' ? '❌' : log.type === 'warning' ? '⚠️' : '🔄';
-    return `<div class="log-item log-${log.type}"><span class="log-time">[${log.time}]</span>${icon} ${escHtml(log.message)}</div>`;
+    return `<li class="log-item log-${log.type}"><span class="log-time">[${log.time}]</span>${icon} ${escHtml(log.message)}</li>`;
   }).join('');
+  requestAnimationFrame(() => {
+    const scrollEl = elements.autoCollectLogViewport || container;
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  });
 }
 
 /**
@@ -4983,10 +5189,10 @@ function getAutoCollectCurrentBatch() {
 
 function autoCollectStepToLabel(step) {
   const s = Number(step) || 0;
-  if (s === 1) return '步骤 1/4：提取域名';
-  if (s === 2) return '步骤 2/4：WHOIS 筛选';
-  if (s === 3) return '步骤 3/4：拉取反链';
-  if (s === 4) return '步骤 4/4：遍历检测';
+  if (s === 1) return '1/4：提取域名';
+  if (s === 2) return '2/4：WHOIS 筛选';
+  if (s === 3) return '3/4：拉取反链';
+  if (s === 4) return '4/4：遍历检测';
   return '—';
 }
 
@@ -5337,129 +5543,129 @@ async function autoCollectStep3_FetchBacklinks(batch, domains) {
 }
 
 /**
- * 步骤四：遍历检测可评论站点
+ * 步骤四：遍历检测可评论站点（与「遍历检测可评论站点」按钮共用 runTraverseLoopOnly）
  */
 async function autoCollectStep4_TraverseDetect(batch, urls) {
-  addAutoCollectLog(`步骤4: 开始遍历检测 (${urls.length} 个 URL)`, 'info');
+  addAutoCollectLog(`步骤4: 开始遍历检测（待检测 URL 约 ${urls.length} 条）`, 'info');
   batch.currentStep = 4;
   autoCollectLastKnownStep = 4;
   autoCollectRunStuck = false;
   setAutoCollectErrorText('');
   updateAutoCollectStatusDetails();
-  batch.traverseBacklinkList = urls;
   updateAutoCollectProgress(60, `正在遍历检测可评论站点...`);
 
   const prevExploreBatch = exploreCurrentBatch;
   exploreCurrentBatch = batch;
 
   try {
-    // 没有待遍历 URL 时，直接跳过，避免外部遍历逻辑提前返回导致 status 永远停在 running
     if (!Array.isArray(urls) || urls.length === 0) {
       batch.discoveredSites = [];
       batch.stepOutputs.step4 = { discoveredSites: [], count: 0 };
       batch.stats.discoveredSites = 0;
-      addAutoCollectLog('步骤4: 待遍历 URL 为空，跳过', 'info');
+      addAutoCollectLog('步骤4: 待检测 URL 为空，跳过', 'info');
       exploreCurrentBatch = prevExploreBatch;
       return { success: true, discoveredSites: [] };
     }
 
-    // 使用现有的遍历检测逻辑
-    if (typeof startTraverseDetection === 'function') {
-      // 保存当前批次，启动遍历
-      // 步骤4遍历只需要 traverseBacklinkList + backlinkDetails 的 DR 信息。
-      // 为了避免 QuotaBytes：在落盘前把 backlinkDetails 裁剪成“最小 DR 结构”。
-      if (Array.isArray(batch.backlinkDetails)) {
-        batch.backlinkDetails = batch.backlinkDetails
-          .map((d) => {
-            if (!d) return null;
-            const urlFrom = d.urlFrom || d.url || null;
-            const domainRating = typeof d.domainRating === 'number'
-              ? d.domainRating
-              : (d.domainRating != null ? Number(d.domainRating) : 0);
-            if (!urlFrom) return null;
-            return { urlFrom, domainRating: Number.isFinite(domainRating) ? domainRating : 0 };
-          })
-          .filter(Boolean);
-      }
-      // traverseBacklinkList 已提供遍历列表，urlList 不再需要落盘（减少体积）
-      if (Array.isArray(batch.urlList)) batch.urlList = [];
+    const exclude = await getExploreExcludeDomainsForFilter();
+    const filtered = typeof filterUrlsExcludingDomains === 'function'
+      ? filterUrlsExcludingDomains(urls, exclude)
+      : urls;
+    const traverseList = typeof dedupeUrls === 'function' ? dedupeUrls(filtered) : [...new Set(filtered)];
 
-      await saveExploreBatchWithExcludeFilter(batch);
-
-      // 调用现有的遍历函数
-      await startTraverseDetection();
-
-      // 等待遍历完成
-      const startTs = Date.now();
-      const MAX_WAIT_MS = Math.max(15 * 60 * 1000, urls.length * 20 * 1000); // 至少 15min；按 url 数增加上限
-      const NO_PROGRESS_MAX_MS = 3 * 60 * 1000; // 3min 内无 lastProcessedIndex/updatedAt 更新则认为卡住
-
-      let lastUpdatedAt = exploreCurrentBatch?.updatedAt || '';
-      let lastProcessedIndex = exploreCurrentBatch?.lastProcessedIndex || 0;
-      let lastProgressTs = Date.now();
-
-      while (exploreCurrentBatch?.status === 'running') {
-        await new Promise(r => setTimeout(r, 1500));
-
-        if (autoCollectStopped) {
-          addAutoCollectLog(`步骤4: 已停止`, 'warning');
-          // 尽量让内部遍历尽快退出
-          try {
-            exploreCurrentBatch.status = 'stopped';
-            exploreCurrentBatch.updatedAt = new Date().toISOString();
-            await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
-          } catch (_) {}
-          exploreCurrentBatch = prevExploreBatch;
-          return { success: false, stopped: true };
-        }
-
-        const nowTs = Date.now();
-        if (nowTs - startTs > MAX_WAIT_MS) {
-          autoCollectRunStuck = true;
-          addAutoCollectLog(`步骤4: 超时（>${Math.floor(MAX_WAIT_MS / 1000)}s），认为遍历卡住，已尝试停止`, 'error');
-          updateAutoCollectStatusDetails();
-          try {
-            exploreCurrentBatch.status = 'stopped';
-            exploreCurrentBatch.updatedAt = new Date().toISOString();
-            await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
-          } catch (_) {}
-          exploreCurrentBatch = prevExploreBatch;
-          return { success: false, error: '步骤4超时/卡住' };
-        }
-
-        // 判断是否有进展（lastProcessedIndex 或 updatedAt）
-        const curUpdatedAt = exploreCurrentBatch?.updatedAt || '';
-        const curProcessedIndex = exploreCurrentBatch?.lastProcessedIndex || 0;
-        if (curUpdatedAt !== lastUpdatedAt || curProcessedIndex !== lastProcessedIndex) {
-          lastUpdatedAt = curUpdatedAt;
-          lastProcessedIndex = curProcessedIndex;
-          lastProgressTs = nowTs;
-        } else if (nowTs - lastProgressTs > NO_PROGRESS_MAX_MS) {
-          autoCollectRunStuck = true;
-          addAutoCollectLog(`步骤4: 无进展超过 ${Math.floor(NO_PROGRESS_MAX_MS / 1000)}s，已尝试停止`, 'error');
-          updateAutoCollectStatusDetails();
-          try {
-            exploreCurrentBatch.status = 'stopped';
-            exploreCurrentBatch.updatedAt = new Date().toISOString();
-            await saveExploreBatchWithExcludeFilter(exploreCurrentBatch);
-          } catch (_) {}
-          exploreCurrentBatch = prevExploreBatch;
-          return { success: false, error: '步骤4无进展/卡住' };
-        }
-      }
-
-      // 遍历结束但未触发卡住超时：清理“卡住”标记
-      autoCollectRunStuck = false;
-      updateAutoCollectStatusDetails();
-
-      const discovered = batch.discoveredSites || [];
-      batch.stepOutputs.step4 = { discoveredSites: discovered, count: discovered.length };
-      batch.stats.discoveredSites = discovered.length;
-    } else {
-      throw new Error('遍历检测函数不可用');
+    if (traverseList.length === 0) {
+      addAutoCollectLog('步骤4: 排除域名过滤后无可检测 URL，跳过', 'warning');
+      batch.stepOutputs.step4 = { discoveredSites: [], count: 0 };
+      batch.stats.discoveredSites = 0;
+      exploreCurrentBatch = prevExploreBatch;
+      return { success: true, discoveredSites: [] };
     }
 
+    addAutoCollectLog(`步骤4: 待检测 URL 列表 ${traverseList.length} 条（已去重/过滤）`, 'info');
+
+    if (Array.isArray(batch.backlinkDetails)) {
+      batch.backlinkDetails = batch.backlinkDetails
+        .map((d) => {
+          if (!d) return null;
+          const urlFrom = d.urlFrom || d.url || null;
+          const domainRating = typeof d.domainRating === 'number'
+            ? d.domainRating
+            : (d.domainRating != null ? Number(d.domainRating) : 0);
+          if (!urlFrom) return null;
+          return { urlFrom, domainRating: Number.isFinite(domainRating) ? domainRating : 0 };
+        })
+        .filter(Boolean);
+    }
+    if (Array.isArray(batch.urlList)) batch.urlList = [];
+
+    batch.traverseBacklinkList = traverseList;
+    batch.lastProcessedIndex = 0;
+    batch.urlProgress = batch.urlProgress || {};
+    batch.discoveredSites = batch.discoveredSites || [];
+    batch.status = 'running';
+    batch.phase = 'traverse_check';
+
+    // 释放内存并避免后续 save 仍带大数组：stepOutputs 仅保留统计（持久化由 prepareExploreBatchForStorage 再裁剪一层）
+    if (batch.stepOutputs && typeof batch.stepOutputs === 'object') {
+      if (batch.stepOutputs.step1 && typeof batch.stepOutputs.step1 === 'object') {
+        batch.stepOutputs.step1 = {
+          count: batch.stepOutputs.step1.count
+            ?? (Array.isArray(batch.stepOutputs.step1.domains) ? batch.stepOutputs.step1.domains.length : 0)
+        };
+      }
+      if (batch.stepOutputs.step2 && typeof batch.stepOutputs.step2 === 'object') {
+        batch.stepOutputs.step2 = {
+          passed: batch.stepOutputs.step2.passed,
+          failed: batch.stepOutputs.step2.failed || 0
+        };
+      }
+      if (batch.stepOutputs.step3 && typeof batch.stepOutputs.step3 === 'object') {
+        batch.stepOutputs.step3 = {
+          count: batch.stepOutputs.step3.count
+            ?? batch.stats?.backlinks
+            ?? (Array.isArray(batch.stepOutputs.step3.backlinks) ? batch.stepOutputs.step3.backlinks.length : 0)
+        };
+      }
+    }
+
+    await saveExploreBatchWithExcludeFilter(batch);
+    if (exploreCurrentBatch?.batchId === batch.batchId) exploreCurrentBatch = batch;
+
+    updateAutoCollectProgress(75, `遍历检测中…（${traverseList.length} 条 URL）`);
+
+    await runTraverseLoopOnly(batch.batchId);
+
+    if (autoCollectStopped) {
+      const syncedStop = await loadBatch(batch.batchId);
+      if (syncedStop) {
+        batch.discoveredSites = syncedStop.discoveredSites || [];
+        batch.urlProgress = syncedStop.urlProgress;
+        batch.lastProcessedIndex = syncedStop.lastProcessedIndex;
+        batch.phase = syncedStop.phase;
+        batch.status = syncedStop.status;
+        batch.updatedAt = syncedStop.updatedAt;
+      }
+      exploreCurrentBatch = prevExploreBatch;
+      return { success: false, stopped: true };
+    }
+
+    const synced = await loadBatch(batch.batchId);
+    if (synced) {
+      batch.discoveredSites = synced.discoveredSites || [];
+      batch.urlProgress = synced.urlProgress;
+      batch.lastProcessedIndex = synced.lastProcessedIndex;
+      batch.phase = synced.phase;
+      batch.status = synced.status;
+      batch.updatedAt = synced.updatedAt;
+    }
+
+    batch.stepOutputs.step4 = {
+      discoveredSites: batch.discoveredSites || [],
+      count: (batch.discoveredSites || []).length
+    };
+    batch.stats.discoveredSites = (batch.discoveredSites || []).length;
     batch.updatedAt = new Date().toISOString();
+
     exploreCurrentBatch = prevExploreBatch;
     addAutoCollectLog(`步骤4: 发现 ${batch.stats.discoveredSites} 个可评论站点`, 'success');
     return { success: true, discoveredSites: batch.discoveredSites };
@@ -5623,6 +5829,9 @@ async function startAutoCollect() {
     return;
   }
 
+  // 新任务开始前允许写入（含 createAutoCollectTask 内的首次 save）
+  autoCollectStorageSuppressed = false;
+
   const loopMode = elements.loopModeEnabled?.checked || false;
   const maxDepth = parseInt(elements.loopMaxDepth?.value || '3', 10);
 
@@ -5675,6 +5884,8 @@ async function startAutoCollect() {
 
 /**
  * 运行自动采集循环
+ * 必须在 finally 中重置 autoCollectRunning：否则 runAutoCollectLoopInner 内任一 await 抛错（如 storage 配额）
+ * 会导致永远到不了「任务完成」段，开始按钮一直 disabled +「停止中...」。
  */
 async function runAutoCollectLoop() {
   const task = autoCollectTask;
@@ -5683,8 +5894,24 @@ async function runAutoCollectLoop() {
   autoCollectLoopRunning = true;
   try {
     await runAutoCollectLoopInner(task);
+  } catch (e) {
+    console.error('[AutoCollect] 循环异常:', e);
+    addAutoCollectLog(`自动采集异常: ${e?.message || e}`, 'error');
+    if (task) {
+      try {
+        task.status = 'failed';
+        task.updatedAt = new Date().toISOString();
+        await saveAutoCollectTask(task);
+      } catch (_) { /* ignore */ }
+    }
   } finally {
     autoCollectLoopRunning = false;
+    autoCollectRunning = false;
+    exploreAhrefsAborted = false;
+    autoCollectHistoryTask = null;
+    updateExploreControls(null);
+    updateAutoCollectControls(false, false);
+    updateAutoCollectStatusDetails();
   }
 }
 
@@ -5753,15 +5980,11 @@ async function runAutoCollectLoopInner(task) {
     renderAutoCollectQueue();
   }
 
-  // 任务完成
+  // 任务完成（running / 按钮状态在 runAutoCollectLoop.finally 统一重置）
   task.status = autoCollectStopped ? 'stopped' : 'completed';
   task.updatedAt = new Date().toISOString();
   await saveAutoCollectTask(task);
 
-  autoCollectRunning = false;
-  autoCollectHistoryTask = null;
-  updateExploreControls(null);
-  updateAutoCollectControls(false, false);
   updateAutoCollectProgress(100, task.status === 'completed' ? '任务完成' : '任务已停止');
   addAutoCollectLog(`自动采集任务${task.status === 'completed' ? '完成' : '已停止'}: 共发现 ${task.totalStats.discoveredSites} 个可评论站点`, 'success');
 }
@@ -5896,6 +6119,7 @@ async function restoreAutoCollectSelectedBatch(batchId) {
   task.currentBatchId = null;
 
   task.status = 'running';
+  autoCollectStorageSuppressed = false;
   await saveAutoCollectTask(task);
 
   autoCollectHistoryTask = null;
@@ -5925,6 +6149,7 @@ async function restoreAutoCollectSelectedBatch(batchId) {
  */
 async function restoreAutoCollectState() {
   try {
+    autoCollectStorageSuppressed = false;
     const task = await loadAutoCollectTask();
     if (!task) return;
 
@@ -6064,49 +6289,4 @@ function renderAutoCollectQueue() {
   }
 
   container.innerHTML = html;
-}
-
-/**
- * 更新自动采集控制按钮状态
- */
-function updateAutoCollectControls(running, paused) {
-  const startBtn = elements.autoCollectStartBtn;
-  const pauseBtn = elements.autoCollectPauseBtn;
-  const resumeBtn = elements.autoCollectResumeBtn;
-  const stopBtn = elements.autoCollectStopBtn;
-  const progressEl = elements.autoCollectProgress;
-  const queueSection = elements.autoCollectQueueSection;
-  const logSection = elements.autoCollectLogSection;
-  const isStopped = !!autoCollectStopped;
-
-  if (startBtn) {
-    startBtn.disabled = running;
-    if (isStopped && running) startBtn.textContent = '停止中...';
-    else if (isStopped && !running) startBtn.textContent = '重新开始';
-    else startBtn.textContent = running ? '运行中...' : '开始';
-  }
-  if (pauseBtn) {
-    pauseBtn.disabled = !running || paused || isStopped;
-    pauseBtn.classList.toggle('hidden', paused || isStopped);
-  }
-  if (resumeBtn) {
-    resumeBtn.disabled = !paused || isStopped;
-    resumeBtn.classList.toggle('hidden', !paused || isStopped);
-  }
-  if (stopBtn) {
-    stopBtn.disabled = !running || isStopped;
-  }
-
-  // 显示/隐藏进度区域
-  if (progressEl) {
-    progressEl.classList.remove('hidden');
-  }
-  if (queueSection) {
-    const shouldShow = running || paused || isStopped;
-    queueSection.classList.toggle('hidden', !shouldShow);
-  }
-  if (logSection) {
-    const shouldShow = running || paused || isStopped;
-    logSection.classList.toggle('hidden', !shouldShow);
-  }
 }

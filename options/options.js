@@ -1696,12 +1696,15 @@ async function testFeishuConnection() {
 
 const WHOIS_CACHE_KEY = 'domain_whois_cache';
 const BACKLINK_BATCHES_KEY = 'backlinkExplorationBatches';
-const AHERFS_CACHE_KEY = 'ahrefs_domain_cache';
+const AHREFS_CACHE_KEY = 'ahrefs_domain_cache';
+const AUTO_COLLECT_TASK_KEY = 'autoCollectTask';
 
 /**
  * Render Cache Management Tab
  */
 async function renderCacheTab() {
+  await renderExtensionExploreTaskStatus();
+
   // Load WHOIS cache
   await renderWhoisCache();
 
@@ -1710,6 +1713,69 @@ async function renderCacheTab() {
 
   // Load backlink batches
   await renderBacklinkBatches();
+}
+
+/**
+ * 展示侧栏外链采集相关 storage 快照（非实时「后台进程」：执行在侧栏页面）
+ */
+async function renderExtensionExploreTaskStatus() {
+  const el = document.getElementById('extensionExploreTaskStatus');
+  if (!el) return;
+
+  try {
+    const result = await chrome.storage.local.get([AUTO_COLLECT_TASK_KEY, BACKLINK_BATCHES_KEY]);
+    const task = result[AUTO_COLLECT_TASK_KEY];
+    const batchesRaw = result[BACKLINK_BATCHES_KEY] || {};
+    const batchList = Object.values(batchesRaw).filter(Boolean);
+
+    let html = '';
+
+    if (task) {
+      const st = escapeHtml(task.status || '—');
+      const tidShort = escapeHtml((task.taskId || '').slice(-12) || '—');
+      const nb = task.batches?.length ?? 0;
+      const np = Array.isArray(task.pendingBatches) ? task.pendingBatches.length : 0;
+      const cur = task.currentBatchId
+        ? escapeHtml(String(task.currentBatchId).slice(-12))
+        : '—';
+      html += `<p><strong>自动采集任务</strong>：状态 <code>${st}</code> · 任务ID …${tidShort}</p>`;
+      html += `<p>批次共 ${nb} 个，待处理队列 ${np} 个；currentBatchId 末尾：<code>${cur}</code></p>`;
+      if (task.taskType === 'loop' && task.loopConfig?.enabled) {
+        const d = task.loopConfig.currentDepth ?? 0;
+        const m = task.loopConfig.maxDepth ?? '—';
+        html += `<p>循环模式：当前深度 ${d} / 最大 ${m}</p>`;
+      }
+    } else {
+      html += '<p><strong>自动采集任务</strong>：无记录（未开始或已清除 <code>autoCollectTask</code>）</p>';
+    }
+
+    const active = batchList.filter((b) =>
+      b.status === 'running' ||
+      b.status === 'paused' ||
+      (b.phase && String(b.phase) !== 'idle')
+    );
+    html += `<p><strong>外链批次 storage</strong>（<code>backlinkExplorationBatches</code>）：共 <strong>${batchList.length}</strong> 个`;
+    if (active.length) {
+      html += `，其中 <strong>${active.length}</strong> 个状态非 idle（侧栏未打开时仅供参考）：</p><ul class="extension-status-list">`;
+      active.slice(0, 20).forEach((b) => {
+        const id = escapeHtml(String(b.batchId || '').slice(-16));
+        const st = escapeHtml(b.status || '—');
+        const ph = escapeHtml(b.phase || '—');
+        html += `<li><code>${id}</code> · ${st} · phase ${ph}</li>`;
+      });
+      if (active.length > 20) {
+        html += `<li>… 另有 ${active.length - 20} 条</li>`;
+      }
+      html += '</ul>';
+    } else {
+      html += '；无非 idle 状态批次。</p>';
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<p class="error-text">加载失败：${escapeHtml(e.message || String(e))}</p>`;
+    console.error('[Cache] extension task status:', e);
+  }
 }
 
 /**
@@ -1762,8 +1828,8 @@ async function renderAhrefsCache() {
   if (!ahrefsCacheList) return;
 
   try {
-    const result = await chrome.storage.local.get([AHERFS_CACHE_KEY]);
-    const cache = result[AHERFS_CACHE_KEY] || {};
+    const result = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
+    const cache = result[AHREFS_CACHE_KEY] || {};
     const entries = Object.entries(cache);
 
     if (ahrefsCacheCount) {
@@ -1780,15 +1846,24 @@ async function renderAhrefsCache() {
 
     ahrefsCacheList.innerHTML = entries.map(([domain, data]) => {
       const cachedAt = data.cachedAt || '未知';
-      const urlCount = (data.urlFromList || []).length;
-      const backlinkCount = (data.backlinks || []).length;
-      const dr = data.overview?.domainRating || data.overview?.dr || '-';
+      const urlCount = data.urlCount ?? (data.urlFromList || []).length;
+      const backlinkCount = data.backlinkCount ?? (data.backlinks || []).length;
+      const dr =
+        data.domainRating != null && data.domainRating !== ''
+          ? data.domainRating
+          : (data.overview?.domainRating ?? data.overview?.dr ?? '-');
 
-      // 计算缓存是否过期
+      // 与 Background Ahrefs IDB TTL 一致：约 7 天视为过期提示
       const now = new Date();
-      const cacheDate = data.cachedAt ? new Date(data.cachedAt) : null;
-      const daysOld = cacheDate ? Math.floor((now - cacheDate) / (1000 * 60 * 60 * 24)) : -1;
-      const isExpired = daysOld >= 15;
+      const cacheDate = data.lastCachedAt
+        ? new Date(data.lastCachedAt)
+        : data.cachedAt
+          ? new Date(data.cachedAt)
+          : null;
+      const daysOld = cacheDate && !Number.isNaN(cacheDate.getTime())
+        ? Math.floor((now - cacheDate) / (1000 * 60 * 60 * 24))
+        : -1;
+      const isExpired = daysOld >= 7;
       const daysLabel = daysOld >= 0 ? `${daysOld} 天前` : '未知';
 
       return `
@@ -2094,7 +2169,10 @@ async function clearAhrefsCache() {
   if (!confirm('确定要清除所有 Ahrefs 域名缓存吗？')) return;
 
   try {
-    await chrome.storage.local.remove([AHERFS_CACHE_KEY]);
+    await chrome.storage.local.remove([AHREFS_CACHE_KEY]);
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: 'clearAhrefsCacheIDB' }, () => resolve());
+    });
     await renderAhrefsCache();
     showToast('Ahrefs 缓存已清除', 'success');
   } catch (e) {
