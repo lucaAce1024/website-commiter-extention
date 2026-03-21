@@ -139,7 +139,10 @@ const CAPSOLVER_GET_RESULT = 'https://api.capsolver.com/getTaskResult';
 const AHREFS_OVERVIEW_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksOverview';
 const AHREFS_BACKLINKS_URL = 'https://ahrefs.com/v4/stGetFreeBacklinksList';
 const AHREFS_CACHE_KEY = 'ahrefsCheckedDomains';
-const AHREFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时缓存有效期
+const AHREFS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天缓存有效期
+const AHREFS_CACHE_IDB_DB_NAME = 'ahrefs_cache_idb_v1';
+const AHREFS_CACHE_IDB_STORE_NAME = 'ahrefs_cache_entries';
+const AHREFS_CACHE_IDB_MAX_DOMAINS = 20; // 与原 chrome.storage.local 行为保持一致
 
 /**
  * 标准化域名（用于缓存 key）
@@ -156,25 +159,85 @@ function ahrefsNormalizeDomainForCache(domain) {
  * @param {string} domain
  * @returns {Promise<{urlFromList: string[], backlinks: object[], overview: object}|null>}
  */
+function openAhrefsCacheIDB() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(AHREFS_CACHE_IDB_DB_NAME, 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(AHREFS_CACHE_IDB_STORE_NAME)) {
+          const store = db.createObjectStore(AHREFS_CACHE_IDB_STORE_NAME, { keyPath: 'normalized' });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function pruneAhrefsCacheIDB(db, maxDomains = AHREFS_CACHE_IDB_MAX_DOMAINS) {
+  try {
+    await new Promise((resolve) => {
+      const tx = db.transaction(AHREFS_CACHE_IDB_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(AHREFS_CACHE_IDB_STORE_NAME);
+      const index = store.index('timestamp');
+
+      let kept = 0;
+      const cursorReq = index.openCursor(null, 'prev'); // timestamp desc
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) return;
+        const key = cursor.primaryKey;
+        if (kept < maxDomains) {
+          kept += 1;
+          cursor.continue();
+        } else {
+          store.delete(key);
+          cursor.continue();
+        }
+      };
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve(); // best-effort
+    });
+  } catch (_) {
+    // ignore
+  }
+}
+
 async function ahrefsGetFromCache(domain) {
   const normalized = ahrefsNormalizeDomainForCache(domain);
   if (!normalized) return null;
   try {
-    const stored = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
-    const cache = stored[AHREFS_CACHE_KEY] || {};
-    const cached = cache[normalized];
-    if (!cached) return null;
-    const now = Date.now();
-    if (cached.timestamp && (now - cached.timestamp) < AHREFS_CACHE_TTL_MS) {
-      console.log('[Ahrefs Cache] 命中缓存:', normalized, '缓存时间:', new Date(cached.timestamp).toISOString());
-      return {
-        urlFromList: cached.urlFromList || [],
-        backlinks: cached.backlinks || [],
-        overview: cached.overview || {}
+    const db = await openAhrefsCacheIDB();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(AHREFS_CACHE_IDB_STORE_NAME, 'readonly');
+      const store = tx.objectStore(AHREFS_CACHE_IDB_STORE_NAME);
+      const req = store.get(normalized);
+
+      req.onsuccess = () => {
+        const cached = req.result;
+        if (!cached) return resolve(null);
+        const now = Date.now();
+        if (cached.timestamp && (now - cached.timestamp) < AHREFS_CACHE_TTL_MS) {
+          console.log('[Ahrefs Cache] 命中缓存:', normalized, '缓存时间:', new Date(cached.timestamp).toISOString());
+          resolve({
+            urlFromList: cached.urlFromList || [],
+            backlinks: cached.backlinks || [],
+            overview: cached.overview || {}
+          });
+        } else {
+          console.log('[Ahrefs Cache] 缓存已过期:', normalized);
+          resolve(null);
+        }
       };
-    }
-    console.log('[Ahrefs Cache] 缓存已过期:', normalized);
-    return null;
+
+      req.onerror = () => resolve(null);
+      tx.onerror = () => resolve(null);
+    });
   } catch (e) {
     console.warn('[Ahrefs Cache] 读取缓存失败:', e?.message);
     return null;
@@ -192,9 +255,6 @@ async function ahrefsSaveToCache(domain, urlFromList, backlinks, overview) {
   const normalized = ahrefsNormalizeDomainForCache(domain);
   if (!normalized) return;
   try {
-    const stored = await chrome.storage.local.get([AHREFS_CACHE_KEY]);
-    const cache = stored[AHREFS_CACHE_KEY] || {};
-
     // 每个域名的 urlFromList / backlinks 做上限裁剪，避免单域缓存过大
     const MAX_URLS_PER_DOMAIN = 1000;
     const MAX_BACKLINKS_PER_DOMAIN = 1000;
@@ -204,27 +264,25 @@ async function ahrefsSaveToCache(domain, urlFromList, backlinks, overview) {
     const safeBacklinks = Array.isArray(backlinks)
       ? backlinks.slice(0, MAX_BACKLINKS_PER_DOMAIN)
       : [];
-
-    cache[normalized] = {
+    const db = await openAhrefsCacheIDB();
+    const record = {
+      normalized,
       urlFromList: safeUrlFromList,
       backlinks: safeBacklinks,
       overview,
       timestamp: Date.now()
     };
 
-    // 整体缓存也做滚动清理：只保留最近 20 个域名
-    const entries = Object.entries(cache);
-    if (entries.length > 20) {
-      entries.sort(([, a], [, b]) => (b.timestamp || 0) - (a.timestamp || 0));
-      const keepKeys = new Set(entries.slice(0, 20).map(([k]) => k));
-      for (const key of Object.keys(cache)) {
-        if (!keepKeys.has(key)) {
-          delete cache[key];
-        }
-      }
-    }
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(AHREFS_CACHE_IDB_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(AHREFS_CACHE_IDB_STORE_NAME);
+      const req = store.put(record);
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
 
-    await chrome.storage.local.set({ [AHREFS_CACHE_KEY]: cache });
+    await pruneAhrefsCacheIDB(db, AHREFS_CACHE_IDB_MAX_DOMAINS);
     console.log('[Ahrefs Cache] 已缓存:', normalized, '反链数:', urlFromList?.length);
   } catch (e) {
     console.warn('[Ahrefs Cache] 写入缓存失败:', e?.message);
@@ -428,8 +486,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleAhrefsDirectBacklinks(request.domain)
       .then(result => sendResponse({ success: true, ...result }))
       .catch(error => {
-        console.error('[Ahrefs API] 失败:', error?.message);
-        sendResponse({ success: false, error: error?.message || '拉取反链失败' });
+        let errMsg = error?.message;
+        if (!errMsg) {
+          try {
+            if (typeof error === 'string') errMsg = error;
+            else errMsg = JSON.stringify(error);
+          } catch {
+            errMsg = String(error);
+          }
+        }
+        console.error('[Ahrefs API] 失败:', errMsg);
+        sendResponse({ success: false, error: errMsg || '拉取反链失败' });
       });
     return true;
   }

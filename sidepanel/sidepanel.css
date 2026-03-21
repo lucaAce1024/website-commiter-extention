@@ -1680,6 +1680,38 @@ body {
   text-overflow: ellipsis;
 }
 
+.progress-details {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.progress-detail-row {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 8px;
+}
+
+.progress-detail-label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 56px;
+}
+
+.progress-detail-value {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-detail-value.is-error {
+  color: var(--error-color);
+  font-weight: 600;
+}
+
 .progress-controls {
   display: flex;
   gap: 8px;
@@ -1764,6 +1796,20 @@ body {
 .queue-batch-item.pending {
   background: var(--bg-color);
   color: var(--text-secondary);
+}
+
+.queue-batch-item.queue-batch-in_progress {
+  background: #eff6ff;
+}
+
+.queue-batch-item.queue-batch-failed {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.queue-batch-item.queue-batch-paused {
+  background: #fffbeb;
+  color: #92400e;
 }
 
 .queue-batch-status {

@@ -315,6 +315,46 @@
 
     <!-- ========== 外链采集模式 ========== -->
     <div id="panel-explore" class="mode-panel hidden">
+      <section class="section">
+        <div class="section-header">
+          <span class="label">任务批次</span>
+          <span id="exploreBatchId" class="explore-batch-id">—</span>
+          <button type="button" id="exploreClearCacheBtn" class="btn-link btn-sm" title="清除所有采集数据">清除缓存</button>
+        </div>
+        <div id="exploreBatchStatus" class="explore-batch-status hidden">—</div>
+
+        <div class="section-header" style="margin-top: 12px">
+          <span class="label">手动检测</span>
+        </div>
+        <p class="section-desc">对当前浏览器活动页进行 Blog 评论站判断（评分 + 阈值）。</p>
+        <button type="button" id="exploreManualDetectBtn" class="btn btn-secondary btn-sm">检测是否为 Blog 评论站</button>
+
+        <div id="exploreManualDetectModal" class="explore-detect-modal hidden" aria-hidden="true">
+          <div class="explore-detect-modal-backdrop"></div>
+          <div class="explore-detect-modal-box">
+            <div class="explore-detect-modal-title">Blog 评论站检测结果 <span id="exploreDetectDomain" class="explore-detect-domain"></span></div>
+            <div class="explore-detect-modal-body">
+              <p class="explore-detect-row"><span class="explore-detect-label">评判阈值：</span><span id="exploreDetectThreshold">—</span></p>
+              <p class="explore-detect-row"><span class="explore-detect-label">得分：</span><span id="exploreDetectScore">—</span></p>
+              <p class="explore-detect-row explore-detect-result"><span class="explore-detect-label">结果：</span><span id="exploreDetectResult">—</span></p>
+              <p class="explore-detect-row"><span class="explore-detect-label">是否需要登录：</span><span id="exploreDetectRequiresLogin">—</span></p>
+            </div>
+            <div class="explore-detect-modal-actions">
+              <button type="button" id="exploreManualDetectModalClose" class="btn btn-primary btn-sm">关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top: 12px">
+          <span class="label">排除 Blog 评论「当前站点」列表中的域名</span>
+        </div>
+        <label class="checkbox-label">
+          <input type="checkbox" id="exploreExcludeFromBlogSites" checked>
+          <span class="label">排除 Blog 评论「当前站点」列表中的域名</span>
+        </label>
+        <p class="section-desc">勾选后，采集到的外链 / 挖到的域名将自动过滤掉 Blog 评论站点列表里各站点对应的域名（本站等）。</p>
+      </section>
+
       <!-- 自动采集控制区 -->
       <section class="section auto-collect-section">
         <div class="auto-collect-header">
@@ -322,6 +362,13 @@
           <button type="button" id="autoCollectStartBtn" class="btn btn-primary btn-sm">
             <span class="btn-icon">▶</span> 开始
           </button>
+        </div>
+        <div class="auto-collect-history-restore" style="display:flex; gap:8px; align-items:center; margin: 10px 0 6px;">
+          <button type="button" id="autoCollectLoadHistoryBtn" class="btn btn-link btn-sm">加载历史批次任务</button>
+          <select id="autoCollectHistoryBatchSelect" class="select select-sm hidden" disabled>
+            <option value="">-- 选择批次 --</option>
+          </select>
+          <button type="button" id="autoCollectRestoreSelectedBtn" class="btn btn-secondary btn-sm hidden" disabled>重新恢复</button>
         </div>
         <!-- 循环模式开关 -->
         <div class="loop-mode-toggle">
@@ -361,6 +408,11 @@
             <div id="autoCollectProgressBar" class="progress-bar-fill" style="width: 0%"></div>
           </div>
           <div id="autoCollectStatusText" class="progress-status">准备中...</div>
+          <div class="progress-details">
+            <div class="progress-detail-row"><span class="progress-detail-label">步骤</span><span id="autoCollectStepText" class="progress-detail-value">—</span></div>
+            <div class="progress-detail-row"><span class="progress-detail-label">运行状态</span><span id="autoCollectRunStateText" class="progress-detail-value">未运行</span></div>
+            <div class="progress-detail-row"><span class="progress-detail-label">错误</span><span id="autoCollectErrorText" class="progress-detail-value">无</span></div>
+          </div>
           <div class="progress-controls">
             <button type="button" id="autoCollectPauseBtn" class="btn btn-secondary btn-sm" disabled>⏸ 暂停</button>
             <button type="button" id="autoCollectResumeBtn" class="btn btn-secondary btn-sm" disabled>▶ 继续</button>
@@ -393,45 +445,6 @@
 
       <!-- 分隔线 -->
       <hr class="section-divider">
-
-      <section class="section">
-        <div class="section-header">
-          <span class="label">任务批次</span>
-          <span id="exploreBatchId" class="explore-batch-id">—</span>
-          <button type="button" id="exploreClearCacheBtn" class="btn-link btn-sm" title="清除所有采集数据">清除缓存</button>
-        </div>
-        <div id="exploreBatchStatus" class="explore-batch-status hidden">—</div>
-      </section>
-
-      <section class="section">
-        <div class="section-header"><span class="label">手动检测</span></div>
-        <p class="section-desc">对当前浏览器活动页进行 Blog 评论站判断（评分 + 阈值）。</p>
-        <button type="button" id="exploreManualDetectBtn" class="btn btn-secondary btn-sm">检测是否为 Blog 评论站</button>
-      </section>
-
-      <div id="exploreManualDetectModal" class="explore-detect-modal hidden" aria-hidden="true">
-        <div class="explore-detect-modal-backdrop"></div>
-        <div class="explore-detect-modal-box">
-          <div class="explore-detect-modal-title">Blog 评论站检测结果 <span id="exploreDetectDomain" class="explore-detect-domain"></span></div>
-          <div class="explore-detect-modal-body">
-            <p class="explore-detect-row"><span class="explore-detect-label">评判阈值：</span><span id="exploreDetectThreshold">—</span></p>
-            <p class="explore-detect-row"><span class="explore-detect-label">得分：</span><span id="exploreDetectScore">—</span></p>
-            <p class="explore-detect-row explore-detect-result"><span class="explore-detect-label">结果：</span><span id="exploreDetectResult">—</span></p>
-            <p class="explore-detect-row"><span class="explore-detect-label">是否需要登录：</span><span id="exploreDetectRequiresLogin">—</span></p>
-          </div>
-          <div class="explore-detect-modal-actions">
-            <button type="button" id="exploreManualDetectModalClose" class="btn btn-primary btn-sm">关闭</button>
-          </div>
-        </div>
-      </div>
-
-      <section class="section">
-        <label class="checkbox-label">
-          <input type="checkbox" id="exploreExcludeFromBlogSites" checked>
-          <span class="label">排除 Blog 评论「当前站点」列表中的域名</span>
-        </label>
-        <p class="section-desc">勾选后，采集到的外链 / 挖到的域名将自动过滤掉 Blog 评论站点列表里各站点对应的域名（本站等）。</p>
-      </section>
 
       <section class="section">
         <div class="section-header"><span class="label">外链 URL（评论区提取）</span></div>
