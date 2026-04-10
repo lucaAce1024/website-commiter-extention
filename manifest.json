@@ -27,11 +27,14 @@
     "contextMenus",
     "clipboardRead",
     "sidePanel",
-    "tabs"
+    "tabs",
+    "webRequest"
   ],
   "host_permissions": [
     "https://ahrefs.com/*",
-    "https://api.capsolver.com/*"
+    "https://api.capsolver.com/*",
+    "https://open.feishu.cn/*",
+    "https://trends.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"

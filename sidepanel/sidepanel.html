@@ -28,6 +28,7 @@
         <button type="button" class="mode-tab" data-mode="blog">Blog 评论</button>
         <button type="button" class="mode-tab" data-mode="batch">批量提交</button>
         <button type="button" class="mode-tab" data-mode="explore">外链采集</button>
+        <button type="button" class="mode-tab" data-mode="trends">Trends挖词</button>
       </nav>
     </div>
 
@@ -516,6 +517,7 @@
             <option value="">-- 选择批次 --</option>
           </select>
           <button type="button" id="exploreLoadBatchBtn" class="btn btn-secondary btn-sm" disabled>加载</button>
+          <button type="button" id="exploreLoadIncompleteFeishuBtn" class="btn btn-secondary btn-sm" title="从 Ahrefs 反链表读取 A 列有 URL 且「评论外链/登录/导航/评分」列未写全的行">加载飞书未标记行</button>
         </div>
         <div id="exploreUrlList" class="explore-url-list">
           <div class="empty-list-hint">暂无，可从上方提取或拉取反链后加入，或从缓存批次加载</div>
@@ -550,6 +552,133 @@
 
     </div>
     <!-- /panel-explore -->
+
+    <!-- ========== Trends 挖词模式 ========== -->
+    <div id="panel-trends" class="mode-panel hidden">
+      <section class="section">
+        <div class="section-header">
+          <span class="label">Trends 挖词</span>
+          <div class="section-header-right">
+            <button id="trendsOpenWorkerBtn" class="btn-link btn-sm" type="button" title="打开 Google Trends 工作页（用于登录/验证/手动操作）">打开 Trends 工作页</button>
+          </div>
+        </div>
+        <p class="hint">输入词根与参考词，筛选上升趋势 &gt; 100% 的词，并按轮次迭代拓展长尾词。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">基准关键词</span>
+        </div>
+        <input id="trendsBaselineKeyword" class="input" placeholder="例如：gpts（作为对比参考）" />
+        <p class="hint">基准关键词用于对比参考；当前筛选以候选词自身上升趋势为准。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">种子关键词</span>
+          <span id="trendsSeedCount" class="list-count hidden">0 条</span>
+        </div>
+        <textarea id="trendsSeedKeywords" class="input trends-textarea" placeholder="每行一个关键词，例如：&#10;ai video&#10;video ai"></textarea>
+        <p class="hint">每行一个关键词，至少需要 1 个关键词。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">时间范围</span>
+        </div>
+        <select id="trendsTimeRange" class="select">
+          <option value="now_7d">过去 7 天</option>
+          <option value="today_1m">过去 30 天</option>
+          <option value="today_3m" selected>过去 90 天</option>
+          <option value="today_12m">过去 12 个月</option>
+          <option value="today_5y">过去 5 年</option>
+        </select>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">有效词阈值</span>
+        </div>
+        <input id="trendsRiseThreshold" class="input" type="number" min="1" step="1" value="100" />
+        <p class="hint">默认 100 表示上升趋势 &gt; 100%（严格大于）。Breakout 将视为无限大。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">关键词上限</span>
+        </div>
+        <input id="trendsKeywordLimit" class="input" type="number" min="1" step="1" value="20" />
+        <p class="hint">达到上限时将停止继续采集并提示。</p>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">最大轮次</span>
+        </div>
+        <input id="trendsMaxRounds" class="input" type="number" min="1" step="1" value="5" />
+        <p class="hint">每轮会将本轮筛选出来的词作为下一轮的种子继续请求。</p>
+      </section>
+
+      <section class="section actions">
+        <button id="trendsStartBtn" class="btn btn-primary" type="button">
+          <span class="btn-icon">▶</span>
+          开始采集数据
+        </button>
+        <button id="trendsStopBtn" class="btn btn-danger" type="button" disabled>
+          <span class="btn-icon">⏹</span>
+          停止
+        </button>
+        <button id="trendsExportBtn" class="btn btn-secondary" type="button" disabled>
+          <span class="btn-icon">⬇</span>
+          下载实时数据
+        </button>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">运行状态</span>
+          <button id="trendsClearHistoryBtn" class="btn-link btn-sm" type="button">清空历史</button>
+        </div>
+        <div id="trendsStatusLine" class="form-status">
+          <div class="status-row">
+            <span class="status-label">轮次:</span>
+            <span id="trendsStatusRound" class="status-value">-</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">已处理:</span>
+            <span id="trendsStatusProcessed" class="status-value">0</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">有效新词:</span>
+            <span id="trendsStatusFound" class="status-value">0</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">错误:</span>
+            <span id="trendsStatusError" class="status-value">无</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">实时结果</span>
+          <span id="trendsResultCount" class="list-count hidden">0 个</span>
+        </div>
+        <div id="trendsResultsList" class="explore-url-list">
+          <div class="empty-list-hint">暂无，请点击“开始采集数据”</div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <span class="label">搜索历史</span>
+        </div>
+        <div id="trendsHistoryList" class="explore-url-list">
+          <div class="empty-list-hint">暂无</div>
+        </div>
+      </section>
+    </div>
+    <!-- /panel-trends -->
     </div>
     <!-- /nav-content -->
   </div>

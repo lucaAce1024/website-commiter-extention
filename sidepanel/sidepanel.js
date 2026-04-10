@@ -7,6 +7,12 @@
 
 // ========== 常量 ==========
 const BLOG_POPUP_STATE_PREFIX = 'blog_popup_state_';
+const TRENDS_STATE_KEY = 'trends_keyword_digger_state_v1';
+const TRENDS_HISTORY_KEY = 'trends_keyword_digger_history_v1';
+const TRENDS_DEFAULT_TZ = -480;
+const TRENDS_DEFAULT_HL = 'zh-CN';
+/** 「打开 Trends 工作页」与首次创建工作 Tab 的默认落地页（legacy explore） */
+const TRENDS_WORKER_PAGE_URL = 'https://trends.google.com/trends/explore?date=today%203-m&q=gpts&hl=en-US&legacy';
 
 // 标准字段 → 展示名称（按字段填充列表用）
 const FIELD_LABELS = {
@@ -34,6 +40,7 @@ const elements = {
   panelBlog: document.getElementById('panel-blog'),
   panelBatch: document.getElementById('panel-batch'),
   panelExplore: document.getElementById('panel-explore'),
+  panelTrends: document.getElementById('panel-trends'),
 
   // 导航站模式
   navSiteSelect: document.getElementById('navSiteSelect'),
@@ -156,6 +163,7 @@ const elements = {
   // 批次选择
   exploreLoadBatchSelect: document.getElementById('exploreLoadBatchSelect'),
   exploreLoadBatchBtn: document.getElementById('exploreLoadBatchBtn'),
+  exploreLoadIncompleteFeishuBtn: document.getElementById('exploreLoadIncompleteFeishuBtn'),
   // 写入飞书按钮
   exploreWriteUrlListToFeishuBtn: document.getElementById('exploreWriteUrlListToFeishuBtn'),
   // 清空列表按钮
@@ -186,6 +194,27 @@ const elements = {
   autoCollectClearLogBtn: document.getElementById('autoCollectClearLogBtn'),
   autoCollectLogViewport: document.getElementById('autoCollectLogViewport'),
   autoCollectLogContainer: document.getElementById('autoCollectLogContainer'),
+
+  // Trends 挖词模式
+  trendsBaselineKeyword: document.getElementById('trendsBaselineKeyword'),
+  trendsSeedKeywords: document.getElementById('trendsSeedKeywords'),
+  trendsSeedCount: document.getElementById('trendsSeedCount'),
+  trendsTimeRange: document.getElementById('trendsTimeRange'),
+  trendsRiseThreshold: document.getElementById('trendsRiseThreshold'),
+  trendsKeywordLimit: document.getElementById('trendsKeywordLimit'),
+  trendsMaxRounds: document.getElementById('trendsMaxRounds'),
+  trendsStartBtn: document.getElementById('trendsStartBtn'),
+  trendsStopBtn: document.getElementById('trendsStopBtn'),
+  trendsExportBtn: document.getElementById('trendsExportBtn'),
+  trendsClearHistoryBtn: document.getElementById('trendsClearHistoryBtn'),
+  trendsOpenWorkerBtn: document.getElementById('trendsOpenWorkerBtn'),
+  trendsStatusRound: document.getElementById('trendsStatusRound'),
+  trendsStatusProcessed: document.getElementById('trendsStatusProcessed'),
+  trendsStatusFound: document.getElementById('trendsStatusFound'),
+  trendsStatusError: document.getElementById('trendsStatusError'),
+  trendsResultsList: document.getElementById('trendsResultsList'),
+  trendsResultCount: document.getElementById('trendsResultCount'),
+  trendsHistoryList: document.getElementById('trendsHistoryList'),
 };
 
 // ========== State ==========
@@ -211,6 +240,39 @@ let exploreAhrefsAborted = false; // 拉取反链是否中止
 let exploreAhrefsDomainsQueue = []; // 待拉取的域名队列
 let exploreAhrefsCurrentIndex = 0; // 当前正在拉取的域名索引
 let exploreAhrefsFeishuConfig = null; // 飞书配置缓存
+
+// ========== Trends 挖词状态 ==========
+let trendsJob = {
+  running: false,
+  stopping: false,
+  abortController: null,
+  jobId: null,
+  startedAt: null,
+  round: 0,
+  processed: 0,
+  lastError: null,
+  queued: [],
+  seenSeeds: new Set(),
+  results: new Map(), // keywordNorm -> { keyword, risePct, riseRaw, round, parent, collectedAt }
+  newlyAddedThisRound: new Set()
+};
+
+let trendsWorkerTabId = null;
+let trendsWebRequestBound = false;
+/** 与 trendsJob.lastError 同步，避免同一字符串重复刷屏；新任务开始会重置 */
+let trendsLastErrorConsoleSnapshot = null;
+
+function installSidepanelGlobalErrorLogging() {
+  if (globalThis.__sidepanelGlobalErrorLoggingInstalled) return;
+  globalThis.__sidepanelGlobalErrorLoggingInstalled = true;
+  globalThis.addEventListener('error', (ev) => {
+    console.error('[SidePanel] window error', ev.message, ev.filename, ev.lineno, ev.colno, ev.error);
+  });
+  globalThis.addEventListener('unhandledrejection', (ev) => {
+    console.error('[SidePanel] unhandledrejection', ev.reason);
+    if (ev.reason && typeof ev.reason === 'object' && ev.reason.stack) console.error(ev.reason.stack);
+  });
+}
 
 // ========== 自动采集模式状态 ==========
 let autoCollectTask = null; // 当前自动采集任务
@@ -671,6 +733,8 @@ async function fetchAhrefsBacklinksForDomain(domain, idx, total) {
 
 // ========== 初始化 ==========
 async function init() {
+  installSidepanelGlobalErrorLogging();
+
   // 获取当前活动标签页
   await updateCurrentTab();
 
@@ -778,7 +842,7 @@ async function loadSites() {
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
 
-    if (result.sidePanelMode === 'nav' || result.sidePanelMode === 'blog' || result.sidePanelMode === 'batch' || result.sidePanelMode === 'explore') {
+    if (result.sidePanelMode === 'nav' || result.sidePanelMode === 'blog' || result.sidePanelMode === 'batch' || result.sidePanelMode === 'explore' || result.sidePanelMode === 'trends') {
       currentMode = result.sidePanelMode;
     }
 
@@ -910,6 +974,7 @@ function showModePanel(mode) {
   if (elements.panelBlog) elements.panelBlog.classList.toggle('hidden', mode !== 'blog');
   if (elements.panelBatch) elements.panelBatch.classList.toggle('hidden', mode !== 'batch');
   if (elements.panelExplore) elements.panelExplore.classList.toggle('hidden', mode !== 'explore');
+  if (elements.panelTrends) elements.panelTrends.classList.toggle('hidden', mode !== 'trends');
 
   if (mode === 'nav') {
     getNavPageState();
@@ -922,7 +987,825 @@ function showModePanel(mode) {
     autoSyncIfNeeded();
   } else if (mode === 'explore') {
     loadExploreState();
+  } else if (mode === 'trends') {
+    loadTrendsState().catch((e) => console.warn('[Trends] loadTrendsState failed', e));
+    updateTrendsSeedCountUI();
+    updateTrendsStatusUI();
+    renderTrendsResults();
   }
+}
+
+// ========== Trends 挖词：核心逻辑 ==========
+
+function normalizeKeyword(s) {
+  return String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function parseSeedLines(text) {
+  return String(text || '')
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function mapTimeRangeToTrends(timeRange) {
+  // https://trends.google.com/trends/explore uses values like: "now 7-d", "today 3-m"
+  if (timeRange === 'now_7d') return 'now 7-d';
+  if (timeRange === 'today_1m') return 'today 1-m';
+  if (timeRange === 'today_3m') return 'today 3-m';
+  if (timeRange === 'today_12m') return 'today 12-m';
+  if (timeRange === 'today_5y') return 'today 5-y';
+  return 'today 3-m';
+}
+
+function safeJsonParseTrends(text) {
+  // Trends API responses start with )]}'
+  const cleaned = String(text || '').trim().replace(/^\)\]\}',?\s*/, '');
+  return JSON.parse(cleaned);
+}
+
+function parseRisePctFromFormatted(formattedValue) {
+  const raw = String(formattedValue || '').trim();
+  if (!raw) return null;
+  if (/breakout/i.test(raw)) return Number.POSITIVE_INFINITY;
+  // Examples: "+120%", "120%"
+  const m = raw.replace(/,/g, '').match(/(-?\d+(\.\d+)?)\s*%/);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function trendsSleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+async function fetchTextWithRetry(url, { signal, credentials = 'omit' } = {}, retryOptions = {}) {
+  const {
+    maxAttempts = 5,
+    baseDelayMs = 2500,
+    maxDelayMs = 30000
+  } = retryOptions || {};
+
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    try {
+      const res = await fetch(url, { method: 'GET', credentials, signal });
+      if (res.ok) return await res.text();
+
+      const status = res.status;
+      const statusText = res.statusText || '';
+      const body = await res.text().catch(() => '');
+
+      // 429/503: backoff
+      if ((status === 429 || status === 503) && attempt < maxAttempts) {
+        const jitter = Math.floor(Math.random() * 600);
+        const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt - 1) + jitter);
+        trendsJob.lastError = `Trends 触发限流（${status} ${statusText}），正在第 ${attempt}/${maxAttempts} 次退避重试（等待 ${Math.round(delay / 1000)}s）`;
+        updateTrendsStatusUI();
+        await trendsSleep(delay, signal);
+        continue;
+      }
+
+      const snippet = body ? body.slice(0, 160) : '';
+      throw new Error(`HTTP ${status} ${statusText}${snippet ? ` - ${snippet}` : ''}`);
+    } catch (e) {
+      lastErr = e;
+      // 网络错误也做退避
+      if (attempt < maxAttempts && (e?.name !== 'AbortError')) {
+        const jitter = Math.floor(Math.random() * 600);
+        const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt - 1) + jitter);
+        console.error('[Trends挖词] fetchTextWithRetry 单次失败，将重试', { attempt, maxAttempts, url: String(url).slice(0, 240), error: e });
+        await trendsSleep(delay, signal).catch(() => {});
+        continue;
+      }
+      console.error('[Trends挖词] fetchTextWithRetry 最终失败', { attempt, maxAttempts, url: String(url).slice(0, 240), error: e });
+      throw e;
+    }
+  }
+
+  throw lastErr || new Error('Trends 请求失败');
+}
+
+async function ensureTrendsWorkerTab(signal) {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  if (trendsWorkerTabId) {
+    const t = await chrome.tabs.get(trendsWorkerTabId).catch(() => null);
+    if (t?.id) return t.id;
+    trendsWorkerTabId = null;
+  }
+
+  const tab = await chrome.tabs.create({
+    url: TRENDS_WORKER_PAGE_URL,
+    active: false
+  });
+  trendsWorkerTabId = tab.id;
+  await waitForTabCompleteInSidepanel(tab.id, 30000);
+  return tab.id;
+}
+
+async function getActiveTabSafe() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
+function isGoogleTrendsTabUrl(url) {
+  try {
+    if (!url) return false;
+    const u = new URL(url);
+    return u.hostname === 'trends.google.com' && u.pathname.startsWith('/trends/');
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 获取本次任务要使用的 Trends 工作页 tabId
+ * - 需求：点击“开始采集数据”时，使用当前激活 Tab，而不是另开 Tab
+ */
+async function getTrendsTargetTabId(signal) {
+  const active = await getActiveTabSafe().catch(() => null);
+  if (active?.id && isGoogleTrendsTabUrl(active.url)) {
+    trendsWorkerTabId = active.id;
+    return active.id;
+  }
+  // 回退：如果之前已有工作 Tab 还在，也允许继续用（但不再主动新建）
+  if (trendsWorkerTabId) {
+    const t = await chrome.tabs.get(trendsWorkerTabId).catch(() => null);
+    if (t?.id) return t.id;
+    trendsWorkerTabId = null;
+  }
+  throw new Error('请先切换到 Google Trends 页面（trends.google.com）再开始采集，或点击「打开 Trends 工作页」进入后再开始。');
+}
+
+function buildTrendsExploreUrl({ hl, timeRange, keywords }) {
+  // 参考日志：/trends/explore?date=today 3-m&q=gpts,ai video&hl=en-US
+  const date = mapTimeRangeToTrends(timeRange);
+  const q = (Array.isArray(keywords) ? keywords : []).map((k) => String(k || '').trim()).filter(Boolean);
+  const url = new URL('https://trends.google.com/trends/explore');
+  url.searchParams.set('date', date);
+  url.searchParams.set('q', q.join(','));
+  url.searchParams.set('hl', hl || TRENDS_DEFAULT_HL);
+  return url.toString();
+}
+
+function bindTrendsWebRequestOnce() {
+  if (trendsWebRequestBound) return;
+  trendsWebRequestBound = true;
+  // 仅用于“观察 Trends 页面发出的结构化请求 URL”，body 仍需二次 fetch（与日志一致）
+  chrome.webRequest.onCompleted.addListener(
+    () => {},
+    { urls: ['https://trends.google.com/trends/api/widgetdata/relatedsearches*'] }
+  );
+}
+
+async function collectRelatedSearchesByIntercept({ tabId, expectedKeywordsNorm, timeoutMs = 20000, signal }) {
+  bindTrendsWebRequestOnce();
+  const collected = new Map(); // keywordNorm -> { url, data }
+
+  const handler = async (details) => {
+    try {
+      if (signal?.aborted) return;
+      if (details.tabId !== tabId) return;
+      const u = new URL(details.url);
+      const reqParam = u.searchParams.get('req');
+      if (!reqParam) return;
+      const reqJson = JSON.parse(reqParam);
+      const kw = reqJson?.restriction?.complexKeywordsRestriction?.keyword?.[0]?.value;
+      const kwNorm = normalizeKeyword(kw);
+      if (!kwNorm) return;
+      if (!expectedKeywordsNorm.has(kwNorm)) return;
+      if (collected.has(kwNorm)) return;
+
+      // 二次 fetch 拿 body（这就是日志里 “onCompleted -> Fetching response data” 的做法）
+      const text = await fetchTextWithRetry(details.url, { signal, credentials: 'include' }, { maxAttempts: 3, baseDelayMs: 2500, maxDelayMs: 15000 });
+      const json = safeJsonParseTrends(text);
+      collected.set(kwNorm, { url: details.url, data: json });
+    } catch (err) {
+      console.error('[Trends挖词] relatedsearches 拦截/拉取失败', err, details?.url ? String(details.url).slice(0, 280) : '');
+    }
+  };
+
+  chrome.webRequest.onCompleted.addListener(handler, { urls: ['https://trends.google.com/trends/api/widgetdata/relatedsearches*'] });
+  const start = Date.now();
+  try {
+    while (Date.now() - start < timeoutMs) {
+      if (signal?.aborted) break;
+      if (collected.size >= expectedKeywordsNorm.size) break;
+      await trendsSleep(350, signal).catch(() => {});
+    }
+  } finally {
+    chrome.webRequest.onCompleted.removeListener(handler);
+  }
+
+  return collected;
+}
+
+async function checkTrendsLoggedIn(tabId) {
+  // 尽量不依赖 DOM 结构：直接在页面上下文发一个最小 explore，检查 widget.request 中 userConfig.userType
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    args: [{ hl: 'en-US', tz: TRENDS_DEFAULT_TZ }],
+    func: async ({ hl, tz }) => {
+      const safeJsonParseTrends = (text) => {
+        const cleaned = String(text || '').trim().replace(/^\)\]\}',?\s*/, '');
+        return JSON.parse(cleaned);
+      };
+      const exploreReq = { comparisonItem: [{ keyword: 'gpts', geo: '', time: 'today 3-m' }], category: 0, property: '' };
+      const exploreUrl = new URL('https://trends.google.com/trends/api/explore');
+      exploreUrl.searchParams.set('hl', hl);
+      exploreUrl.searchParams.set('tz', String(tz));
+      exploreUrl.searchParams.set('req', JSON.stringify(exploreReq));
+      const res = await fetch(exploreUrl.toString(), { method: 'GET', credentials: 'include' });
+      const text = await res.text();
+      if (!res.ok) return { ok: false, status: res.status, text: text.slice(0, 120) };
+      const j = safeJsonParseTrends(text);
+      const widgets = Array.isArray(j?.widgets) ? j.widgets : [];
+      const rq = widgets.find((w) => w?.id === 'RELATED_QUERIES')?.request;
+      const userType = rq?.userConfig?.userType || null;
+      return { ok: true, userType };
+    }
+  });
+
+  if (!result?.ok) return { ok: false, userType: null, reason: `explore 失败 ${result?.status || ''}`.trim() };
+  const userType = String(result.userType || '');
+  // 注意：即使用户已登录，Trends 也可能返回 USER_TYPE_SCRAPER（取决于风控、频率、地区等），不能作为“未登录”的硬条件。
+  const isLegitUser = userType.includes('LEGIT_USER');
+  return { ok: true, userType, isLegitUser };
+}
+
+async function fetchTrendsRisingRelatedQueriesInPageContext({ keyword, timeRange, geo = '', hl = TRENDS_DEFAULT_HL, tz = TRENDS_DEFAULT_TZ, signal }) {
+  const tabId = await ensureTrendsWorkerTab(signal);
+
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    args: [{ keyword, timeRange, geo, hl, tz }],
+    func: async ({ keyword, timeRange, geo, hl, tz }) => {
+      const mapTimeRangeToTrends = (tr) => {
+        if (tr === 'now_7d') return 'now 7-d';
+        if (tr === 'today_1m') return 'today 1-m';
+        if (tr === 'today_3m') return 'today 3-m';
+        if (tr === 'today_12m') return 'today 12-m';
+        if (tr === 'today_5y') return 'today 5-y';
+        return 'today 3-m';
+      };
+      const safeJsonParseTrends = (text) => {
+        const cleaned = String(text || '').trim().replace(/^\)\]\}',?\s*/, '');
+        return JSON.parse(cleaned);
+      };
+
+      const exploreReq = {
+        comparisonItem: [{ keyword, geo, time: mapTimeRangeToTrends(timeRange) }],
+        category: 0,
+        property: ''
+      };
+
+      const exploreUrl = new URL('https://trends.google.com/trends/api/explore');
+      exploreUrl.searchParams.set('hl', hl);
+      exploreUrl.searchParams.set('tz', String(tz));
+      exploreUrl.searchParams.set('req', JSON.stringify(exploreReq));
+
+      const exploreRes = await fetch(exploreUrl.toString(), { method: 'GET', credentials: 'include' });
+      if (!exploreRes.ok) {
+        const body = await exploreRes.text().catch(() => '');
+        throw new Error(`Trends explore 请求失败: ${exploreRes.status} ${exploreRes.statusText}${body ? ` - ${body.slice(0, 160)}` : ''}`);
+      }
+      const exploreText = await exploreRes.text();
+      const exploreJson = safeJsonParseTrends(exploreText);
+      const widgets = Array.isArray(exploreJson?.widgets) ? exploreJson.widgets : [];
+
+      const relatedQueriesWidget =
+        widgets.find((w) => w?.id === 'RELATED_QUERIES') ||
+        widgets.find((w) => String(w?.title || '').toLowerCase().includes('related queries')) ||
+        widgets.find((w) => String(w?.type || '').toLowerCase().includes('related_queries'));
+
+      if (!relatedQueriesWidget?.token || !relatedQueriesWidget?.request) {
+        throw new Error('Trends 返回缺少 RELATED_QUERIES widget（可能被限流或结构变更）');
+      }
+
+      const relatedUrl = new URL('https://trends.google.com/trends/api/widgetdata/relatedsearches');
+      relatedUrl.searchParams.set('hl', hl);
+      relatedUrl.searchParams.set('tz', String(tz));
+      relatedUrl.searchParams.set('req', JSON.stringify(relatedQueriesWidget.request));
+      relatedUrl.searchParams.set('token', relatedQueriesWidget.token);
+
+      const relatedRes = await fetch(relatedUrl.toString(), { method: 'GET', credentials: 'include' });
+      if (!relatedRes.ok) {
+        const body = await relatedRes.text().catch(() => '');
+        throw new Error(`Trends relatedsearches 请求失败: ${relatedRes.status} ${relatedRes.statusText}${body ? ` - ${body.slice(0, 160)}` : ''}`);
+      }
+      const relatedText = await relatedRes.text();
+      const relatedJson = safeJsonParseTrends(relatedText);
+
+      const rankedLists = relatedJson?.default?.rankedList;
+      if (!Array.isArray(rankedLists) || rankedLists.length === 0) return [];
+
+      const risingList =
+        rankedLists.find((x) => String(x?.title || '').toLowerCase().includes('rising')) ||
+        rankedLists[1] ||
+        rankedLists[0];
+
+      const kws = Array.isArray(risingList?.rankedKeyword) ? risingList.rankedKeyword : [];
+      return kws
+        .map((k) => ({
+          query: k?.query,
+          formattedValue: k?.formattedValue,
+          value: k?.value
+        }))
+        .filter((x) => x.query);
+    }
+  });
+
+  if (!Array.isArray(result)) throw new Error('Trends 页面上下文返回异常');
+  return result;
+}
+
+async function fetchTrendsRisingRelatedQueries({ keyword, timeRange, geo = '', hl = TRENDS_DEFAULT_HL, tz = TRENDS_DEFAULT_TZ, signal }) {
+  // 优先使用“真实 Trends 页面上下文”发起请求，显著降低 429 概率（参考你给的日志实现）
+  try {
+    return await fetchTrendsRisingRelatedQueriesInPageContext({ keyword, timeRange, geo, hl, tz, signal });
+  } catch (e) {
+    // 如果 worker tab 失效/脚本注入失败，再退回到 extension fetch（仍有退避重试）
+    console.error('[Trends挖词]页面上下文拉取失败，将回退到扩展内 fetch', e);
+    trendsJob.lastError = e?.message || String(e);
+    updateTrendsStatusUI();
+  }
+
+  const exploreReq = {
+    comparisonItem: [{ keyword, geo, time: mapTimeRangeToTrends(timeRange) }],
+    category: 0,
+    property: ''
+  };
+
+  const exploreUrl = new URL('https://trends.google.com/trends/api/explore');
+  exploreUrl.searchParams.set('hl', hl);
+  exploreUrl.searchParams.set('tz', String(tz));
+  exploreUrl.searchParams.set('req', JSON.stringify(exploreReq));
+
+  const exploreText = await fetchTextWithRetry(
+    exploreUrl.toString(),
+    { signal, credentials: 'omit' },
+    { maxAttempts: 5, baseDelayMs: 2500, maxDelayMs: 30000 }
+  );
+  const exploreJson = safeJsonParseTrends(exploreText);
+  const widgets = Array.isArray(exploreJson?.widgets) ? exploreJson.widgets : [];
+
+  const relatedQueriesWidget =
+    widgets.find((w) => w?.id === 'RELATED_QUERIES') ||
+    widgets.find((w) => String(w?.title || '').toLowerCase().includes('related queries')) ||
+    widgets.find((w) => String(w?.type || '').toLowerCase().includes('related_queries'));
+
+  if (!relatedQueriesWidget?.token || !relatedQueriesWidget?.request) {
+    throw new Error('Trends 返回缺少 RELATED_QUERIES widget（可能被限流或结构变更）');
+  }
+
+  const relatedUrl = new URL('https://trends.google.com/trends/api/widgetdata/relatedsearches');
+  relatedUrl.searchParams.set('hl', hl);
+  relatedUrl.searchParams.set('tz', String(tz));
+  relatedUrl.searchParams.set('req', JSON.stringify(relatedQueriesWidget.request));
+  relatedUrl.searchParams.set('token', relatedQueriesWidget.token);
+
+  const relatedText = await fetchTextWithRetry(
+    relatedUrl.toString(),
+    { signal, credentials: 'omit' },
+    { maxAttempts: 5, baseDelayMs: 2500, maxDelayMs: 30000 }
+  );
+  const relatedJson = safeJsonParseTrends(relatedText);
+
+  const rankedLists = relatedJson?.default?.rankedList;
+  if (!Array.isArray(rankedLists) || rankedLists.length === 0) return [];
+
+  // Prefer rising list
+  const risingList =
+    rankedLists.find((x) => String(x?.title || '').toLowerCase().includes('rising')) ||
+    rankedLists[1] ||
+    rankedLists[0];
+
+  const kws = Array.isArray(risingList?.rankedKeyword) ? risingList.rankedKeyword : [];
+  return kws
+    .map((k) => ({
+      query: k?.query,
+      formattedValue: k?.formattedValue,
+      value: k?.value
+    }))
+    .filter((x) => x.query);
+}
+
+function updateTrendsSeedCountUI() {
+  const lines = parseSeedLines(elements.trendsSeedKeywords?.value || '');
+  if (elements.trendsSeedCount) {
+    elements.trendsSeedCount.textContent = `${lines.length} 条`;
+    elements.trendsSeedCount.classList.toggle('hidden', lines.length === 0);
+  }
+}
+
+function updateTrendsStatusUI() {
+  if (elements.trendsStatusRound) elements.trendsStatusRound.textContent = trendsJob.running ? String(trendsJob.round) : '-';
+  if (elements.trendsStatusProcessed) elements.trendsStatusProcessed.textContent = String(trendsJob.processed || 0);
+  if (elements.trendsStatusFound) elements.trendsStatusFound.textContent = String(trendsJob.results?.size || 0);
+  if (elements.trendsStatusError) elements.trendsStatusError.textContent = trendsJob.lastError ? String(trendsJob.lastError) : '无';
+
+  const errSnap = trendsJob.lastError != null && String(trendsJob.lastError).trim() !== '' ? String(trendsJob.lastError) : null;
+  if (errSnap !== trendsLastErrorConsoleSnapshot) {
+    trendsLastErrorConsoleSnapshot = errSnap;
+    if (errSnap) console.error('[Trends挖词] 状态错误:', errSnap);
+  }
+
+  if (elements.trendsStartBtn) elements.trendsStartBtn.disabled = trendsJob.running;
+  if (elements.trendsStopBtn) elements.trendsStopBtn.disabled = !trendsJob.running;
+  if (elements.trendsExportBtn) elements.trendsExportBtn.disabled = (trendsJob.results?.size || 0) === 0;
+}
+
+function renderTrendsResults() {
+  const el = elements.trendsResultsList;
+  if (!el) return;
+
+  const items = Array.from(trendsJob.results.values()).sort((a, b) => (b.risePct ?? 0) - (a.risePct ?? 0));
+
+  if (elements.trendsResultCount) {
+    elements.trendsResultCount.textContent = `${items.length} 个`;
+    elements.trendsResultCount.classList.toggle('hidden', items.length === 0);
+  }
+
+  if (items.length === 0) {
+    el.innerHTML = '<div class="empty-list-hint">暂无，请点击“开始采集数据”</div>';
+    return;
+  }
+
+  el.innerHTML = '';
+  for (const it of items.slice(0, 300)) {
+    const row = document.createElement('div');
+    row.className = 'explore-url-item';
+    const riseText = it.risePct === Number.POSITIVE_INFINITY ? 'Breakout' : (typeof it.risePct === 'number' ? `+${Math.round(it.risePct)}%` : (it.riseRaw || '—'));
+    row.innerHTML = `
+      <div class="explore-url-main">
+        <div class="explore-url-title" style="display:flex; gap:8px; align-items:center;">
+          <span style="font-weight:600;">${escapeHtml(it.keyword)}</span>
+          <span class="badge" style="margin-left:auto;">${escapeHtml(riseText)}</span>
+        </div>
+        <div class="explore-url-meta" style="display:flex; gap:10px; opacity:.85; font-size:12px;">
+          <span>轮次 ${escapeHtml(String(it.round ?? '—'))}</span>
+          ${it.parent ? `<span>来自：${escapeHtml(it.parent)}</span>` : '<span>来自：种子</span>'}
+        </div>
+      </div>
+    `;
+    el.appendChild(row);
+  }
+}
+
+async function loadTrendsState() {
+  const stored = await chrome.storage.local.get([TRENDS_STATE_KEY, TRENDS_HISTORY_KEY]);
+  const state = stored[TRENDS_STATE_KEY] || null;
+  const history = stored[TRENDS_HISTORY_KEY] || [];
+
+  if (state && typeof state === 'object') {
+    if (elements.trendsBaselineKeyword && typeof state.baseline === 'string') elements.trendsBaselineKeyword.value = state.baseline;
+    if (elements.trendsSeedKeywords && typeof state.seedsText === 'string') elements.trendsSeedKeywords.value = state.seedsText;
+    if (elements.trendsTimeRange && typeof state.timeRange === 'string') elements.trendsTimeRange.value = state.timeRange;
+    if (elements.trendsRiseThreshold && typeof state.threshold === 'number') elements.trendsRiseThreshold.value = String(state.threshold);
+    if (elements.trendsKeywordLimit && typeof state.keywordLimit === 'number') elements.trendsKeywordLimit.value = String(state.keywordLimit);
+    if (elements.trendsMaxRounds && typeof state.maxRounds === 'number') elements.trendsMaxRounds.value = String(state.maxRounds);
+  }
+
+  updateTrendsSeedCountUI();
+  renderTrendsHistory(history);
+}
+
+async function persistTrendsFormState() {
+  const state = {
+    baseline: elements.trendsBaselineKeyword?.value || '',
+    seedsText: elements.trendsSeedKeywords?.value || '',
+    timeRange: elements.trendsTimeRange?.value || 'today_3m',
+    threshold: Number(elements.trendsRiseThreshold?.value || 100),
+    keywordLimit: Number(elements.trendsKeywordLimit?.value || 20),
+    maxRounds: Number(elements.trendsMaxRounds?.value || 5)
+  };
+  await chrome.storage.local.set({ [TRENDS_STATE_KEY]: state });
+}
+
+function renderTrendsHistory(history) {
+  const el = elements.trendsHistoryList;
+  if (!el) return;
+  const list = Array.isArray(history) ? history : [];
+  if (list.length === 0) {
+    el.innerHTML = '<div class="empty-list-hint">暂无</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const item of list.slice(0, 50)) {
+    const row = document.createElement('div');
+    row.className = 'explore-url-item';
+    const seedsPreview = Array.isArray(item.seeds) ? item.seeds.slice(0, 3).join(', ') : '';
+    row.innerHTML = `
+      <div class="explore-url-main">
+        <div class="explore-url-title" style="display:flex; gap:8px; align-items:center;">
+          <span style="font-weight:600;">${escapeHtml(item.time || '')}</span>
+          <span class="badge" style="margin-left:auto;">${escapeHtml(item.status || '')}</span>
+        </div>
+        <div class="explore-url-meta" style="font-size:12px; opacity:.85;">
+          <div>种子：${escapeHtml(seedsPreview || '—')}</div>
+          <div>时间范围：${escapeHtml(item.timeRange || '—')}，阈值：${escapeHtml(String(item.threshold ?? '—'))}%，上限：${escapeHtml(String(item.keywordLimit ?? '—'))}</div>
+        </div>
+      </div>
+    `;
+    el.appendChild(row);
+  }
+}
+
+async function appendTrendsHistory(entry) {
+  const stored = await chrome.storage.local.get([TRENDS_HISTORY_KEY]);
+  const history = Array.isArray(stored[TRENDS_HISTORY_KEY]) ? stored[TRENDS_HISTORY_KEY] : [];
+  history.unshift(entry);
+  await chrome.storage.local.set({ [TRENDS_HISTORY_KEY]: history.slice(0, 100) });
+  renderTrendsHistory(history);
+}
+
+function buildTrendsCsv() {
+  const rows = [['keyword', 'risePct', 'riseRaw', 'round', 'parent', 'collectedAt']];
+  for (const it of Array.from(trendsJob.results.values()).sort((a, b) => (b.risePct ?? 0) - (a.risePct ?? 0))) {
+    rows.push([
+      it.keyword,
+      it.risePct === Number.POSITIVE_INFINITY ? 'Infinity' : String(it.risePct ?? ''),
+      String(it.riseRaw ?? ''),
+      String(it.round ?? ''),
+      String(it.parent ?? ''),
+      String(it.collectedAt ?? '')
+    ]);
+  }
+  return rows
+    .map((r) =>
+      r
+        .map((c) => {
+          const v = String(c ?? '');
+          if (/[,"\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+          return v;
+        })
+        .join(',')
+    )
+    .join('\n');
+}
+
+function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2500);
+}
+
+async function startTrendsJob() {
+  if (trendsJob.running) return;
+  await persistTrendsFormState();
+
+  const baseline = String(elements.trendsBaselineKeyword?.value || '').trim();
+  const seeds = parseSeedLines(elements.trendsSeedKeywords?.value || '');
+  const timeRange = elements.trendsTimeRange?.value || 'today_3m';
+  const threshold = Number(elements.trendsRiseThreshold?.value || 100);
+  const keywordLimit = Number(elements.trendsKeywordLimit?.value || 20);
+  const maxRounds = Number(elements.trendsMaxRounds?.value || 5);
+
+  if (seeds.length === 0) {
+    trendsJob.lastError = '请至少输入 1 个种子关键词';
+    updateTrendsStatusUI();
+    return;
+  }
+  if (!Number.isFinite(threshold) || threshold < 1) {
+    trendsJob.lastError = '有效词阈值需为 >= 1 的整数';
+    updateTrendsStatusUI();
+    return;
+  }
+  if (!Number.isFinite(keywordLimit) || keywordLimit < 1) {
+    trendsJob.lastError = '关键词上限需为 >= 1 的整数';
+    updateTrendsStatusUI();
+    return;
+  }
+  if (!Number.isFinite(maxRounds) || maxRounds < 1) {
+    trendsJob.lastError = '最大轮次需为 >= 1 的整数';
+    updateTrendsStatusUI();
+    return;
+  }
+
+  const jobId = `trends_${Date.now()}`;
+  trendsJob = {
+    running: true,
+    stopping: false,
+    abortController: new AbortController(),
+    jobId,
+    startedAt: Date.now(),
+    round: 0,
+    processed: 0,
+    lastError: null,
+    queued: seeds.slice(),
+    seenSeeds: new Set(seeds.map(normalizeKeyword)),
+    results: new Map(),
+    newlyAddedThisRound: new Set()
+  };
+  trendsLastErrorConsoleSnapshot = null;
+  updateTrendsStatusUI();
+  renderTrendsResults();
+
+  try {
+    await appendTrendsHistory({
+      jobId,
+      time: new Date().toLocaleString(),
+      status: '运行中',
+      baseline,
+      seeds: seeds.slice(0, 20),
+      timeRange,
+      threshold,
+      keywordLimit,
+      maxRounds
+    });
+  } catch (e) {
+    console.error('[Trends挖词] 写入「运行中」历史失败', e);
+  }
+
+  const signal = trendsJob.abortController.signal;
+  const globalSeenResult = new Set();
+
+  try {
+    // 1) 确保在 Trends 界面且已登录（按你的“限定条件”）
+    const workerTabId = await getTrendsTargetTabId(signal);
+    const loginState = await checkTrendsLoggedIn(workerTabId).catch((e) => {
+      console.error('[Trends挖词] checkTrendsLoggedIn 异常', e);
+      return { ok: false, reason: e?.message || String(e) };
+    });
+    if (!loginState?.ok) {
+      trendsJob.lastError = `无法确认 Google Trends 登录状态（${loginState?.reason || 'unknown'}）。已为你打开 Trends 工作页：请确认已登录后重试。`;
+      updateTrendsStatusUI();
+      try { await chrome.tabs.update(workerTabId, { url: TRENDS_WORKER_PAGE_URL, active: true }); } catch (_) {}
+      trendsJob.stopping = true;
+      return;
+    }
+    if (loginState?.userType && !loginState?.isLegitUser) {
+      // 不阻塞任务，仅提示：SCRAPER 更容易 429
+      const msg = `当前 Trends userType=${loginState.userType}（不一定表示未登录，但更易触发限流）。建议在工作页确认已登录后再跑，或降低种子数量/轮次。`;
+      console.warn('[Trends挖词]', msg);
+      trendsJob.lastError = msg;
+      updateTrendsStatusUI();
+    }
+
+    for (let r = 1; r <= maxRounds; r++) {
+      if (signal.aborted) break;
+      trendsJob.round = r;
+      trendsJob.newlyAddedThisRound = new Set();
+      updateTrendsStatusUI();
+
+      const currentQueue = trendsJob.queued.slice();
+      trendsJob.queued = [];
+
+      if (currentQueue.length === 0) break;
+
+      // 2) 按日志模式：在 explore 页面里“跳转新路径”触发请求，并拦截 relatedsearches 结构化请求
+      // 每次 explore 最多放 1 个 baseline + 4 个关键词，降低请求量且更像正常使用
+      const batchSize = 4;
+      const seedsForRound = currentQueue.slice();
+      for (let i = 0; i < seedsForRound.length; i += batchSize) {
+        if (signal.aborted) break;
+        const batchSeeds = seedsForRound.slice(i, i + batchSize);
+        const exploreKeywords = [baseline, ...batchSeeds].filter(Boolean);
+        const expectedNorm = new Set(batchSeeds.map(normalizeKeyword).filter(Boolean));
+
+        // 2.1 跳转到 explore 新路径（满足“可操作界面跳转新路径”）
+        const exploreUrl = buildTrendsExploreUrl({ hl: 'en-US', timeRange, keywords: exploreKeywords });
+        await chrome.tabs.update(workerTabId, { url: exploreUrl, active: false });
+        await waitForTabCompleteInSidepanel(workerTabId, 30000);
+
+        // 2.2 拦截该页面发出的 relatedsearches，并二次 fetch body（满足“拦截结构化网络请求数据”）
+        const intercepted = await collectRelatedSearchesByIntercept({
+          tabId: workerTabId,
+          expectedKeywordsNorm: expectedNorm,
+          timeoutMs: 20000,
+          signal
+        });
+
+        for (const seed of batchSeeds) {
+          if (signal.aborted) break;
+          const seedNorm = normalizeKeyword(seed);
+          if (!seedNorm) continue;
+
+          trendsJob.processed += 1;
+          updateTrendsStatusUI();
+
+          const captured = intercepted.get(seedNorm);
+          if (!captured?.data) continue;
+          const rankedLists = captured.data?.default?.rankedList;
+          if (!Array.isArray(rankedLists) || rankedLists.length === 0) continue;
+          const risingList = rankedLists[1] || rankedLists[0];
+          const kws = Array.isArray(risingList?.rankedKeyword) ? risingList.rankedKeyword : [];
+
+          for (const k of kws) {
+            const kw = String(k?.query || '').trim();
+            const kwNorm = normalizeKeyword(kw);
+            if (!kwNorm) continue;
+
+            const risePct = parseRisePctFromFormatted(k?.formattedValue);
+            const riseRaw = k?.formattedValue ?? k?.value ?? '';
+            const ok = risePct === Number.POSITIVE_INFINITY || (typeof risePct === 'number' && risePct > threshold);
+            if (!ok) continue;
+
+            if (!globalSeenResult.has(kwNorm)) {
+              globalSeenResult.add(kwNorm);
+              trendsJob.results.set(kwNorm, {
+                keyword: kw,
+                risePct,
+                riseRaw,
+                round: r,
+                parent: seed,
+                collectedAt: new Date().toISOString()
+              });
+              trendsJob.newlyAddedThisRound.add(kwNorm);
+            }
+          }
+        }
+
+        renderTrendsResults();
+        updateTrendsStatusUI();
+
+        if (trendsJob.results.size >= keywordLimit) {
+          trendsJob.lastError = `已达到关键词上限 ${keywordLimit}，任务自动停止`;
+          trendsJob.stopping = true;
+          break;
+        }
+
+        // 按日志节奏：随机等待 4-8s
+        const jitterMs = 4000 + Math.floor(Math.random() * 4500);
+        await trendsSleep(jitterMs, signal).catch(() => {});
+      }
+
+      if (signal.aborted) break;
+      if (trendsJob.stopping) break;
+
+      const nextSeeds = Array.from(trendsJob.newlyAddedThisRound.values())
+        .map((k) => trendsJob.results.get(k)?.keyword)
+        .filter(Boolean);
+      const nextQueue = [];
+      for (const kw of nextSeeds) {
+        const n = normalizeKeyword(kw);
+        if (!n) continue;
+        if (trendsJob.seenSeeds.has(n)) continue;
+        trendsJob.seenSeeds.add(n);
+        nextQueue.push(kw);
+      }
+      trendsJob.queued = nextQueue;
+
+      if (nextQueue.length === 0) break;
+    }
+  } catch (e) {
+    console.error('[Trends挖词] 采集任务异常', e);
+    if (!trendsJob.lastError) trendsJob.lastError = e?.message || String(e);
+    updateTrendsStatusUI();
+  } finally {
+    const doneStatus = signal.aborted ? '已停止' : (trendsJob.stopping ? '已停止' : '成功');
+    trendsJob.running = false;
+    trendsJob.stopping = false;
+    updateTrendsStatusUI();
+    renderTrendsResults();
+
+    try {
+      await appendTrendsHistory({
+        jobId,
+        time: new Date().toLocaleString(),
+        status: doneStatus,
+        baseline,
+        seeds: seeds.slice(0, 20),
+        timeRange,
+        threshold,
+        keywordLimit,
+        maxRounds,
+        processed: trendsJob.processed,
+        found: trendsJob.results.size,
+        error: trendsJob.lastError || null
+      });
+    } catch (e) {
+      console.error('[Trends挖词]写入历史失败', e);
+    }
+  }
+}
+
+function stopTrendsJob() {
+  if (!trendsJob.running) return;
+  trendsJob.stopping = true;
+  if (trendsJob.abortController) {
+    try { trendsJob.abortController.abort(); } catch (_) {}
+  }
+  trendsJob.running = false;
+  updateTrendsStatusUI();
 }
 
 function updateAhrefsProgress(message, type) {
@@ -1619,9 +2502,13 @@ async function loadExploreState() {
   await restoreAutoCollectState();
 }
 
+/** 遍历进度 urlProgress 仅保留「最近已处理」窗口，避免每条 URL 持久化后撑满 5MB 总配额 */
+const EXPLORE_URL_PROGRESS_STORAGE_WINDOW = 180;
+
 /**
  * 写入 backlinkExplorationBatches 前裁剪批次，避免 chrome.storage.local QuotaBytes。
- * 根因：自动采集 step3 会把整表 backlinks 放进 stepOutputs.step3.backlinks，与 urlList 同量级；
+ * 根因：① 扩展的 chrome.storage.local 约 5MB 为**全键共享**配额，IndexedDB 只用于 Ahrefs 反链缓存，批次仍在 local；
+ * ② 遍历步骤每处理一条 URL 就 saveBatch，urlProgress 会按条累积；③ step3 大字段等。
  * prepareAutoCollectTaskForStorage 只裁剪 autoCollectTask，不会处理本存储键。
  * @param {object} batch
  * @returns {object} 可安全持久化的新对象（不修改入参）
@@ -1684,6 +2571,55 @@ function prepareExploreBatchForStorage(batch) {
     });
   }
 
+  // 每条详情只保留 urlFrom + DR，去掉 title/anchor 等大字段
+  if (Array.isArray(b.backlinkDetails)) {
+    b.backlinkDetails = b.backlinkDetails.map((d) => {
+      if (!d || !d.urlFrom) return null;
+      const dr = d.domainRating !== undefined ? d.domainRating : (d.dr !== undefined ? d.dr : 0);
+      return { urlFrom: d.urlFrom, domainRating: dr };
+    }).filter(Boolean);
+  }
+
+  // urlProgress：只保留「当前 lastProcessedIndex 之前一小段」窗口内键，已回写飞书的不必长期占存储
+  if (b.urlProgress && typeof b.urlProgress === 'object' && !Array.isArray(b.urlProgress)) {
+    const trav = Array.isArray(b.traverseBacklinkList) ? b.traverseBacklinkList : null;
+    const li = typeof b.lastProcessedIndex === 'number' ? b.lastProcessedIndex : 0;
+    const keep = new Set();
+    if (trav && trav.length > 0) {
+      const from = Math.max(0, li - EXPLORE_URL_PROGRESS_STORAGE_WINDOW);
+      for (let i = from; i < li && i < trav.length; i++) {
+        const nu = typeof normalizeUrl === 'function' ? normalizeUrl(trav[i]) : trav[i];
+        if (nu) keep.add(nu);
+      }
+    } else {
+      const keys = Object.keys(b.urlProgress);
+      for (const k of keys.slice(-EXPLORE_URL_PROGRESS_STORAGE_WINDOW)) keep.add(k);
+    }
+    const np = {};
+    for (const k of Object.keys(b.urlProgress)) {
+      if (keep.has(k)) np[k] = b.urlProgress[k];
+    }
+    b.urlProgress = np;
+  }
+
+  // 批次级 discoveredSites 仅保留尾部若干条并降维（stepOutputs.step4 另有裁剪）
+  if (Array.isArray(b.discoveredSites) && b.discoveredSites.length > 0) {
+    const tail = b.discoveredSites.slice(-450);
+    b.discoveredSites = tail.map((item) => {
+      if (!item) return null;
+      if (typeof item === 'string') return { url: item };
+      const url = item.url || item;
+      if (!url) return null;
+      return {
+        url: typeof url === 'string' ? url : String(url),
+        discoveredAt: item.discoveredAt,
+        blogCommentScore: item.blogCommentScore,
+        requiresLogin: item.requiresLogin,
+        isNavigationSite: item.isNavigationSite
+      };
+    }).filter(Boolean);
+  }
+
   return b;
 }
 
@@ -1716,14 +2652,18 @@ async function saveExploreBatchWithExcludeFilter(batch) {
       const minimal = prepareExploreBatchForStorage(b);
       if (minimal.urlProgress && typeof minimal.urlProgress === 'object' && !Array.isArray(minimal.urlProgress)) {
         const keys = Object.keys(minimal.urlProgress);
-        if (keys.length > 2000) {
-          const keep = new Set(keys.slice(-1500));
+        const cap = EXPLORE_URL_PROGRESS_STORAGE_WINDOW;
+        if (keys.length > cap) {
+          const keep = new Set(keys.slice(-cap));
           const np = {};
           for (const k of keys) {
             if (keep.has(k)) np[k] = minimal.urlProgress[k];
           }
           minimal.urlProgress = np;
         }
+      }
+      if (Array.isArray(minimal.backlinkDetails) && minimal.backlinkDetails.length > 400) {
+        minimal.backlinkDetails = minimal.backlinkDetails.slice(-400);
       }
       if (Array.isArray(minimal.traverseBacklinkList) && minimal.traverseBacklinkList.length > 8000) {
         minimal.traverseBacklinkList = minimal.traverseBacklinkList.slice(0, 8000);
@@ -3615,6 +4555,14 @@ function setupEventListeners() {
     await loadUrlsFromSelectedBatch();
   });
 
+  elements.exploreLoadIncompleteFeishuBtn?.addEventListener('click', async () => {
+    try {
+      await loadIncompleteAhrefsMarksIntoExploreUrlList();
+    } catch (e) {
+      showExploreMessage('加载飞书未标记行失败: ' + (e?.message || e), 'error');
+    }
+  });
+
   // 点击写入飞书按钮（待检测 URL 列表）
   elements.exploreWriteUrlListToFeishuBtn?.addEventListener('click', async () => {
     await writeUrlListToFeishu();
@@ -3693,6 +4641,63 @@ function setupEventListeners() {
   elements.autoCollectClearLogBtn?.addEventListener('click', () => {
     autoCollectLogs = [];
     renderAutoCollectLogs();
+  });
+
+  // ========== Trends 挖词模式事件 ==========
+  elements.trendsSeedKeywords?.addEventListener('input', () => {
+    updateTrendsSeedCountUI();
+  });
+  elements.trendsBaselineKeyword?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsSeedKeywords?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsTimeRange?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsRiseThreshold?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsKeywordLimit?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsMaxRounds?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+
+  elements.trendsStartBtn?.addEventListener('click', async () => {
+    if (currentMode !== 'trends') showModePanel('trends');
+    try {
+      await startTrendsJob();
+    } catch (e) {
+      console.error('[Trends挖词] startTrendsJob 外层异常', e);
+    }
+  });
+  elements.trendsStopBtn?.addEventListener('click', () => {
+    stopTrendsJob();
+  });
+  elements.trendsExportBtn?.addEventListener('click', () => {
+    const csv = buildTrendsCsv();
+    downloadTextFile(`trends-keywords-${Date.now()}.csv`, csv, 'text/csv;charset=utf-8');
+  });
+  elements.trendsClearHistoryBtn?.addEventListener('click', async () => {
+    if (!confirm('确定要清空 Trends 挖词历史吗？此操作不可撤销。')) return;
+    await chrome.storage.local.set({ [TRENDS_HISTORY_KEY]: [] });
+    renderTrendsHistory([]);
+  });
+
+  elements.trendsOpenWorkerBtn?.addEventListener('click', async () => {
+    try {
+      // 这里仍然允许创建/复用一个工作页，方便用户手动登录与操作
+      const tabId = await ensureTrendsWorkerTab();
+      await chrome.tabs.update(tabId, { url: TRENDS_WORKER_PAGE_URL, active: true });
+      await waitForTabCompleteInSidepanel(tabId, 30000);
+    } catch (e) {
+      console.error('[Trends挖词] 打开工作页失败', e);
+      trendsJob.lastError = e?.message || String(e);
+      updateTrendsStatusUI();
+    }
   });
 
   // 监听 storage 变更
@@ -3973,6 +4978,150 @@ function formatDateTime(date) {
 }
 
 // ========== 外链采集飞书写入 ==========
+
+function feishuColumnLettersToIndex(letters) {
+  let n = 0;
+  const s = String(letters || '').toUpperCase().replace(/[^A-Z]/g, '');
+  for (let i = 0; i < s.length; i++) {
+    n = n * 26 + (s.charCodeAt(i) - 64);
+  }
+  return Math.max(0, n - 1);
+}
+
+function feishuColumnIndexToLetters(index) {
+  let n = index + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s || 'A';
+}
+
+function isEmptyFeishuMarkCell(v) {
+  if (v === undefined || v === null) return true;
+  const t = typeof v === 'string' ? v.trim() : String(v).trim();
+  return t === '';
+}
+
+/**
+ * 读取飞书电子表格指定范围（GET /sheets/v2/spreadsheets/.../values）
+ */
+async function fetchFeishuSpreadsheetValues(spreadsheetToken, range) {
+  const accessToken = await getFeishuAccessToken();
+  const encoded = encodeURIComponent(range);
+  const url = `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encoded}?valueRenderOption=ToString`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  const data = await response.json();
+  if (data.code !== 0) {
+    throw new Error(data.msg || '读取飞书表格失败');
+  }
+  return data.data?.valueRange?.values || [];
+}
+
+/**
+ * 从 Ahrefs 反链表中筛选：A 列有 URL，且 K/L/M/N（或你在设置里配置的列）中任一空白的行，返回标准化 URL（去重）
+ */
+async function fetchAhrefsSheetUrlsWithIncompleteMarkColumns() {
+  const result = await chrome.storage.local.get(['feishuConfig']);
+  const config = result.feishuConfig || {};
+  if (!config.appId || !config.appSecret || !config.ahrefsSheetToken || !config.ahrefsSheetId) {
+    throw new Error('请先在设置中配置飞书应用凭证与「外链采集 - Ahrefs 反链」表格');
+  }
+  const blogCommentCol = config.ahrefsBlogCommentCol || 'K';
+  const requiresLoginCol = config.ahrefsRequiresLoginCol || 'L';
+  const navigationSiteCol = config.ahrefsNavigationSiteCol || 'M';
+  const blogCommentScoreCol = config.ahrefsBlogCommentScoreCol || 'N';
+
+  const iK = feishuColumnLettersToIndex(blogCommentCol);
+  const iL = feishuColumnLettersToIndex(requiresLoginCol);
+  const iM = feishuColumnLettersToIndex(navigationSiteCol);
+  const iN = feishuColumnLettersToIndex(blogCommentScoreCol);
+  const maxIdx = Math.max(iK, iL, iM, iN, 0);
+  const endCol = feishuColumnIndexToLetters(maxIdx);
+  const sheetId = config.ahrefsSheetId;
+  const maxDataRow = 5000;
+  const range = `${sheetId}!A2:${endCol}${maxDataRow}`;
+
+  const rows = await fetchFeishuSpreadsheetValues(config.ahrefsSheetToken, range);
+  const urls = [];
+  const seen = new Set();
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    if (!Array.isArray(row)) continue;
+    const urlRaw = row[0];
+    if (isEmptyFeishuMarkCell(urlRaw)) continue;
+    const cellK = row[iK];
+    const cellL = row[iL];
+    const cellM = row[iM];
+    const cellN = row[iN];
+    const incomplete =
+      isEmptyFeishuMarkCell(cellK) ||
+      isEmptyFeishuMarkCell(cellL) ||
+      isEmptyFeishuMarkCell(cellM) ||
+      isEmptyFeishuMarkCell(cellN);
+    if (!incomplete) continue;
+    let u = String(urlRaw).trim();
+    if (!u) continue;
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u.replace(/^\/+/, '');
+    const norm = typeof normalizeUrl === 'function' ? normalizeUrl(u) : u;
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    urls.push(norm);
+  }
+  return urls;
+}
+
+/**
+ * 将飞书表格中「Blog Comment / 登录 / 导航 / 评分」未写全的行载入待检测 URL 列表，便于再点「遍历检测」回写
+ */
+async function loadIncompleteAhrefsMarksIntoExploreUrlList() {
+  showExploreMessage('正在从飞书读取未标记行…', 'info');
+  const urls = await fetchAhrefsSheetUrlsWithIncompleteMarkColumns();
+  if (urls.length === 0) {
+    showExploreMessage('没有需要补填的行（A 列有 URL 且标记列未写全）', 'info');
+    return;
+  }
+
+  let batch = exploreCurrentBatch;
+  if (!batch) {
+    if (typeof generateBatchId !== 'function' || typeof createBatch !== 'function') return;
+    const batchId = await generateBatchId();
+    batch = createBatch(batchId, { type: 'feishu_incomplete' });
+    batch.status = 'idle';
+    batch.phase = 'idle';
+    exploreCurrentBatch = batch;
+  }
+
+  const hadTraverseProgress =
+    (Array.isArray(batch.traverseBacklinkList) && batch.traverseBacklinkList.length > 0) &&
+    (batch.lastProcessedIndex || 0) > 0;
+  if (hadTraverseProgress) {
+    const ok = confirm('合并飞书待补填 URL 将重置当前批次的遍历进度，是否继续？');
+    if (!ok) return;
+  }
+
+  const merged = typeof dedupeUrls === 'function'
+    ? dedupeUrls([...(batch.urlList || []), ...urls])
+    : [...new Set([...(batch.urlList || []), ...urls])];
+  batch.urlList = merged;
+  batch.traverseBacklinkList = [];
+  batch.lastProcessedIndex = 0;
+  batch.updatedAt = new Date().toISOString();
+  await saveExploreBatchWithExcludeFilter(batch);
+  exploreCurrentBatch = batch;
+  if (elements.exploreBatchId) elements.exploreBatchId.textContent = batch.batchId;
+  if (elements.exploreBatchStatus) {
+    elements.exploreBatchStatus.textContent = (batch.status || 'idle') + ' · ' + (batch.phase || 'idle');
+    elements.exploreBatchStatus.classList.remove('hidden');
+  }
+  renderExploreUrlList();
+  updateExploreControls(batch.status);
+  showExploreMessage(`已载入 ${urls.length} 条待补填 URL（与列表合并去重后共 ${merged.length} 条），请点击「遍历检测可评论站点」`, 'success');
+}
 
 /**
  * 将 discoveredSites 写入飞书普通电子表格
