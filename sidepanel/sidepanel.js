@@ -1487,9 +1487,9 @@ async function persistTrendsFormState() {
     baseline: elements.trendsBaselineKeyword?.value || '',
     seedsText: elements.trendsSeedKeywords?.value || '',
     timeRange: elements.trendsTimeRange?.value || 'today_3m',
-    threshold: Number(elements.trendsRiseThreshold?.value || 100),
-    keywordLimit: Number(elements.trendsKeywordLimit?.value || 20),
-    maxRounds: Number(elements.trendsMaxRounds?.value || 5)
+    threshold: Number(elements.trendsRiseThreshold?.value || 120),
+    keywordLimit: Number(elements.trendsKeywordLimit?.value || 200),
+    maxRounds: Number(elements.trendsMaxRounds?.value || 20)
   };
   await chrome.storage.local.set({ [TRENDS_STATE_KEY]: state });
 }
@@ -1575,9 +1575,9 @@ async function startTrendsJob() {
   const baseline = String(elements.trendsBaselineKeyword?.value || '').trim();
   const seeds = parseSeedLines(elements.trendsSeedKeywords?.value || '');
   const timeRange = elements.trendsTimeRange?.value || 'today_3m';
-  const threshold = Number(elements.trendsRiseThreshold?.value || 100);
-  const keywordLimit = Number(elements.trendsKeywordLimit?.value || 20);
-  const maxRounds = Number(elements.trendsMaxRounds?.value || 5);
+  const threshold = Number(elements.trendsRiseThreshold?.value || 120);
+  const keywordLimit = Number(elements.trendsKeywordLimit?.value || 200);
+  const maxRounds = Number(elements.trendsMaxRounds?.value || 20);
 
   if (seeds.length === 0) {
     trendsJob.lastError = '请至少输入 1 个种子关键词';
@@ -1639,26 +1639,8 @@ async function startTrendsJob() {
   const globalSeenResult = new Set();
 
   try {
-    // 1) 确保在 Trends 界面且已登录（按你的“限定条件”）
+    // 1) 确保在 Trends 界面（按你的限定条件：必须在 Google Trends 界面）
     const workerTabId = await getTrendsTargetTabId(signal);
-    const loginState = await checkTrendsLoggedIn(workerTabId).catch((e) => {
-      console.error('[Trends挖词] checkTrendsLoggedIn 异常', e);
-      return { ok: false, reason: e?.message || String(e) };
-    });
-    if (!loginState?.ok) {
-      trendsJob.lastError = `无法确认 Google Trends 登录状态（${loginState?.reason || 'unknown'}）。已为你打开 Trends 工作页：请确认已登录后重试。`;
-      updateTrendsStatusUI();
-      try { await chrome.tabs.update(workerTabId, { url: TRENDS_WORKER_PAGE_URL, active: true }); } catch (_) {}
-      trendsJob.stopping = true;
-      return;
-    }
-    if (loginState?.userType && !loginState?.isLegitUser) {
-      // 不阻塞任务，仅提示：SCRAPER 更容易 429
-      const msg = `当前 Trends userType=${loginState.userType}（不一定表示未登录，但更易触发限流）。建议在工作页确认已登录后再跑，或降低种子数量/轮次。`;
-      console.warn('[Trends挖词]', msg);
-      trendsJob.lastError = msg;
-      updateTrendsStatusUI();
-    }
 
     for (let r = 1; r <= maxRounds; r++) {
       if (signal.aborted) break;
