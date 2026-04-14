@@ -712,6 +712,63 @@ const AI_REQUEST_MAX_RETRIES = 2;
 const AI_RETRY_DELAY_MS = 30000;
 
 /**
+ * 将 OpenAI 格式的 LLM 请求参数自动适配为 Anthropic 格式（当 endpoint 含 /anthropic 时）
+ * 返回 { url, init }，可直接传给 fetchLlmWithRetry
+ */
+function adaptLlmRequest(endpoint, apiKey, requestBody) {
+  if (!endpoint.includes('/anthropic')) {
+    return {
+      url: endpoint,
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+      }
+    };
+  }
+  // Anthropic 兼容格式
+  const messages = requestBody.messages || [];
+  const systemMsg = messages.find(m => m.role === 'system');
+  const userMessages = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }));
+  const anthropicBody = {
+    model: requestBody.model,
+    max_tokens: requestBody.max_tokens || 4096,
+    messages: userMessages
+  };
+  if (systemMsg) anthropicBody.system = systemMsg.content;
+  if (requestBody.temperature != null) anthropicBody.temperature = requestBody.temperature;
+  return {
+    url: endpoint + '/v1/messages',
+    init: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(anthropicBody)
+    }
+  };
+}
+
+/**
+ * 从 LLM 响应 JSON 中提取 content 文本（兼容 OpenAI 与 Anthropic 格式）
+ */
+function extractLlmContent(data) {
+  if (data?.choices?.[0]?.message?.content != null) {
+    return data.choices[0].message.content;
+  }
+  // Anthropic 格式: content 是 array of blocks
+  if (Array.isArray(data?.content)) {
+    return data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  }
+  return '';
+}
+
+/**
  * 带超时与重试的 fetch：单次 30s 超时，失败或 429 时等待 30s 再重试，全部失败则抛出提示用户检查接口
  * @param {string} url
  * @param {RequestInit} init
@@ -831,16 +888,10 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
   log('[AI Form 识别-导航站] 请求完整 JSON:', navReqJson);
 
   try {
+    const _adapted = adaptLlmRequest(endpoint, llmConfig.apiKey, requestBody);
     const response = await fetchLlmWithRetry(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${llmConfig.apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      },
+      _adapted.url,
+      _adapted.init,
       { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
     );
 
@@ -857,22 +908,23 @@ async function handleAIRecognizeForm(formMetadata, tabId) {
     console.log('[AI Form 识别-导航站] 响应完整 JSON:', navResJson);
     log('[AI Form 识别-导航站] 响应完整 JSON:', navResJson);
 
-    const msg = data.choices?.[0]?.message || {};
+    const msg = (data?.choices?.[0]?.message) || null;
+    const contentText = extractLlmContent(data);
     log('AI 原始返回:', {
-      hasChoices: !!data.choices,
-      choicesLength: data.choices?.length,
+      hasChoices: !!data?.choices,
+      choicesLength: data?.choices?.length,
       usage: data.usage || null,
       hasReasoningContent: !!msg.reasoning_content
     });
 
-    if (!data.choices || data.choices.length === 0) {
+    if (!data.choices?.length && !Array.isArray(data?.content)) {
       logErr('AI 返回格式无效, 完整 data:', data);
       throw new Error('API 返回格式无效');
     }
 
     // GLM 思考模型：最终答案在 content，推理过程在 reasoning_content；若 content 为空则从 reasoning_content 提取
-    let content = (msg.content && String(msg.content).trim()) || '';
-    const reasoningContent = (msg.reasoning_content && String(msg.reasoning_content)) || '';
+    let content = contentText.trim();
+    const reasoningContent = (msg?.reasoning_content && String(msg.reasoning_content)) || ((data?.content || []).filter(b => b.type === 'thinking').map(b => b.thinking || '').join(''));
     if (!content && reasoningContent) {
       log('AI content 为空，从 reasoning_content 提取映射');
       content = extractMappingsFromReasoning(reasoningContent);
@@ -1102,11 +1154,35 @@ function extractCommentFromReasoning(reasoningContent) {
  * 统一从 API 返回中解析出评论文本：优先 content，为空时从 reasoning_content 提取
  */
 function parseBlogCommentResponse(data) {
+  // OpenAI 格式
   const msg = data?.choices?.[0]?.message;
-  if (!msg) return '';
+  if (msg) {
+    let rawContent = (msg.content && String(msg.content).trim()) || '';
+    const reasoningContent = (msg.reasoning_content && String(msg.reasoning_content)) || '';
 
-  let rawContent = (msg.content && String(msg.content).trim()) || '';
-  const reasoningContent = (msg.reasoning_content && String(msg.reasoning_content)) || '';
+    if (rawContent) {
+      return rawContent.replace(/^["']|["']$/g, '').trim();
+    }
+    if (reasoningContent) {
+      const extracted = extractCommentFromReasoning(reasoningContent);
+      if (extracted) return extracted;
+    }
+    return '';
+  }
+  // Anthropic 格式: data.content 是 array of blocks
+  const textBlocks = (data?.content || []).filter(b => b.type === 'text');
+  const thinkingBlocks = (data?.content || []).filter(b => b.type === 'thinking');
+  const rawContent = textBlocks.map(b => b.text).join('').trim();
+  if (rawContent) {
+    return rawContent.replace(/^["']|["']$/g, '').trim();
+  }
+  const reasoningContent = thinkingBlocks.map(b => b.thinking || b.text || '').join('');
+  if (reasoningContent) {
+    const extracted = extractCommentFromReasoning(reasoningContent);
+    if (extracted) return extracted;
+  }
+  return '';
+}
 
   if (rawContent) {
     return rawContent.replace(/^["']|["']$/g, '').trim();
@@ -1163,16 +1239,10 @@ async function handleGenerateBlogComment(title, description, h1 = '', siteUrl = 
   log('请求 user 内容:', userContent);
 
   try {
+    const _adapted = adaptLlmRequest(endpoint, llmConfig.apiKey, requestBody);
     const response = await fetchLlmWithRetry(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${llmConfig.apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      },
+      _adapted.url,
+      _adapted.init,
       { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
     );
 
@@ -1377,16 +1447,10 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
   pageLog('[BlogComment OneShot] 请求开始');
 
   try {
+    const _adapted = adaptLlmRequest(endpoint, llmConfig.apiKey, requestBody);
     const response = await fetchLlmWithRetry(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${llmConfig.apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      },
+      _adapted.url,
+      _adapted.init,
       {
         timeoutMs: AI_REQUEST_TIMEOUT_MS,
         maxRetries: AI_REQUEST_MAX_RETRIES,
@@ -1414,7 +1478,7 @@ async function handleBlogCommentOneShot(formMetadata, title, description, h1 = '
     }
 
     const data = await response.json();
-    let content = (data?.choices?.[0]?.message?.content || '').trim();
+    let content = extractLlmContent(data).trim();
     if (!content) throw new Error('API 返回内容为空');
 
     log('API 返回原始 content 长度:', content.length);
@@ -1492,16 +1556,10 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
   log('[AI Form 识别-评论] 请求完整 JSON:', commentReqJson);
 
   try {
+    const _adapted = adaptLlmRequest(endpointComment, llmConfig.apiKey, requestBody);
     const response = await fetchLlmWithRetry(
-      endpointComment,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${llmConfig.apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      },
+      _adapted.url,
+      _adapted.init,
       { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxRetries: AI_REQUEST_MAX_RETRIES }
     );
 
@@ -1516,7 +1574,7 @@ async function handleAIRecognizeCommentForm(formMetadata, tabId) {
     console.log('[AI Form 识别-评论] 响应完整 JSON:', commentResJson);
     log('[AI Form 识别-评论] 响应完整 JSON:', commentResJson);
 
-    let content = (data.choices?.[0]?.message?.content || '').trim();
+    let content = extractLlmContent(data).trim();
     if (!content) throw new Error('API 返回内容为空');
 
     const { mappings, submitButton } = parseCommentFormAIResponse(content, formMetadata);
