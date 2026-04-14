@@ -2576,7 +2576,7 @@ async function fillCommentForm(siteId, commentText, autoSubmit = true, opts = {}
       if (!el) { errors.push(`未找到元素: ${mapping.standardField}`); continue; }
       const value = data[mapping.standardField];
       if (value == null || (typeof value === 'string' && !value.trim())) continue;
-      await typeIntoElementWithDelay(el, String(value).trim());
+      fillInputElement(el, String(value).trim());
       filledCount++;
     } catch (e) {
       errors.push(`${mapping.standardField}: ${e.message}`);
@@ -3035,7 +3035,7 @@ async function fillForm(siteId) {
           filledOnceByField.add(mapping.standardField);
         }
       } else if (element.tagName === 'TEXTAREA' || element.type === 'text' || element.type === 'url' || element.type === 'email') {
-        await typeIntoElementWithDelay(element, value);
+        fillInputElement(element, value);
         filledCount++;
       } else {
         // Try to set value for other types

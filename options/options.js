@@ -653,6 +653,14 @@ const PROVIDER_CONFIG = {
     ],
     defaultModel: 'llama3-8b-8192'
   },
+  minimax: {
+    name: 'MiniMax',
+    endpoint: 'https://api.minimaxi.com/v1/chat/completions',
+    models: [
+      { value: 'MiniMax-M2.7', label: 'MiniMax-M2.7' }
+    ],
+    defaultModel: 'MiniMax-M2.7'
+  },
   custom: {
     name: '自定义',
     endpoint: '',
@@ -711,6 +719,7 @@ function getProviderFromEndpoint(endpoint) {
   if (endpoint.includes('moonshot.ai')) return 'moonshot';
   if (endpoint.includes('openai.com')) return 'openai';
   if (endpoint.includes('groq.com')) return 'groq';
+  if (endpoint.includes('minimaxi.com')) return 'minimax';
   return 'custom';
 }
 
