@@ -562,61 +562,70 @@
             <button id="trendsOpenWorkerBtn" class="btn-link btn-sm" type="button" title="打开 Google Trends 工作页（用于登录/验证/手动操作）">打开 Trends 工作页</button>
           </div>
         </div>
-        <p class="hint">输入词根与参考词，筛选上升趋势 &gt; 100% 的词，并按轮次迭代拓展长尾词。</p>
+        <p class="hint">在 Google Trends 页面里批量跳转并拦截结构化请求：筛选 Rising &gt; 100%（Breakout 视为 &gt; 1000%）的词；有效词阈值用于按“相对基准词搜索量百分比”筛选。</p>
       </section>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">基准关键词</span>
-        </div>
-        <input id="trendsBaselineKeyword" class="input" placeholder="例如：gpts（作为对比参考）" />
-        <p class="hint">基准关键词用于对比参考；当前筛选以候选词自身上升趋势为准。</p>
-      </section>
+      <section class="section trends-compact mode-potential" id="trendsModeCardParent">
+        <div class="trends-grid">
+          <div class="trends-field">
+            <div class="section-header"><span class="label">探索模式</span></div>
+            <div class="trends-mode-segment" role="tablist" aria-label="探索模式">
+              <button type="button" id="trendsModePotentialBtn" class="trends-mode-tab active" role="tab" aria-selected="true">潜力词探索</button>
+              <button type="button" id="trendsModeLongtailBtn" class="trends-mode-tab" role="tab" aria-selected="false">长尾词探索</button>
+            </div>
+            <p class="hint">潜力词探索会要求 Rising &gt; 100%；长尾词探索不限定 Rising &gt; 100%（更发散）。</p>
+          </div>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">种子关键词</span>
-          <span id="trendsSeedCount" class="list-count hidden">0 条</span>
-        </div>
-        <textarea id="trendsSeedKeywords" class="input trends-textarea" placeholder="每行一个关键词，例如：&#10;ai video&#10;video ai"></textarea>
-        <p class="hint">每行一个关键词，至少需要 1 个关键词。</p>
-      </section>
+          <div class="trends-field">
+            <div class="section-header"><span class="label">基准关键词</span></div>
+            <input id="trendsBaselineKeyword" class="input" placeholder="例如：gpts" />
+            <p class="hint">有效词阈值将基于该词进行换算（相对百分比）。</p>
+          </div>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">时间范围</span>
-        </div>
-        <select id="trendsTimeRange" class="select">
-          <option value="now_7d">过去 7 天</option>
-          <option value="today_1m">过去 30 天</option>
-          <option value="today_3m" selected>过去 90 天</option>
-          <option value="today_12m">过去 12 个月</option>
-          <option value="today_5y">过去 5 年</option>
-        </select>
-      </section>
+          <div class="trends-field">
+            <div class="section-header">
+              <span class="label">种子关键词</span>
+              <span id="trendsSeedCount" class="list-count hidden">0 条</span>
+            </div>
+            <textarea id="trendsSeedKeywords" class="input trends-textarea trends-textarea-compact" placeholder="支持换行或英文逗号分隔，例如：&#10;ai image, ai video&#10;image ai">ai image, ai video</textarea>
+          </div>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">有效词阈值</span>
-        </div>
-        <input id="trendsRiseThreshold" class="input" type="number" min="1" step="1" value="120" />
-        <p class="hint">默认 100 表示上升趋势 &gt; 100%（严格大于）。Breakout 将视为无限大。</p>
-      </section>
+          <div class="trends-field">
+            <div class="section-header"><span class="label">时间范围</span></div>
+            <select id="trendsTimeRange" class="select">
+              <option value="now_7d">过去 7 天</option>
+              <option value="today_1m">过去 30 天</option>
+              <option value="today_3m" selected>过去 90 天</option>
+              <option value="today_12m">过去 12 个月</option>
+              <option value="today_5y">过去 5 年</option>
+            </select>
+          </div>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">关键词上限</span>
-        </div>
-        <input id="trendsKeywordLimit" class="input" type="number" min="1" step="1" value="200" />
-        <p class="hint">达到上限时将停止继续采集并提示。</p>
-      </section>
+          <div class="trends-field">
+            <div class="section-header"><span class="label">有效词阈值（相对基准 %）</span></div>
+            <input id="trendsRiseThreshold" class="input" type="number" min="1" step="1" value="20" />
+            <p class="hint">默认 20 表示：该词平均热度 ≥ 基准词的 20%。</p>
+          </div>
 
-      <section class="section">
-        <div class="section-header">
-          <span class="label">最大轮次</span>
+          <div class="trends-field">
+            <div class="section-header"><span class="label">关键词上限</span></div>
+            <input id="trendsKeywordLimit" class="input" type="number" min="1" step="1" value="200" />
+          </div>
+
+          <div class="trends-field">
+            <div class="section-header"><span class="label">最大轮次</span></div>
+            <input id="trendsMaxRounds" class="input" type="number" min="1" step="1" value="20" />
+          </div>
         </div>
-        <input id="trendsMaxRounds" class="input" type="number" min="1" step="1" value="20" />
-        <p class="hint">每轮会将本轮筛选出来的词作为下一轮的种子继续请求。</p>
+
+        <details class="trends-advanced" id="trendsAdvanced">
+          <summary class="btn-link btn-sm">高级配置（排除词汇等）</summary>
+          <div class="trends-advanced-body">
+            <div class="section-header" style="margin-top:10px;"><span class="label">排除词汇（包含即跳过）</span></div>
+            <textarea id="trendsExcludeWords" class="input trends-textarea trends-textarea-compact" placeholder="每行一个词，例如：&#10;near me&#10;warmart"></textarea>
+            <p class="hint">默认内置 near me、warmart。命中任一排除词会直接跳过，不参与采集与拓展。</p>
+          </div>
+        </details>
       </section>
 
       <section class="section actions">

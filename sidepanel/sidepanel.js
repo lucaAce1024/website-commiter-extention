@@ -13,6 +13,8 @@ const TRENDS_DEFAULT_TZ = -480;
 const TRENDS_DEFAULT_HL = 'zh-CN';
 /** 「打开 Trends 工作页」与首次创建工作 Tab 的默认落地页（legacy explore） */
 const TRENDS_WORKER_PAGE_URL = 'https://trends.google.com/trends/explore?date=today%203-m&q=gpts&hl=en-US&legacy';
+const TRENDS_BREAKOUT_RISE_PCT = 1000;
+const TRENDS_DEFAULT_EXCLUDE_WORDS = ['near me', 'warmart'];
 
 // 标准字段 → 展示名称（按字段填充列表用）
 const FIELD_LABELS = {
@@ -197,12 +199,16 @@ const elements = {
 
   // Trends 挖词模式
   trendsBaselineKeyword: document.getElementById('trendsBaselineKeyword'),
+  trendsModePotentialBtn: document.getElementById('trendsModePotentialBtn'),
+  trendsModeLongtailBtn: document.getElementById('trendsModeLongtailBtn'),
+  trendsModeCardParent: document.getElementById('trendsModeCardParent'),
   trendsSeedKeywords: document.getElementById('trendsSeedKeywords'),
   trendsSeedCount: document.getElementById('trendsSeedCount'),
   trendsTimeRange: document.getElementById('trendsTimeRange'),
   trendsRiseThreshold: document.getElementById('trendsRiseThreshold'),
   trendsKeywordLimit: document.getElementById('trendsKeywordLimit'),
   trendsMaxRounds: document.getElementById('trendsMaxRounds'),
+  trendsExcludeWords: document.getElementById('trendsExcludeWords'),
   trendsStartBtn: document.getElementById('trendsStartBtn'),
   trendsStopBtn: document.getElementById('trendsStopBtn'),
   trendsExportBtn: document.getElementById('trendsExportBtn'),
@@ -261,6 +267,7 @@ let trendsWorkerTabId = null;
 let trendsWebRequestBound = false;
 /** 与 trendsJob.lastError 同步，避免同一字符串重复刷屏；新任务开始会重置 */
 let trendsLastErrorConsoleSnapshot = null;
+let trendsExploreMode = 'potential'; // potential | longtail
 
 function installSidepanelGlobalErrorLogging() {
   if (globalThis.__sidepanelGlobalErrorLoggingInstalled) return;
@@ -1002,8 +1009,9 @@ function normalizeKeyword(s) {
 }
 
 function parseSeedLines(text) {
+  // 支持换行或英文逗号分隔
   return String(text || '')
-    .split('\n')
+    .split(/[\n,]/g)
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -1027,7 +1035,7 @@ function safeJsonParseTrends(text) {
 function parseRisePctFromFormatted(formattedValue) {
   const raw = String(formattedValue || '').trim();
   if (!raw) return null;
-  if (/breakout/i.test(raw)) return Number.POSITIVE_INFINITY;
+  if (/breakout/i.test(raw)) return TRENDS_BREAKOUT_RISE_PCT;
   // Examples: "+120%", "120%"
   const m = raw.replace(/,/g, '').match(/(-?\d+(\.\d+)?)\s*%/);
   if (m) return Number(m[1]);
@@ -1166,6 +1174,85 @@ function bindTrendsWebRequestOnce() {
     () => {},
     { urls: ['https://trends.google.com/trends/api/widgetdata/relatedsearches*'] }
   );
+  chrome.webRequest.onCompleted.addListener(
+    () => {},
+    { urls: ['https://trends.google.com/trends/api/widgetdata/multiline*'] }
+  );
+}
+
+async function collectMultilineByIntercept({ tabId, expectedKeywordsNorm, timeoutMs = 20000, signal }) {
+  bindTrendsWebRequestOnce();
+  let captured = null; // { url, data, keywordOrder }
+
+  const handler = async (details) => {
+    try {
+      if (signal?.aborted) return;
+      if (details.tabId !== tabId) return;
+      const u = new URL(details.url);
+      const reqParam = u.searchParams.get('req');
+      if (!reqParam) return;
+      const reqJson = JSON.parse(reqParam);
+      const comparison = Array.isArray(reqJson?.comparisonItem) ? reqJson.comparisonItem : [];
+      const keywordOrder = comparison
+        .map((ci) => ci?.complexKeywordsRestriction?.keyword?.[0]?.value)
+        .map((k) => normalizeKeyword(k))
+        .filter(Boolean);
+      for (const k of expectedKeywordsNorm) {
+        if (!keywordOrder.includes(k)) return;
+      }
+      if (captured) return;
+
+      const text = await fetchTextWithRetry(details.url, { signal, credentials: 'include' }, { maxAttempts: 3, baseDelayMs: 2500, maxDelayMs: 15000 });
+      const json = safeJsonParseTrends(text);
+      captured = { url: details.url, data: json, keywordOrder };
+    } catch (err) {
+      console.error('[Trends挖词] multiline 拦截/拉取失败', err, details?.url ? String(details.url).slice(0, 240) : '');
+    }
+  };
+
+  chrome.webRequest.onCompleted.addListener(handler, { urls: ['https://trends.google.com/trends/api/widgetdata/multiline*'] });
+  const start = Date.now();
+  try {
+    while (Date.now() - start < timeoutMs) {
+      if (signal?.aborted) break;
+      if (captured) break;
+      await trendsSleep(300, signal).catch(() => {});
+    }
+  } finally {
+    chrome.webRequest.onCompleted.removeListener(handler);
+  }
+
+  return captured;
+}
+
+function computeAvgInterestFromMultiline(multilineJson) {
+  const timeline = multilineJson?.default?.timelineData;
+  if (!Array.isArray(timeline) || timeline.length === 0) return null;
+  const dim = Array.isArray(timeline[0]?.value) ? timeline[0].value.length : 0;
+  if (!dim) return null;
+  const sums = new Array(dim).fill(0);
+  const counts = new Array(dim).fill(0);
+  for (const row of timeline) {
+    const vals = Array.isArray(row?.value) ? row.value : [];
+    for (let i = 0; i < dim; i++) {
+      const v = vals[i];
+      if (typeof v === 'number') {
+        sums[i] += v;
+        counts[i] += 1;
+      }
+    }
+  }
+  return sums.map((s, i) => (counts[i] ? s / counts[i] : 0));
+}
+
+function keywordMatchesExcludeList(keyword, excludeList) {
+  const s = String(keyword || '').toLowerCase();
+  for (const w of excludeList || []) {
+    const ww = String(w || '').trim().toLowerCase();
+    if (!ww) continue;
+    if (s.includes(ww)) return ww;
+  }
+  return null;
 }
 
 async function collectRelatedSearchesByIntercept({ tabId, expectedKeywordsNorm, timeoutMs = 20000, signal }) {
@@ -1410,6 +1497,22 @@ function updateTrendsSeedCountUI() {
   }
 }
 
+function setTrendsExploreMode(mode) {
+  trendsExploreMode = mode === 'longtail' ? 'longtail' : 'potential';
+  if (elements.trendsModePotentialBtn) {
+    elements.trendsModePotentialBtn.classList.toggle('active', trendsExploreMode === 'potential');
+    elements.trendsModePotentialBtn.setAttribute('aria-selected', trendsExploreMode === 'potential' ? 'true' : 'false');
+  }
+  if (elements.trendsModeLongtailBtn) {
+    elements.trendsModeLongtailBtn.classList.toggle('active', trendsExploreMode === 'longtail');
+    elements.trendsModeLongtailBtn.setAttribute('aria-selected', trendsExploreMode === 'longtail' ? 'true' : 'false');
+  }
+  if (elements.trendsModeCardParent) {
+    elements.trendsModeCardParent.classList.toggle('mode-potential', trendsExploreMode === 'potential');
+    elements.trendsModeCardParent.classList.toggle('mode-longtail', trendsExploreMode === 'longtail');
+  }
+}
+
 function updateTrendsStatusUI() {
   if (elements.trendsStatusRound) elements.trendsStatusRound.textContent = trendsJob.running ? String(trendsJob.round) : '-';
   if (elements.trendsStatusProcessed) elements.trendsStatusProcessed.textContent = String(trendsJob.processed || 0);
@@ -1431,7 +1534,7 @@ function renderTrendsResults() {
   const el = elements.trendsResultsList;
   if (!el) return;
 
-  const items = Array.from(trendsJob.results.values()).sort((a, b) => (b.risePct ?? 0) - (a.risePct ?? 0));
+  const items = Array.from(trendsJob.results.values()).sort((a, b) => (b.volumePct ?? 0) - (a.volumePct ?? 0));
 
   if (elements.trendsResultCount) {
     elements.trendsResultCount.textContent = `${items.length} 个`;
@@ -1447,16 +1550,17 @@ function renderTrendsResults() {
   for (const it of items.slice(0, 300)) {
     const row = document.createElement('div');
     row.className = 'explore-url-item';
-    const riseText = it.risePct === Number.POSITIVE_INFINITY ? 'Breakout' : (typeof it.risePct === 'number' ? `+${Math.round(it.risePct)}%` : (it.riseRaw || '—'));
+    const volText = typeof it.volumePct === 'number' ? `${it.volumePct}%` : '—';
     row.innerHTML = `
       <div class="explore-url-main">
         <div class="explore-url-title" style="display:flex; gap:8px; align-items:center;">
           <span style="font-weight:600;">${escapeHtml(it.keyword)}</span>
-          <span class="badge" style="margin-left:auto;">${escapeHtml(riseText)}</span>
+          <span class="badge" style="margin-left:auto;">${escapeHtml(volText)}</span>
         </div>
         <div class="explore-url-meta" style="display:flex; gap:10px; opacity:.85; font-size:12px;">
           <span>轮次 ${escapeHtml(String(it.round ?? '—'))}</span>
           ${it.parent ? `<span>来自：${escapeHtml(it.parent)}</span>` : '<span>来自：种子</span>'}
+          ${typeof it.avgIndex === 'number' && typeof it.baseAvgIndex === 'number' ? `<span>avg:${escapeHtml(it.avgIndex.toFixed(1))}/${escapeHtml(it.baseAvgIndex.toFixed(1))}</span>` : ''}
         </div>
       </div>
     `;
@@ -1470,13 +1574,19 @@ async function loadTrendsState() {
   const history = stored[TRENDS_HISTORY_KEY] || [];
 
   if (state && typeof state === 'object') {
+    if (typeof state.exploreMode === 'string') setTrendsExploreMode(state.exploreMode);
     if (elements.trendsBaselineKeyword && typeof state.baseline === 'string') elements.trendsBaselineKeyword.value = state.baseline;
     if (elements.trendsSeedKeywords && typeof state.seedsText === 'string') elements.trendsSeedKeywords.value = state.seedsText;
     if (elements.trendsTimeRange && typeof state.timeRange === 'string') elements.trendsTimeRange.value = state.timeRange;
     if (elements.trendsRiseThreshold && typeof state.threshold === 'number') elements.trendsRiseThreshold.value = String(state.threshold);
     if (elements.trendsKeywordLimit && typeof state.keywordLimit === 'number') elements.trendsKeywordLimit.value = String(state.keywordLimit);
     if (elements.trendsMaxRounds && typeof state.maxRounds === 'number') elements.trendsMaxRounds.value = String(state.maxRounds);
+    if (elements.trendsExcludeWords && typeof state.excludeWordsText === 'string') elements.trendsExcludeWords.value = state.excludeWordsText;
   }
+  if (elements.trendsExcludeWords && !String(elements.trendsExcludeWords.value || '').trim()) {
+    elements.trendsExcludeWords.value = TRENDS_DEFAULT_EXCLUDE_WORDS.join('\n');
+  }
+  if (!state?.exploreMode) setTrendsExploreMode('potential');
 
   updateTrendsSeedCountUI();
   renderTrendsHistory(history);
@@ -1484,12 +1594,14 @@ async function loadTrendsState() {
 
 async function persistTrendsFormState() {
   const state = {
+    exploreMode: trendsExploreMode,
     baseline: elements.trendsBaselineKeyword?.value || '',
     seedsText: elements.trendsSeedKeywords?.value || '',
     timeRange: elements.trendsTimeRange?.value || 'today_3m',
-    threshold: Number(elements.trendsRiseThreshold?.value || 120),
+    threshold: Number(elements.trendsRiseThreshold?.value || 20),
     keywordLimit: Number(elements.trendsKeywordLimit?.value || 200),
-    maxRounds: Number(elements.trendsMaxRounds?.value || 20)
+    maxRounds: Number(elements.trendsMaxRounds?.value || 20),
+    excludeWordsText: elements.trendsExcludeWords?.value || ''
   };
   await chrome.storage.local.set({ [TRENDS_STATE_KEY]: state });
 }
@@ -1532,12 +1644,13 @@ async function appendTrendsHistory(entry) {
 }
 
 function buildTrendsCsv() {
-  const rows = [['keyword', 'risePct', 'riseRaw', 'round', 'parent', 'collectedAt']];
-  for (const it of Array.from(trendsJob.results.values()).sort((a, b) => (b.risePct ?? 0) - (a.risePct ?? 0))) {
+  const rows = [['keyword', 'volumePct', 'avgIndex', 'baseAvgIndex', 'round', 'parent', 'collectedAt']];
+  for (const it of Array.from(trendsJob.results.values()).sort((a, b) => (b.volumePct ?? 0) - (a.volumePct ?? 0))) {
     rows.push([
       it.keyword,
-      it.risePct === Number.POSITIVE_INFINITY ? 'Infinity' : String(it.risePct ?? ''),
-      String(it.riseRaw ?? ''),
+      String(it.volumePct ?? ''),
+      String(it.avgIndex ?? ''),
+      String(it.baseAvgIndex ?? ''),
       String(it.round ?? ''),
       String(it.parent ?? ''),
       String(it.collectedAt ?? '')
@@ -1575,17 +1688,24 @@ async function startTrendsJob() {
   const baseline = String(elements.trendsBaselineKeyword?.value || '').trim();
   const seeds = parseSeedLines(elements.trendsSeedKeywords?.value || '');
   const timeRange = elements.trendsTimeRange?.value || 'today_3m';
-  const threshold = Number(elements.trendsRiseThreshold?.value || 120);
+  const threshold = Number(elements.trendsRiseThreshold?.value || 20);
   const keywordLimit = Number(elements.trendsKeywordLimit?.value || 200);
   const maxRounds = Number(elements.trendsMaxRounds?.value || 20);
+  const excludeWords = parseSeedLines(elements.trendsExcludeWords?.value || '').map((x) => x.toLowerCase()).filter(Boolean);
+  const exploreMode = trendsExploreMode; // potential | longtail
 
   if (seeds.length === 0) {
     trendsJob.lastError = '请至少输入 1 个种子关键词';
     updateTrendsStatusUI();
     return;
   }
+  if (!baseline) {
+    trendsJob.lastError = '请填写基准关键词（例如 gpts）';
+    updateTrendsStatusUI();
+    return;
+  }
   if (!Number.isFinite(threshold) || threshold < 1) {
-    trendsJob.lastError = '有效词阈值需为 >= 1 的整数';
+    trendsJob.lastError = '有效词阈值需为 >= 1 的整数（表示相对基准词的百分比）';
     updateTrendsStatusUI();
     return;
   }
@@ -1651,66 +1771,112 @@ async function startTrendsJob() {
       const currentQueue = trendsJob.queued.slice();
       trendsJob.queued = [];
 
-      if (currentQueue.length === 0) break;
+      if (currentQueue.length === 0) {
+        const msg = `第 ${r} 轮：下一轮种子为空，任务结束（没有可继续拓展的关键词）。`;
+        console.info('[Trends挖词] stop reason:', msg);
+        trendsJob.lastError = msg;
+        updateTrendsStatusUI();
+        break;
+      }
+      console.info('[Trends挖词] round start', { round: r, seeds: currentQueue.length, thresholdPct: threshold, keywordLimit, maxRounds });
 
-      // 2) 按日志模式：在 explore 页面里“跳转新路径”触发请求，并拦截 relatedsearches 结构化请求
-      // 每次 explore 最多放 1 个 baseline + 4 个关键词，降低请求量且更像正常使用
+      // 2) 按日志模式：在 explore 页面里“跳转新路径”触发请求，并拦截 multiline + relatedsearches 结构化请求
+      // 每次 explore 最多放 1 个 baseline + 4 个关键词
       const batchSize = 4;
       const seedsForRound = currentQueue.slice();
       for (let i = 0; i < seedsForRound.length; i += batchSize) {
         if (signal.aborted) break;
         const batchSeeds = seedsForRound.slice(i, i + batchSize);
-        const exploreKeywords = [baseline, ...batchSeeds].filter(Boolean);
-        const expectedNorm = new Set(batchSeeds.map(normalizeKeyword).filter(Boolean));
+        const batchSeedsFiltered = batchSeeds.filter((kw) => !keywordMatchesExcludeList(kw, excludeWords));
+        if (batchSeedsFiltered.length === 0) continue;
+        const exploreKeywords = [baseline, ...batchSeedsFiltered].filter(Boolean);
+        const expectedNorm = new Set(batchSeedsFiltered.map(normalizeKeyword).filter(Boolean));
+        const expectedWithBaseline = new Set([normalizeKeyword(baseline), ...Array.from(expectedNorm)]);
 
         // 2.1 跳转到 explore 新路径（满足“可操作界面跳转新路径”）
         const exploreUrl = buildTrendsExploreUrl({ hl: 'en-US', timeRange, keywords: exploreKeywords });
         await chrome.tabs.update(workerTabId, { url: exploreUrl, active: false });
         await waitForTabCompleteInSidepanel(workerTabId, 30000);
 
-        // 2.2 拦截该页面发出的 relatedsearches，并二次 fetch body（满足“拦截结构化网络请求数据”）
+        // 2.2 拦截 multiline（用于计算“相对基准词”的搜索量百分比）
+        const multilineCaptured = await collectMultilineByIntercept({
+          tabId: workerTabId,
+          expectedKeywordsNorm: expectedWithBaseline,
+          timeoutMs: 20000,
+          signal
+        });
+        const avgArr = multilineCaptured?.data ? computeAvgInterestFromMultiline(multilineCaptured.data) : null;
+        const order = multilineCaptured?.keywordOrder || [];
+        const baseIdx = order.indexOf(normalizeKeyword(baseline));
+        const baseAvg = avgArr && baseIdx >= 0 ? avgArr[baseIdx] : null;
+
+        // 2.3 拦截 relatedsearches，并二次 fetch body（用于拓展下一轮）
         const intercepted = await collectRelatedSearchesByIntercept({
           tabId: workerTabId,
           expectedKeywordsNorm: expectedNorm,
           timeoutMs: 20000,
           signal
         });
+        console.info('[Trends挖词] intercepted', { round: r, batchSeeds: batchSeedsFiltered.length, relatedCaptured: intercepted.size, hasMultiline: !!avgArr, baseAvg });
 
-        for (const seed of batchSeeds) {
+        for (const seed of batchSeedsFiltered) {
           if (signal.aborted) break;
           const seedNorm = normalizeKeyword(seed);
           if (!seedNorm) continue;
+          const hit = keywordMatchesExcludeList(seed, excludeWords);
+          if (hit) continue;
 
           trendsJob.processed += 1;
           updateTrendsStatusUI();
+
+          // 2.4 有效词筛选：计算其平均热度相对基准的百分比（>= threshold）
+          let volumePct = null;
+          let avgIndex = null;
+          let baseAvgIndex = null;
+          if (avgArr && typeof baseAvg === 'number' && baseAvg > 0 && order.length) {
+            const idx = order.indexOf(seedNorm);
+            if (idx >= 0) {
+              avgIndex = avgArr[idx];
+              baseAvgIndex = baseAvg;
+              volumePct = Math.round((avgIndex / baseAvg) * 100);
+            }
+          }
+          const isEffective = typeof volumePct === 'number' && volumePct >= threshold;
+          if (isEffective && !trendsJob.results.has(seedNorm)) {
+            trendsJob.results.set(seedNorm, {
+              keyword: seed,
+              volumePct,
+              avgIndex,
+              baseAvgIndex,
+              round: r,
+              parent: r === 1 ? null : '拓展',
+              collectedAt: new Date().toISOString()
+            });
+          }
 
           const captured = intercepted.get(seedNorm);
           if (!captured?.data) continue;
           const rankedLists = captured.data?.default?.rankedList;
           if (!Array.isArray(rankedLists) || rankedLists.length === 0) continue;
+          const topList = rankedLists[0];
           const risingList = rankedLists[1] || rankedLists[0];
-          const kws = Array.isArray(risingList?.rankedKeyword) ? risingList.rankedKeyword : [];
+          const kwsRising = Array.isArray(risingList?.rankedKeyword) ? risingList.rankedKeyword : [];
+          const kwsTop = Array.isArray(topList?.rankedKeyword) ? topList.rankedKeyword : [];
+          const kws = exploreMode === 'longtail' ? [...kwsTop, ...kwsRising] : kwsRising;
 
           for (const k of kws) {
             const kw = String(k?.query || '').trim();
             const kwNorm = normalizeKeyword(kw);
             if (!kwNorm) continue;
+            if (keywordMatchesExcludeList(kw, excludeWords)) continue;
 
             const risePct = parseRisePctFromFormatted(k?.formattedValue);
-            const riseRaw = k?.formattedValue ?? k?.value ?? '';
-            const ok = risePct === Number.POSITIVE_INFINITY || (typeof risePct === 'number' && risePct > threshold);
+            // Rising 筛选：>100%（Breakout 会被 parse 为 1000%）
+            const ok = exploreMode === 'longtail' ? true : (typeof risePct === 'number' && risePct > 100);
             if (!ok) continue;
 
             if (!globalSeenResult.has(kwNorm)) {
               globalSeenResult.add(kwNorm);
-              trendsJob.results.set(kwNorm, {
-                keyword: kw,
-                risePct,
-                riseRaw,
-                round: r,
-                parent: seed,
-                collectedAt: new Date().toISOString()
-              });
               trendsJob.newlyAddedThisRound.add(kwNorm);
             }
           }
@@ -1734,7 +1900,7 @@ async function startTrendsJob() {
       if (trendsJob.stopping) break;
 
       const nextSeeds = Array.from(trendsJob.newlyAddedThisRound.values())
-        .map((k) => trendsJob.results.get(k)?.keyword)
+        .map((k) => k)
         .filter(Boolean);
       const nextQueue = [];
       for (const kw of nextSeeds) {
@@ -1746,7 +1912,16 @@ async function startTrendsJob() {
       }
       trendsJob.queued = nextQueue;
 
-      if (nextQueue.length === 0) break;
+      console.info('[Trends挖词] round end', { round: r, newlyAdded: trendsJob.newlyAddedThisRound.size, nextSeeds: nextQueue.length, total: trendsJob.results.size });
+      if (nextQueue.length === 0) {
+        const msg = exploreMode === 'longtail'
+          ? `第 ${r} 轮结束：本轮无新增可拓展的相关查询词，任务结束。`
+          : `第 ${r} 轮结束：本轮无新增 Rising >100% 的词，任务结束。`;
+        console.info('[Trends挖词] stop reason:', msg);
+        trendsJob.lastError = msg;
+        updateTrendsStatusUI();
+        break;
+      }
     }
   } catch (e) {
     console.error('[Trends挖词] 采集任务异常', e);
@@ -4638,6 +4813,14 @@ function setupEventListeners() {
   elements.trendsTimeRange?.addEventListener('change', () => {
     persistTrendsFormState().catch(() => {});
   });
+  elements.trendsModePotentialBtn?.addEventListener('click', () => {
+    setTrendsExploreMode('potential');
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsModeLongtailBtn?.addEventListener('click', () => {
+    setTrendsExploreMode('longtail');
+    persistTrendsFormState().catch(() => {});
+  });
   elements.trendsRiseThreshold?.addEventListener('change', () => {
     persistTrendsFormState().catch(() => {});
   });
@@ -4645,6 +4828,9 @@ function setupEventListeners() {
     persistTrendsFormState().catch(() => {});
   });
   elements.trendsMaxRounds?.addEventListener('change', () => {
+    persistTrendsFormState().catch(() => {});
+  });
+  elements.trendsExcludeWords?.addEventListener('change', () => {
     persistTrendsFormState().catch(() => {});
   });
 
