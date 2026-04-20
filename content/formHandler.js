@@ -2959,30 +2959,58 @@ async function fillForm(siteId) {
       }
       // Logo 文件上传框：使用站点管理里上传的 logoDataUrl
       if (mapping.standardField === 'logo' && element.type === 'file') {
-        const logoDataUrl = siteData.logoDataUrl || value;
-        if (logoDataUrl && typeof logoDataUrl === 'string' && logoDataUrl.startsWith('data:')) {
-          try {
-            fillFileInputWithDataUrl(element, logoDataUrl);
-            filledCount++;
-            console.log(`${TAG} Filled ${mapping.standardField}: (file from stored image)`);
-          } catch (err) {
-            errors.push(`Failed to fill logo file: ${err.message}`);
+        try {
+          if (siteData.logoAsset?.relPath) {
+            const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: siteData.logoAsset.relPath });
+            if (resp?.success && resp.arrayBuffer) {
+              const file = new File([resp.arrayBuffer], resp.name || 'logo.jpg', { type: resp.mime || 'image/jpeg' });
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              element.files = dt.files;
+              element.dispatchEvent(new Event('input', { bubbles: true }));
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              filledCount++;
+              console.log(`${TAG} Filled ${mapping.standardField}: (file from local cache)`);
+            }
+          } else {
+            const logoDataUrl = siteData.logoDataUrl || value;
+            if (logoDataUrl && typeof logoDataUrl === 'string' && logoDataUrl.startsWith('data:')) {
+              fillFileInputWithDataUrl(element, logoDataUrl);
+              filledCount++;
+              console.log(`${TAG} Filled ${mapping.standardField}: (file from stored dataUrl)`);
+            }
           }
+        } catch (err) {
+          errors.push(`Failed to fill logo file: ${err.message}`);
         }
         continue;
       }
 
       // 界面截图 / App Image 文件上传框：使用站点管理里上传的 screenshotDataUrl
       if (mapping.standardField === 'screenshot' && element.type === 'file') {
-        const screenshotDataUrl = siteData.screenshotDataUrl || value;
-        if (screenshotDataUrl && typeof screenshotDataUrl === 'string' && screenshotDataUrl.startsWith('data:')) {
-          try {
-            fillFileInputWithDataUrl(element, screenshotDataUrl);
-            filledCount++;
-            console.log(`${TAG} Filled ${mapping.standardField}: (file from stored image)`);
-          } catch (err) {
-            errors.push(`Failed to fill screenshot file: ${err.message}`);
+        try {
+          if (siteData.screenshotAsset?.relPath) {
+            const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: siteData.screenshotAsset.relPath });
+            if (resp?.success && resp.arrayBuffer) {
+              const file = new File([resp.arrayBuffer], resp.name || 'screenshot.jpg', { type: resp.mime || 'image/jpeg' });
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              element.files = dt.files;
+              element.dispatchEvent(new Event('input', { bubbles: true }));
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              filledCount++;
+              console.log(`${TAG} Filled ${mapping.standardField}: (file from local cache)`);
+            }
+          } else {
+            const screenshotDataUrl = siteData.screenshotDataUrl || value;
+            if (screenshotDataUrl && typeof screenshotDataUrl === 'string' && screenshotDataUrl.startsWith('data:')) {
+              fillFileInputWithDataUrl(element, screenshotDataUrl);
+              filledCount++;
+              console.log(`${TAG} Filled ${mapping.standardField}: (file from stored dataUrl)`);
+            }
           }
+        } catch (err) {
+          errors.push(`Failed to fill screenshot file: ${err.message}`);
         }
         continue;
       }
@@ -3126,10 +3154,12 @@ async function fillSingleField(standardField) {
 /** 从当前站点取该字段的填充值（仅此一处决定填什么内容） */
 function getSiteFieldValueForFill(element, standardField, siteData) {
   if (standardField === 'logo' && element.type === 'file') {
+    if (siteData.logoAsset?.relPath) return { __assetRelPath: siteData.logoAsset.relPath, __assetKind: 'logo' };
     const v = siteData.logoDataUrl || siteData[standardField];
     return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
   }
   if (standardField === 'screenshot' && element.type === 'file') {
+    if (siteData.screenshotAsset?.relPath) return { __assetRelPath: siteData.screenshotAsset.relPath, __assetKind: 'screenshot' };
     const v = siteData.screenshotDataUrl || siteData[standardField];
     return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
   }
@@ -3142,10 +3172,37 @@ function getSiteFieldValueForFill(element, standardField, siteData) {
 /** 把 value 写入一个元素（仅负责写入，不负责取值） */
 function fillOneElement(element, standardField, value, siteData) {
   if (standardField === 'logo' && element.type === 'file') {
+    if (value && typeof value === 'object' && value.__assetRelPath) {
+      // 右键填充：异步读取本地文件并注入
+      chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath }).then((resp) => {
+        if (resp?.success && resp.arrayBuffer) {
+          const file = new File([resp.arrayBuffer], resp.name || 'logo.jpg', { type: resp.mime || 'image/jpeg' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          element.files = dt.files;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }).catch(() => {});
+      return;
+    }
     fillFileInputWithDataUrl(element, value);
     return;
   }
   if (standardField === 'screenshot' && element.type === 'file') {
+    if (value && typeof value === 'object' && value.__assetRelPath) {
+      chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath }).then((resp) => {
+        if (resp?.success && resp.arrayBuffer) {
+          const file = new File([resp.arrayBuffer], resp.name || 'screenshot.jpg', { type: resp.mime || 'image/jpeg' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          element.files = dt.files;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }).catch(() => {});
+      return;
+    }
     fillFileInputWithDataUrl(element, value);
     return;
   }

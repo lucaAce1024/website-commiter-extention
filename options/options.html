@@ -502,6 +502,33 @@
           <p>展示从缓存中获取的数据，包括 WHOIS 域名年龄查询结果和 Ahrefs 反链采集数据。</p>
         </div>
 
+        <!-- 本地图片缓存（解决 QUOTA：不再把 base64 写入 chrome.storage） -->
+        <div class="cache-section">
+          <div class="cache-section-header">
+            <h3>🖼️ 本地图片缓存（Logo / 截图）</h3>
+          </div>
+          <p class="section-desc">
+            将站点 Logo/截图等大文件落盘到你选择的本地文件夹，避免 <code>chrome.storage.local</code> 配额超限导致“保存失败：QUOTA_BYTES quota exceeded”。
+          </p>
+          <div id="assetCacheStatus" class="extension-task-status">
+            <p class="muted">加载中…</p>
+          </div>
+          <div class="cache-actions">
+            <button class="btn btn-secondary btn-sm" id="pickAssetCacheDirBtn">
+              <span class="btn-icon">📁</span>
+              选择缓存文件夹
+            </button>
+            <button class="btn btn-secondary btn-sm" id="migrateAssetCacheBtn">
+              <span class="btn-icon">🚚</span>
+              迁移旧图片数据
+            </button>
+            <button class="btn btn-secondary btn-sm" id="clearAssetCacheBtn">
+              <span class="btn-icon">🗑️</span>
+              清空图片缓存
+            </button>
+          </div>
+        </div>
+
         <!-- 外链采集任务状态（storage 快照；实际执行在侧栏） -->
         <div class="cache-section">
           <div class="cache-section-header">

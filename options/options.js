@@ -18,6 +18,234 @@ let pendingScreenshotDataUrl = null;
 
 const MAX_IMAGE_BYTES = 1024 * 1024; // 1MB
 
+// ========== Local Asset Cache (Logo/Screenshot) ==========
+// 目标：不再把 base64(data URL) 写入 chrome.storage，避免 QUOTA_BYTES exceeded
+const ASSET_CACHE_IDB_NAME = 'local_asset_cache_idb_v1';
+const ASSET_CACHE_IDB_STORE = 'handles';
+const ASSET_CACHE_ROOT_KEY = 'asset_cache_root_dir';
+const ASSET_CACHE_SUBDIR = 'backlink-collector-cache';
+
+function openAssetCacheIDB() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_STORE)) {
+          db.createObjectStore(ASSET_CACHE_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function assetCacheSetRootHandle(handle) {
+  const db = await openAssetCacheIDB();
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_STORE, 'readwrite');
+    tx.objectStore(ASSET_CACHE_IDB_STORE).put(handle, ASSET_CACHE_ROOT_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function assetCacheGetRootHandle() {
+  const db = await openAssetCacheIDB();
+  return await new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_CACHE_IDB_STORE).get(ASSET_CACHE_ROOT_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function assetCacheClearRootHandle() {
+  const db = await openAssetCacheIDB();
+  return await new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_STORE, 'readwrite');
+    tx.objectStore(ASSET_CACHE_IDB_STORE).delete(ASSET_CACHE_ROOT_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
+function sanitizeRelPathPart(part) {
+  return String(part || '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120) || 'x';
+}
+
+function guessImageExt(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('png')) return 'png';
+  if (m.includes('webp')) return 'webp';
+  if (m.includes('gif')) return 'gif';
+  return 'jpg';
+}
+
+async function ensureSubdir(rootHandle, name) {
+  return await rootHandle.getDirectoryHandle(name, { create: true });
+}
+
+async function writeBlobToFile(dirHandle, filename, blob) {
+  const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return fileHandle;
+}
+
+async function dataUrlToBlob(dataUrl) {
+  const res = await fetch(dataUrl);
+  return await res.blob();
+}
+
+async function buildLocalAssetRefForSite(siteId, kind, blob, mimeHint) {
+  const root = await assetCacheGetRootHandle();
+  if (!root) throw new Error('未设置图片缓存文件夹');
+  const perm = await root.requestPermission?.({ mode: 'readwrite' });
+  if (perm && perm !== 'granted') throw new Error('未授予缓存目录读写权限');
+
+  const baseDir = await ensureSubdir(root, ASSET_CACHE_SUBDIR);
+  const sitesDir = await ensureSubdir(baseDir, 'sites');
+  const siteDir = await ensureSubdir(sitesDir, sanitizeRelPathPart(siteId));
+
+  const mime = blob.type || mimeHint || 'image/jpeg';
+  const ext = guessImageExt(mime);
+  const fileName = `${sanitizeRelPathPart(kind)}.${ext}`;
+  await writeBlobToFile(siteDir, fileName, blob);
+
+  return {
+    kind: 'local-file',
+    relPath: `sites/${sanitizeRelPathPart(siteId)}/${fileName}`,
+    mime,
+    byteSize: blob.size,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function renderAssetCacheStatus() {
+  const el = document.getElementById('assetCacheStatus');
+  if (!el) return;
+  try {
+    const root = await assetCacheGetRootHandle();
+    const enabled = !!settings?.assetCacheEnabled;
+    if (!enabled) {
+      el.innerHTML = '<p><strong>状态</strong>：未启用（建议启用以避免 storage 配额问题）</p>';
+      return;
+    }
+    if (!root) {
+      el.innerHTML = '<p><strong>状态</strong>：已启用但未选择缓存文件夹（请点击“选择缓存文件夹”）</p>';
+      return;
+    }
+    const perm = await root.queryPermission?.({ mode: 'readwrite' });
+    const p = perm || 'unknown';
+    el.innerHTML = `<p><strong>状态</strong>：已启用 · 目录权限 <code>${escapeHtml(p)}</code></p>`;
+  } catch (e) {
+    el.innerHTML = `<p class="error-text">加载失败：${escapeHtml(e.message || String(e))}</p>`;
+  }
+}
+
+async function pickAssetCacheDirectory() {
+  if (!window.showDirectoryPicker) {
+    showToast('当前浏览器不支持选择本地文件夹（showDirectoryPicker 不可用）', 'error');
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await assetCacheSetRootHandle(handle);
+    settings = { ...settings, assetCacheEnabled: true, assetCacheVersion: '1' };
+    await chrome.storage.local.set({ settings });
+    await renderAssetCacheStatus();
+    showToast('已选择缓存文件夹', 'success');
+  } catch (e) {
+    if (String(e?.name || '').includes('Abort')) return;
+    showToast('选择失败: ' + (e.message || String(e)), 'error');
+  }
+}
+
+async function migrateLegacySiteImagesToLocalCache() {
+  if (!confirm('将把现有站点中的 logoDataUrl / screenshotDataUrl 落盘并清空 dataURL，以避免存储配额爆满。是否继续？')) return;
+  try {
+    const root = await assetCacheGetRootHandle();
+    if (!root) {
+      showToast('请先选择缓存文件夹', 'error');
+      return;
+    }
+    const enabled = !!settings?.assetCacheEnabled;
+    if (!enabled) {
+      settings = { ...settings, assetCacheEnabled: true, assetCacheVersion: '1' };
+      await chrome.storage.local.set({ settings });
+    }
+    let migrated = 0;
+    for (const s of (sites || [])) {
+      let changed = false;
+      if (s?.logoDataUrl && typeof s.logoDataUrl === 'string' && s.logoDataUrl.startsWith('data:') && !s.logoAsset) {
+        const blob = await dataUrlToBlob(s.logoDataUrl);
+        s.logoAsset = await buildLocalAssetRefForSite(s.id, 'logo', blob, blob.type);
+        s.logoDataUrl = '';
+        changed = true;
+        migrated += 1;
+      }
+      if (s?.screenshotDataUrl && typeof s.screenshotDataUrl === 'string' && s.screenshotDataUrl.startsWith('data:') && !s.screenshotAsset) {
+        const blob = await dataUrlToBlob(s.screenshotDataUrl);
+        s.screenshotAsset = await buildLocalAssetRefForSite(s.id, 'screenshot', blob, blob.type);
+        s.screenshotDataUrl = '';
+        changed = true;
+        migrated += 1;
+      }
+      if (changed) {
+        s.updatedAt = new Date().toISOString();
+      }
+    }
+    await chrome.storage.local.set({ sites });
+    await loadData();
+    renderSitesTab();
+    await renderAssetCacheStatus();
+    showToast(`迁移完成：处理 ${migrated} 张图片`, 'success');
+  } catch (e) {
+    showToast('迁移失败: ' + (e.message || String(e)), 'error');
+  }
+}
+
+async function clearLocalAssetCache() {
+  if (!confirm('将清空所有站点的本地图片引用，并尝试删除缓存目录下的扩展图片文件。是否继续？')) return;
+  try {
+    const root = await assetCacheGetRootHandle();
+    if (root) {
+      const perm = await root.requestPermission?.({ mode: 'readwrite' });
+      if (!perm || perm === 'granted') {
+        try {
+          // best-effort 删除扩展子目录
+          await root.removeEntry(ASSET_CACHE_SUBDIR, { recursive: true });
+        } catch (_) {}
+      }
+    }
+
+    // 清理 sites 引用与旧 dataURL（避免再次写入大对象）
+    (sites || []).forEach((s) => {
+      if (!s) return;
+      delete s.logoAsset;
+      delete s.screenshotAsset;
+      if (typeof s.logoDataUrl === 'string') s.logoDataUrl = '';
+      if (typeof s.screenshotDataUrl === 'string') s.screenshotDataUrl = '';
+      s.updatedAt = new Date().toISOString();
+    });
+    await chrome.storage.local.set({ sites });
+    await loadData();
+    renderSitesTab();
+    await renderAssetCacheStatus();
+    showToast('已清空图片缓存', 'success');
+  } catch (e) {
+    showToast('清空失败: ' + (e.message || String(e)), 'error');
+  }
+}
+
 /**
  * 将图片文件压缩到 < 1MB，返回 data URL（使用 Canvas 缩放 + JPEG 质量）
  */
@@ -377,8 +605,8 @@ function renderSitesTab() {
 
   elements.sitesList.innerHTML = sites.map(site => `
     <div class="item-card" data-site-id="${site.id}">
-      <div class="item-card-logo-wrap" data-site-id="${site.id}" title="${site.logoDataUrl ? '已上传 Logo' : '未上传 Logo'}">
-        ${site.logoDataUrl ? '' : '<span class="item-card-logo-placeholder">无</span>'}
+      <div class="item-card-logo-wrap" data-site-id="${site.id}" title="${(site.logoAsset || site.logoDataUrl) ? '已上传 Logo' : '未上传 Logo'}">
+        ${(site.logoAsset || site.logoDataUrl) ? '' : '<span class="item-card-logo-placeholder">无</span>'}
       </div>
       <div class="item-card-body">
         <div class="item-header">
@@ -402,18 +630,32 @@ function renderSitesTab() {
     </div>
   `).join('');
 
-  // 为有 logoDataUrl 的站点填入 Logo 预览图（避免在 HTML 中嵌入超长 data URL）
-  sites.forEach(site => {
-    if (!site.logoDataUrl) return;
+  // 为有 logo 的站点填入预览（若为本地引用：通过 background 读取为 dataURL 仅用于预览）
+  sites.forEach(async (site) => {
+    if (!site) return;
     const wrap = elements.sitesList.querySelector(`.item-card-logo-wrap[data-site-id="${site.id}"]`);
-    if (wrap) {
+    if (!wrap) return;
+    try {
       const img = document.createElement('img');
-      img.src = site.logoDataUrl;
+      if (site.logoAsset?.relPath) {
+        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.logoAsset.relPath });
+        if (resp?.success && resp.dataUrl) {
+          img.src = resp.dataUrl;
+        } else if (site.logoDataUrl) {
+          img.src = site.logoDataUrl;
+        } else {
+          return;
+        }
+      } else if (site.logoDataUrl) {
+        img.src = site.logoDataUrl;
+      } else {
+        return;
+      }
       img.alt = site.siteName || 'Logo';
       img.className = 'item-card-logo';
       wrap.innerHTML = '';
       wrap.appendChild(img);
-    }
+    } catch (_) {}
   });
 
   // Add event listeners to item actions
@@ -810,9 +1052,9 @@ function openSiteModal(siteId = null) {
 
   openModal();
 
-  // 编辑时保留已有 Logo / 界面截图 数据；新建时清空
-  pendingLogoDataUrl = site?.logoDataUrl || null;
-  pendingScreenshotDataUrl = site?.screenshotDataUrl || null;
+  // v0/v1：不再从 storage 取 dataURL（避免存储膨胀）；编辑时仅用于预览：优先从本地缓存读取
+  pendingLogoDataUrl = null;
+  pendingScreenshotDataUrl = null;
   const logoPreviewEl = document.getElementById('logoPreview');
   const logoFileEl = document.getElementById('logoFile');
   const screenshotPreviewEl = document.getElementById('screenshotPreview');
@@ -832,7 +1074,18 @@ function openSiteModal(siteId = null) {
     logoPreviewEl.innerHTML = '';
     logoPreviewEl.appendChild(img);
   }
-  renderLogoPreview(site?.logoDataUrl || null);
+  (async () => {
+    try {
+      if (site?.logoAsset?.relPath) {
+        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.logoAsset.relPath });
+        if (resp?.success && resp.dataUrl) {
+          renderLogoPreview(resp.dataUrl);
+          return;
+        }
+      }
+    } catch (_) {}
+    renderLogoPreview(null);
+  })();
   if (logoFileEl) logoFileEl.value = '';
 
   function renderScreenshotPreview(dataUrl) {
@@ -849,7 +1102,18 @@ function openSiteModal(siteId = null) {
     screenshotPreviewEl.innerHTML = '';
     screenshotPreviewEl.appendChild(img);
   }
-  renderScreenshotPreview(site?.screenshotDataUrl || null);
+  (async () => {
+    try {
+      if (site?.screenshotAsset?.relPath) {
+        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.screenshotAsset.relPath });
+        if (resp?.success && resp.dataUrl) {
+          renderScreenshotPreview(resp.dataUrl);
+          return;
+        }
+      }
+    } catch (_) {}
+    renderScreenshotPreview(null);
+  })();
   if (screenshotFileEl) screenshotFileEl.value = '';
 
   // Logo 文件选择：转为 data URL；超过 1MB 时自动压缩到 < 1MB
@@ -923,7 +1187,7 @@ function openSiteModal(siteId = null) {
  * Save site
  */
 async function saveSite(siteId) {
-  const siteData = {
+  const baseSiteData = {
     siteName: document.getElementById('siteName').value.trim(),
     siteUrl: document.getElementById('siteUrl').value.trim(),
     email: document.getElementById('email').value.trim(),
@@ -934,12 +1198,43 @@ async function saveSite(siteId) {
     shortDescription: document.getElementById('shortDescription').value.trim(),
     longDescription: document.getElementById('longDescription').value.trim(),
     logo: document.getElementById('logo').value.trim(),
-    logoDataUrl: pendingLogoDataUrl ?? (siteId ? (sites.find(s => s.id === siteId)?.logoDataUrl) : null) ?? '',
     screenshot: document.getElementById('screenshot').value.trim(),
-    screenshotDataUrl: pendingScreenshotDataUrl ?? (siteId ? (sites.find(s => s.id === siteId)?.screenshotDataUrl) : null) ?? ''
   };
-  pendingLogoDataUrl = null;
-  pendingScreenshotDataUrl = null;
+  const existing = siteId ? (sites.find(s => s.id === siteId) || null) : null;
+  const effectiveSiteId = siteId || ('site_' + Date.now());
+
+  // v0/v1: 不再把 dataURL 持久化写入 storage（避免 QUOTA）
+  // 若已启用本地缓存且用户上传了图片，则落盘并写入 logoAsset/screenshotAsset 引用。
+  let logoAsset = existing?.logoAsset || null;
+  let screenshotAsset = existing?.screenshotAsset || null;
+
+  try {
+    const enabled = !!settings?.assetCacheEnabled;
+    if (enabled && pendingLogoDataUrl && String(pendingLogoDataUrl).startsWith('data:')) {
+      const blob = await dataUrlToBlob(pendingLogoDataUrl);
+      logoAsset = await buildLocalAssetRefForSite(effectiveSiteId, 'logo', blob, blob.type);
+    }
+    if (enabled && pendingScreenshotDataUrl && String(pendingScreenshotDataUrl).startsWith('data:')) {
+      const blob = await dataUrlToBlob(pendingScreenshotDataUrl);
+      screenshotAsset = await buildLocalAssetRefForSite(effectiveSiteId, 'screenshot', blob, blob.type);
+    }
+  } catch (e) {
+    // 允许保存站点信息，但提示用户图片未落盘（避免因为图片导致保存失败）
+    showToast('图片未写入本地缓存：' + (e.message || String(e)), 'warning');
+  } finally {
+    pendingLogoDataUrl = null;
+    pendingScreenshotDataUrl = null;
+  }
+
+  const siteData = {
+    ...baseSiteData,
+    id: effectiveSiteId,
+    logoAsset,
+    screenshotAsset,
+    // 永不持久化大 dataURL；保留字段为空字符串以兼容旧 UI/逻辑（不会占用空间）
+    logoDataUrl: '',
+    screenshotDataUrl: ''
+  };
 
   try {
     if (siteId) {
@@ -948,7 +1243,6 @@ async function saveSite(siteId) {
       sites[index] = { ...sites[index], ...siteData };
     } else {
       // Add new site
-      siteData.id = 'site_' + Date.now();
       siteData.createdAt = new Date().toISOString();
       sites.push(siteData);
     }
@@ -957,7 +1251,8 @@ async function saveSite(siteId) {
     closeModal();
     await loadData();
     renderSitesTab();
-    showToast(siteId ? '站点已更新' : '站点已添加', 'success');
+    const msg = (siteId ? '站点已更新' : '站点已添加') + (settings?.assetCacheEnabled ? '' : '（提示：未启用本地图片缓存，Logo/截图不会保存）');
+    showToast(msg, 'success');
   } catch (error) {
     showToast('保存失败: ' + error.message, 'error');
   }
@@ -1712,6 +2007,7 @@ const AUTO_COLLECT_TASK_KEY = 'autoCollectTask';
  * Render Cache Management Tab
  */
 async function renderCacheTab() {
+  await renderAssetCacheStatus();
   await renderExtensionExploreTaskStatus();
 
   // Load WHOIS cache
@@ -2237,6 +2533,14 @@ function setupCacheTabListeners() {
   if (clearBatchesBtn) {
     clearBatchesBtn.addEventListener('click', clearBacklinkBatches);
   }
+
+  // Local asset cache buttons
+  const pickDirBtn = document.getElementById('pickAssetCacheDirBtn');
+  if (pickDirBtn) pickDirBtn.addEventListener('click', pickAssetCacheDirectory);
+  const migrateBtn = document.getElementById('migrateAssetCacheBtn');
+  if (migrateBtn) migrateBtn.addEventListener('click', migrateLegacySiteImagesToLocalCache);
+  const clearAssetBtn = document.getElementById('clearAssetCacheBtn');
+  if (clearAssetBtn) clearAssetBtn.addEventListener('click', clearLocalAssetCache);
 
   // Feishu sheet input change listeners
   const feishuSheetInputs = [

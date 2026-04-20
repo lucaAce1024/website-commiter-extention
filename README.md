@@ -175,3 +175,8 @@ Chrome 浏览器插件，自动识别并填充导航站收录表单，提升网�
 | `doc/导航站提交插件需求描述.md` | 导航站提交功能需求 |
 | `doc/导航站一键识别填充设计文档.md` | 表单识别与填充设计 |
 | `doc/测试与调试指南.md` | 测试与调试说明 |
+| `doc/4.存储管理/2.本地图片缓存PRD.md` | 本地图片缓存（Logo/截图落盘）方案：解决 `QUOTA_BYTES quota exceeded` |
+
+## 进度记录
+
+- 2026-04-20：新增「本地图片缓存 PRD」用于将 `logoDataUrl/screenshotDataUrl` 从 `chrome.storage.local` 迁移到本地文件夹，解决站点保存失败（QUOTA）与图片大对象膨胀问题。
