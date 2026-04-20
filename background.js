@@ -3,6 +3,103 @@
 
 importScripts('lib/fullAiAgent.js');
 
+// ========== Local Asset Cache (read-only helpers for content/options) ==========
+const ASSET_CACHE_IDB_NAME = 'local_asset_cache_idb_v1';
+const ASSET_CACHE_IDB_STORE = 'handles';
+const ASSET_CACHE_ROOT_KEY = 'asset_cache_root_dir';
+const ASSET_CACHE_SUBDIR = 'backlink-collector-cache';
+
+function openAssetCacheIDB() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_STORE)) {
+          db.createObjectStore(ASSET_CACHE_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function assetCacheGetRootHandle() {
+  const db = await openAssetCacheIDB();
+  return await new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_CACHE_IDB_STORE).get(ASSET_CACHE_ROOT_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function resolveRelPathFileHandle(rootHandle, relPath) {
+  const clean = String(relPath || '').replace(/^\/+/, '').replace(/\.\.+/g, '.');
+  const parts = clean.split('/').filter(Boolean);
+  if (!parts.length) throw new Error('relPath 为空');
+
+  const baseDir = await rootHandle.getDirectoryHandle(ASSET_CACHE_SUBDIR, { create: false });
+  let dir = baseDir;
+  for (let i = 0; i < parts.length - 1; i++) {
+    dir = await dir.getDirectoryHandle(parts[i], { create: false });
+  }
+  const fileName = parts[parts.length - 1];
+  return await dir.getFileHandle(fileName, { create: false });
+}
+
+async function assetCacheReadFileAsArrayBuffer(relPath) {
+  const root = await assetCacheGetRootHandle();
+  if (!root) throw new Error('未设置图片缓存文件夹');
+  const perm = await root.requestPermission?.({ mode: 'read' });
+  if (perm && perm !== 'granted') throw new Error('未授予缓存目录读取权限');
+  const fileHandle = await resolveRelPathFileHandle(root, relPath);
+  const file = await fileHandle.getFile();
+  const buf = await file.arrayBuffer();
+  return { name: file.name, mime: file.type || 'application/octet-stream', byteSize: file.size, arrayBuffer: buf };
+}
+
+function arrayBufferToDataUrl(arrayBuffer, mime) {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  const base64 = btoa(binary);
+  return `data:${mime || 'application/octet-stream'};base64,${base64}`;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const action = message?.action;
+  if (action === 'assetCache_readFile') {
+    (async () => {
+      try {
+        const out = await assetCacheReadFileAsArrayBuffer(message.relPath);
+        sendResponse({ success: true, ...out });
+      } catch (e) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+  if (action === 'assetCache_readAsDataUrl') {
+    (async () => {
+      try {
+        const out = await assetCacheReadFileAsArrayBuffer(message.relPath);
+        const dataUrl = arrayBufferToDataUrl(out.arrayBuffer, out.mime);
+        sendResponse({ success: true, dataUrl });
+      } catch (e) {
+        sendResponse({ success: false, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+});
+
 const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
 /** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
 let pendingVerifyByTab = {};
