@@ -1815,7 +1815,10 @@ async function cacheCommentMapping(cacheKey, payload) {
         mappings: payload.mappings || payload,
         submitButton: payload.submitButton || null,
         consentCheckboxes: payload.consentCheckboxes || null,
-        cachedAt: new Date().toISOString()
+        cachedAt: new Date().toISOString(),
+        // 允许携带扩展元信息（不影响读取：getCachedCommentMapping 只取 mappings/submitButton/consent）
+        siteType: payload.siteType,
+        lastManualAssistAt: payload.lastManualAssistAt
       };
       chrome.storage.local.set({ blogCommentFieldMappings: mappings }, () => resolve());
     });
@@ -2568,6 +2571,12 @@ async function fillCommentForm(siteId, commentText, autoSubmit = true, opts = {}
     commentWebsite: siteData.siteUrl || ''
   };
 
+  // 保存本次生成的 comment 文本到 session，供右键手动辅助填充复用（不占 local storage）
+  try {
+    const key = 'lastGeneratedComment_' + getCommentCacheKey();
+    await chrome.storage.session.set({ [key]: { comment: data.comment, cachedAt: new Date().toISOString() } });
+  } catch (_) {}
+
   let filledCount = 0;
   const errors = [];
   for (const mapping of commentFormState.fieldMappings) {
@@ -3140,7 +3149,15 @@ async function fillSingleField(standardField) {
     throw new Error('请先在 popup 中选择当前站点');
   }
 
-  const value = getSiteFieldValueForFill(el, standardField, siteData);
+  let value = getSiteFieldValueForFill(el, standardField, siteData);
+  if (value === undefined && standardField === 'comment') {
+    try {
+      const key = 'lastGeneratedComment_' + getCommentCacheKey();
+      const stored = await chrome.storage.session.get(key);
+      const data = stored[key];
+      if (data?.comment) value = data.comment;
+    } catch (_) {}
+  }
   if (value === undefined) {
     throw new Error(`当前站点的「${standardField}」无内容可填`);
   }
@@ -3148,11 +3165,22 @@ async function fillSingleField(standardField) {
   fillOneElement(el, standardField, value, siteData);
   const preview = typeof value === 'string' ? value.slice(0, 60) + (value.length > 60 ? '…' : '') : value;
   console.log(`${TAG} [右键] 已填充 ${standardField}，取值:`, preview);
+
+  // 手动辅助填充 SOP：记录 XPath 并写回缓存，供下次自动填充复用
+  try {
+    await recordManualAssistSopMapping(standardField, el);
+  } catch (e) {
+    console.warn(`${TAG} [右键] 记录 SOP 失败:`, e?.message || e);
+  }
   return { filledCount: 1, errors: [] };
 }
 
 /** 从当前站点取该字段的填充值（仅此一处决定填什么内容） */
 function getSiteFieldValueForFill(element, standardField, siteData) {
+  // Blog 评论字段：用站点档案字段映射（评论正文 comment 由 session 缓存提供）
+  if (standardField === 'commentName') return siteData.siteName || undefined;
+  if (standardField === 'commentEmail') return siteData.email || undefined;
+  if (standardField === 'commentWebsite') return siteData.siteUrl || undefined;
   if (standardField === 'logo' && element.type === 'file') {
     if (siteData.logoAsset?.relPath) return { __assetRelPath: siteData.logoAsset.relPath, __assetKind: 'logo' };
     const v = siteData.logoDataUrl || siteData[standardField];
@@ -3167,6 +3195,59 @@ function getSiteFieldValueForFill(element, standardField, siteData) {
   if (v == null || (typeof v === 'string' && !v.trim())) return undefined;
   if (standardField === 'siteUrl') v = getUrlValueForInput(element, v);
   return v;
+}
+
+async function recordManualAssistSopMapping(standardField, el) {
+  const xpath = getXPath(el);
+  if (!xpath) return;
+  const entry = {
+    standardField,
+    locator: { type: 'xpath', value: xpath },
+    xpath,
+    locatorDesc: `XPath ${xpath}`,
+    source: 'manual',
+    updatedAt: new Date().toISOString()
+  };
+
+  // 判断写入 nav 还是 blog：若当前评论表单已识别，则视为 blog
+  const isBlog = !!commentFormState?.hasForm;
+
+  if (isBlog) {
+    const cacheKey = getCommentCacheKey();
+    const existing = await getCachedCommentMapping(cacheKey);
+    const mappings = Array.isArray(existing?.mappings) ? existing.mappings.slice() : [];
+    const next = mappings.filter((m) => m && m.standardField !== standardField);
+    next.push(entry);
+    await cacheCommentMapping(cacheKey, {
+      mappings: next,
+      submitButton: existing?.submitButton || commentFormState.submitButton || null,
+      consentCheckboxes: existing?.consentCheckboxes || commentFormState.consentCheckboxes || null,
+      siteType: 'blog',
+      lastManualAssistAt: new Date().toISOString()
+    });
+    commentFormState.fieldMappings = next;
+    return;
+  }
+
+  const cacheKey = getCacheKey();
+  const existing = await getCachedMapping(cacheKey);
+  const mappings = Array.isArray(existing) ? existing.slice() : [];
+  const next = mappings.filter((m) => m && m.standardField !== standardField);
+  next.push(entry);
+  // 写回时带 meta 字段（getCachedMapping 读取数组时会忽略）
+  await new Promise((resolve) => {
+    chrome.storage.local.get(['fieldMappings'], (result) => {
+      const obj = result.fieldMappings || {};
+      obj[cacheKey] = {
+        mappings: next,
+        cachedAt: new Date().toISOString(),
+        siteType: 'nav',
+        lastManualAssistAt: new Date().toISOString()
+      };
+      chrome.storage.local.set({ fieldMappings: obj }, () => resolve());
+    });
+  });
+  pageState.fieldMappings = next;
 }
 
 /** 把 value 写入一个元素（仅负责写入，不负责取值） */
