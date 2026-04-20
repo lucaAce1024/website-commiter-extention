@@ -24,6 +24,8 @@ const ASSET_CACHE_IDB_NAME = 'local_asset_cache_idb_v1';
 const ASSET_CACHE_IDB_STORE = 'handles';
 const ASSET_CACHE_ROOT_KEY = 'asset_cache_root_dir';
 const ASSET_CACHE_SUBDIR = 'backlink-collector-cache';
+/** 预览用 objectURL 缓存：避免反复读盘；每次重新渲染会清理 */
+const assetPreviewObjectUrls = new Map();
 
 function openAssetCacheIDB() {
   return new Promise((resolve, reject) => {
@@ -129,6 +131,61 @@ async function buildLocalAssetRefForSite(siteId, kind, blob, mimeHint) {
   };
 }
 
+function revokeAllAssetPreviewObjectUrls() {
+  try {
+    for (const url of assetPreviewObjectUrls.values()) {
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    }
+  } finally {
+    assetPreviewObjectUrls.clear();
+  }
+}
+
+function sanitizeRelPath(relPath) {
+  const clean = String(relPath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\0/g, '');
+  const parts = clean.split('/').filter(Boolean);
+  const safe = [];
+  for (const p of parts) {
+    if (p === '.' || p === '..') continue;
+    safe.push(p);
+  }
+  return safe.join('/');
+}
+
+async function resolveRelPathFileHandleInCache(rootHandle, relPath) {
+  const clean = sanitizeRelPath(relPath);
+  const parts = clean.split('/').filter(Boolean);
+  if (!parts.length) throw new Error('relPath 为空');
+  const baseDir = await rootHandle.getDirectoryHandle(ASSET_CACHE_SUBDIR, { create: false });
+  let dir = baseDir;
+  for (let i = 0; i < parts.length - 1; i++) {
+    dir = await dir.getDirectoryHandle(parts[i], { create: false });
+  }
+  return await dir.getFileHandle(parts[parts.length - 1], { create: false });
+}
+
+async function assetCacheReadAsObjectUrl(relPath) {
+  const key = String(relPath || '');
+  if (!key) return null;
+  if (assetPreviewObjectUrls.has(key)) return assetPreviewObjectUrls.get(key);
+
+  const root = await assetCacheGetRootHandle();
+  if (!root) return null;
+
+  // 预览只读即可；若无权限则返回 null
+  const perm = await root.queryPermission?.({ mode: 'read' });
+  if (perm && perm !== 'granted') return null;
+
+  const fileHandle = await resolveRelPathFileHandleInCache(root, relPath);
+  const file = await fileHandle.getFile();
+  const url = URL.createObjectURL(file);
+  assetPreviewObjectUrls.set(key, url);
+  return url;
+}
+
 async function renderAssetCacheStatus() {
   const el = document.getElementById('assetCacheStatus');
   if (!el) return;
@@ -145,7 +202,22 @@ async function renderAssetCacheStatus() {
     }
     const perm = await root.queryPermission?.({ mode: 'readwrite' });
     const p = perm || 'unknown';
-    el.innerHTML = `<p><strong>状态</strong>：已启用 · 目录权限 <code>${escapeHtml(p)}</code></p>`;
+    const stats = {
+      total: (sites || []).length,
+      logo: (sites || []).filter((s) => s?.logoAsset?.relPath).length,
+      screenshot: (sites || []).filter((s) => s?.screenshotAsset?.relPath).length
+    };
+    const first = (sites || []).slice(0, 8).map((s) => {
+      const logo = s?.logoAsset?.relPath ? `<code>${escapeHtml(s.logoAsset.relPath)}</code>` : '<span class="muted">—</span>';
+      const shot = s?.screenshotAsset?.relPath ? `<code>${escapeHtml(s.screenshotAsset.relPath)}</code>` : '<span class="muted">—</span>';
+      const name = escapeHtml(s?.siteName || s?.siteUrl || s?.id || '—');
+      return `<li><strong>${name}</strong><div>logo: ${logo}</div><div>screenshot: ${shot}</div></li>`;
+    }).join('');
+    el.innerHTML =
+      `<p><strong>状态</strong>：已启用 · 目录权限 <code>${escapeHtml(p)}</code> · 根目录 <code>${escapeHtml(root.name || '—')}</code></p>` +
+      `<p><strong>引用统计</strong>：站点 ${stats.total} 个 · 有 logo 引用 ${stats.logo} 个 · 有 screenshot 引用 ${stats.screenshot} 个</p>` +
+      `<p class="muted">缓存文件实际位于：<code>${escapeHtml(root.name || 'ROOT')}/${ASSET_CACHE_SUBDIR}/</code>（此处展示的是相对路径 relPath）</p>` +
+      (first ? `<ul class="extension-status-list">${first}</ul>` : '');
   } catch (e) {
     el.innerHTML = `<p class="error-text">加载失败：${escapeHtml(e.message || String(e))}</p>`;
   }
@@ -166,6 +238,32 @@ async function pickAssetCacheDirectory() {
   } catch (e) {
     if (String(e?.name || '').includes('Abort')) return;
     showToast('选择失败: ' + (e.message || String(e)), 'error');
+  }
+}
+
+async function openAssetCacheDirectoryInPicker() {
+  if (!window.showDirectoryPicker) {
+    showToast('当前浏览器不支持打开文件夹选择器（showDirectoryPicker 不可用）', 'error');
+    return;
+  }
+  try {
+    const root = await assetCacheGetRootHandle();
+    // 说明：Chrome 扩展无法直接打开 macOS Finder 到绝对路径；
+    // 这里通过 showDirectoryPicker(startIn) 让系统文件夹选择器尽量定位到已选目录。
+    const handle = await window.showDirectoryPicker({
+      mode: 'readwrite',
+      ...(root ? { startIn: root } : {})
+    });
+    if (handle) {
+      await assetCacheSetRootHandle(handle);
+      settings = { ...settings, assetCacheEnabled: true, assetCacheVersion: '1' };
+      await chrome.storage.local.set({ settings });
+      await renderAssetCacheStatus();
+      showToast('已更新缓存文件夹', 'success');
+    }
+  } catch (e) {
+    if (String(e?.name || '').includes('Abort')) return;
+    showToast('打开失败: ' + (e.message || String(e)), 'error');
   }
 }
 
@@ -600,6 +698,9 @@ function renderSitesTab() {
     return;
   }
 
+  // 重新渲染站点列表前清理旧预览 objectURL，避免内存泄露
+  revokeAllAssetPreviewObjectUrls();
+
   elements.sitesList.classList.remove('hidden');
   elements.noSitesHint.classList.add('hidden');
 
@@ -625,12 +726,20 @@ function renderSitesTab() {
             <span class="detail-label">分类:</span>
             <span class="detail-value">${escapeHtml(site.category || '-')}</span>
           </div>
+          <div class="detail-row">
+            <span class="detail-label">Logo 路径:</span>
+            <span class="detail-value text-truncate">${escapeHtml(site.logoAsset?.relPath || '-')}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">截图路径:</span>
+            <span class="detail-value text-truncate">${escapeHtml(site.screenshotAsset?.relPath || '-')}</span>
+          </div>
         </div>
       </div>
     </div>
   `).join('');
 
-  // 为有 logo 的站点填入预览（若为本地引用：通过 background 读取为 dataURL 仅用于预览）
+  // 为有 logo 的站点填入预览（优先从本地缓存读取为 objectURL；不占用 chrome.storage）
   sites.forEach(async (site) => {
     if (!site) return;
     const wrap = elements.sitesList.querySelector(`.item-card-logo-wrap[data-site-id="${site.id}"]`);
@@ -638,14 +747,9 @@ function renderSitesTab() {
     try {
       const img = document.createElement('img');
       if (site.logoAsset?.relPath) {
-        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.logoAsset.relPath });
-        if (resp?.success && resp.dataUrl) {
-          img.src = resp.dataUrl;
-        } else if (site.logoDataUrl) {
-          img.src = site.logoDataUrl;
-        } else {
-          return;
-        }
+        const objectUrl = await assetCacheReadAsObjectUrl(site.logoAsset.relPath);
+        if (!objectUrl) return;
+        img.src = objectUrl;
       } else if (site.logoDataUrl) {
         img.src = site.logoDataUrl;
       } else {
@@ -1052,7 +1156,7 @@ function openSiteModal(siteId = null) {
 
   openModal();
 
-  // v0/v1：不再从 storage 取 dataURL（避免存储膨胀）；编辑时仅用于预览：优先从本地缓存读取
+  // v0/v1：不再从 storage 取 dataURL（避免存储膨胀）；编辑时仅用于预览：优先从本地缓存读取为 objectURL
   pendingLogoDataUrl = null;
   pendingScreenshotDataUrl = null;
   const logoPreviewEl = document.getElementById('logoPreview');
@@ -1077,9 +1181,9 @@ function openSiteModal(siteId = null) {
   (async () => {
     try {
       if (site?.logoAsset?.relPath) {
-        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.logoAsset.relPath });
-        if (resp?.success && resp.dataUrl) {
-          renderLogoPreview(resp.dataUrl);
+        const objectUrl = await assetCacheReadAsObjectUrl(site.logoAsset.relPath);
+        if (objectUrl) {
+          renderLogoPreview(objectUrl);
           return;
         }
       }
@@ -1105,9 +1209,9 @@ function openSiteModal(siteId = null) {
   (async () => {
     try {
       if (site?.screenshotAsset?.relPath) {
-        const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath: site.screenshotAsset.relPath });
-        if (resp?.success && resp.dataUrl) {
-          renderScreenshotPreview(resp.dataUrl);
+        const objectUrl = await assetCacheReadAsObjectUrl(site.screenshotAsset.relPath);
+        if (objectUrl) {
+          renderScreenshotPreview(objectUrl);
           return;
         }
       }
@@ -2537,6 +2641,8 @@ function setupCacheTabListeners() {
   // Local asset cache buttons
   const pickDirBtn = document.getElementById('pickAssetCacheDirBtn');
   if (pickDirBtn) pickDirBtn.addEventListener('click', pickAssetCacheDirectory);
+  const openDirBtn = document.getElementById('openAssetCacheDirBtn');
+  if (openDirBtn) openDirBtn.addEventListener('click', openAssetCacheDirectoryInPicker);
   const migrateBtn = document.getElementById('migrateAssetCacheBtn');
   if (migrateBtn) migrateBtn.addEventListener('click', migrateLegacySiteImagesToLocalCache);
   const clearAssetBtn = document.getElementById('clearAssetCacheBtn');
