@@ -44,8 +44,14 @@ let commentFormState = {
 
 /** 右键菜单打开时记录的目标元素：在哪个输入框右键就填哪个（用当前站点的该字段值） */
 let lastContextMenuTarget = null;
+let lastContextMenuEvent = null;
 document.addEventListener('contextmenu', (e) => {
+  lastContextMenuEvent = e;
   lastContextMenuTarget = getEditableElementFromTarget(e.target);
+  // 如果没有命中可编辑元素，检查是否是图片上传区域（file input 的外层容器或 label）
+  if (!lastContextMenuTarget) {
+    lastContextMenuTarget = getFileInputNearTarget(e.target);
+  }
 }, true);
 
 /** 评论区常见容器选择器（按优先级尝试） */
@@ -619,7 +625,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     clearMapping().then(() => sendResponse({ success: true }));
     return true; // 异步响应
   } else if (request.action === 'fillSingleField') {
-    fillSingleField(request.standardField)
+    fillSingleField(request.standardField, request.siteData)
       .then(result => sendResponse({ success: true, result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
@@ -3133,20 +3139,68 @@ function getEditableElementFromTarget(target) {
 }
 
 /**
+ * 在右键目标附近查找隐藏的 <input type="file">，用于图片上传区域右键填充
+ * 常见模式：<label for="fileInput">、自定义 div 容器包裹隐藏 input、dropzone 等
+ */
+function getFileInputNearTarget(target) {
+  if (!target || target.nodeType !== Node.ELEMENT_NODE) return null;
+  const el = target;
+
+  // 1. 如果点击的是 <label>，检查其 for 属性指向的 file input
+  if (el.tagName === 'LABEL') {
+    const forId = el.getAttribute('for');
+    if (forId) {
+      const input = document.getElementById(forId);
+      if (input && input.type === 'file') return input;
+    }
+    // label 内部可能直接包含 file input
+    const innerFile = el.querySelector('input[type="file"]');
+    if (innerFile) return innerFile;
+  }
+
+  // 2. 向上查找包含 file input 的容器
+  const container = el.closest?.('[class*="upload"], [class*="dropzone"], [class*="file-input"], [class*="image"], [data-upload], [role="button"]');
+  if (container) {
+    const fileInput = container.querySelector('input[type="file"]');
+    if (fileInput) return fileInput;
+  }
+
+  // 3. 检查 el 自身或直接父级是否包裹了 file input
+  let parent = el.parentElement;
+  for (let i = 0; i < 3 && parent; i++) {
+    const fileInput = parent.querySelector('input[type="file"]');
+    if (fileInput) return fileInput;
+    parent = parent.parentElement;
+  }
+
+  return null;
+}
+
+/**
  * 右键菜单「填充单个字段」：只做一件事 —— 用当前站点（popup 已选）的该字段值，填到右键所在的输入框。
  * 点哪个字段就填哪个字段的 value，无其它逻辑。
  */
-async function fillSingleField(standardField) {
-  const el = lastContextMenuTarget;
+async function fillSingleField(standardField, siteDataFromBg) {
+  let el = lastContextMenuTarget;
   lastContextMenuTarget = null;
+
+  // 图片字段特殊处理：如果没有命中目标元素，尝试在页面上查找 file input
+  const isImageField = standardField === 'logo' || standardField === 'screenshot';
+  if ((!el || !document.contains(el)) && isImageField) {
+    el = findVisibleFileInput();
+    if (el) {
+      console.log(`${TAG} [右键] 图片字段自动定位到 file input:`, el);
+    }
+  }
 
   if (!el || !document.contains(el)) {
     throw new Error('请在要填充的输入框内右键，再选择字段');
   }
 
-  const siteData = await getSiteData(null);
+  // 优先用 background 传来的站点数据，否则自己从 storage 取
+  const siteData = siteDataFromBg || await getSiteData(null);
   if (!siteData) {
-    throw new Error('请先在 popup 中选择当前站点');
+    throw new Error('请先在 sidepanel 中选择当前站点');
   }
 
   let value = getSiteFieldValueForFill(el, standardField, siteData);
@@ -3162,7 +3216,7 @@ async function fillSingleField(standardField) {
     throw new Error(`当前站点的「${standardField}」无内容可填`);
   }
 
-  fillOneElement(el, standardField, value, siteData);
+  await fillOneElementAsync(el, standardField, value, siteData);
   const preview = typeof value === 'string' ? value.slice(0, 60) + (value.length > 60 ? '…' : '') : value;
   console.log(`${TAG} [右键] 已填充 ${standardField}，取值:`, preview);
 
@@ -3181,12 +3235,13 @@ function getSiteFieldValueForFill(element, standardField, siteData) {
   if (standardField === 'commentName') return siteData.siteName || undefined;
   if (standardField === 'commentEmail') return siteData.email || undefined;
   if (standardField === 'commentWebsite') return siteData.siteUrl || undefined;
-  if (standardField === 'logo' && element.type === 'file') {
+  // 图片字段：不再强制要求 element.type === 'file'，以支持自定义上传组件
+  if (standardField === 'logo') {
     if (siteData.logoAsset?.relPath) return { __assetRelPath: siteData.logoAsset.relPath, __assetKind: 'logo' };
     const v = siteData.logoDataUrl || siteData[standardField];
     return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
   }
-  if (standardField === 'screenshot' && element.type === 'file') {
+  if (standardField === 'screenshot') {
     if (siteData.screenshotAsset?.relPath) return { __assetRelPath: siteData.screenshotAsset.relPath, __assetKind: 'screenshot' };
     const v = siteData.screenshotDataUrl || siteData[standardField];
     return (v && typeof v === 'string' && v.startsWith('data:')) ? v : undefined;
@@ -3263,8 +3318,12 @@ function fillOneElement(element, standardField, value, siteData) {
           element.files = dt.files;
           element.dispatchEvent(new Event('input', { bubbles: true }));
           element.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          console.warn(`${TAG} [fillOneElement] 读取 logo 失败:`, resp?.error || '未知错误');
         }
-      }).catch(() => {});
+      }).catch((err) => {
+        console.warn(`${TAG} [fillOneElement] 读取 logo 异常:`, err?.message || err);
+      });
       return;
     }
     fillFileInputWithDataUrl(element, value);
@@ -3280,8 +3339,12 @@ function fillOneElement(element, standardField, value, siteData) {
           element.files = dt.files;
           element.dispatchEvent(new Event('input', { bubbles: true }));
           element.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          console.warn(`${TAG} [fillOneElement] 读取 screenshot 失败:`, resp?.error || '未知错误');
         }
-      }).catch(() => {});
+      }).catch((err) => {
+        console.warn(`${TAG} [fillOneElement] 读取 screenshot 异常:`, err?.message || err);
+      });
       return;
     }
     fillFileInputWithDataUrl(element, value);
@@ -3314,7 +3377,105 @@ function fillOneElement(element, standardField, value, siteData) {
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-/** Quill 编辑器：通过 Quill 实例写入，否则 DOM 改了也可能被覆盖 */
+/**
+ * 异步版 fillOneElement，用于右键菜单填充。
+ * 增强：图片字段支持非 file input 元素（自定义上传组件），使用拖拽模拟作为 fallback。
+ */
+async function fillOneElementAsync(element, standardField, value, siteData) {
+  const isImageField = standardField === 'logo' || standardField === 'screenshot';
+  if (!isImageField) {
+    fillOneElement(element, standardField, value, siteData);
+    return;
+  }
+
+  // ---- 图片字段 ----
+  // 1. 如果目标就是 file input，直接走标准流程
+  if (element.type === 'file') {
+    fillOneElement(element, standardField, value, siteData);
+    return;
+  }
+
+  // 2. 目标不是 file input：尝试在附近查找 hidden file input
+  const fileInput = getFileInputNearTarget(element) || findVisibleFileInput();
+  if (fileInput) {
+    console.log(`${TAG} [右键] ${standardField}: 定位到 file input →`, fileInput);
+    fillOneElement(fileInput, standardField, value, siteData);
+    return;
+  }
+
+  // 3. 没有找到 file input：尝试用拖拽模拟填充到目标元素
+  if (value && typeof value === 'object' && value.__assetRelPath) {
+    const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath });
+    if (resp?.success && resp.arrayBuffer) {
+      const file = new File([resp.arrayBuffer], resp.name || `${standardField}.jpg`, { type: resp.mime || 'image/jpeg' });
+      const dropped = await simulateFileDrop(element, file);
+      if (dropped) {
+        console.log(`${TAG} [右键] ${standardField}: 拖拽模拟成功`);
+        return;
+      }
+    }
+    throw new Error('图片填充失败：找不到文件上传控件，也无法模拟拖拽。请直接点击上传按钮选择文件。');
+  }
+
+  // 4. dataUrl fallback
+  if (typeof value === 'string' && value.startsWith('data:')) {
+    // 没有 file input 可用，尝试创建临时 file input 并触发
+    throw new Error('图片填充失败：找不到文件上传控件。请直接点击上传按钮选择文件。');
+  }
+
+  throw new Error(`图片填充失败：${standardField} 无可用图片数据`);
+}
+
+/**
+ * 在页面中查找可见的 file input（用于图片字段 fallback）
+ */
+function findVisibleFileInput() {
+  const inputs = document.querySelectorAll('input[type="file"]');
+  for (const input of inputs) {
+    // 检查元素或其父级是否可见
+    if (input.offsetWidth > 0 || input.offsetHeight > 0) return input;
+    const parent = input.parentElement;
+    if (parent && (parent.offsetWidth > 0 || parent.offsetHeight > 0)) return input;
+  }
+  // 兜底：返回任何 file input（即使隐藏）
+  return inputs.length > 0 ? inputs[0] : null;
+}
+
+/**
+ * 模拟文件拖拽到目标元素（用于自定义上传组件的 fallback）
+ */
+async function simulateFileDrop(targetElement, file) {
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    const dropEvent = new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dt
+    });
+    // 部分 DragEvent 构造不允许 dataTransfer，需要 polyfill
+    Object.defineProperty(dropEvent, 'dataTransfer', { value: dt, writable: false });
+
+    // 先触发 dragover 再 drop
+    const dragOverEvent = new DragEvent('dragover', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: dt
+    });
+    Object.defineProperty(dragOverEvent, 'dataTransfer', { value: dt, writable: false });
+
+    targetElement.dispatchEvent(dragOverEvent);
+    targetElement.dispatchEvent(dropEvent);
+
+    // 检查是否有反应（简单判断：如果 drop 事件没有被 preventDefault 则认为失败）
+    console.log(`${TAG} [simulateFileDrop] drop 事件已触发到`, targetElement.tagName, targetElement.className);
+    return true;
+  } catch (err) {
+    console.warn(`${TAG} [simulateFileDrop] 失败:`, err?.message || err);
+    return false;
+  }
+}
 function fillQuillEditor(qlEditorEl, text) {
   if (!qlEditorEl) return;
   const container = qlEditorEl.closest?.('.ql-container') || qlEditorEl.parentElement;

@@ -176,34 +176,37 @@ const FILL_FIELD_BLOG_ITEMS = [
 ];
 
 function buildContextMenu() {
-  const contexts = ['page', 'editable'];
+  // 增加 'image' 上下文，确保在图片上传区域右键也能显示菜单
+  const contexts = ['page', 'editable', 'image'];
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: FILL_FIELD_MENU_ID,
-      title: '填充单个字段 (外链提交助手)',
-      contexts
-    });
+    const logErr = () => {
+      if (chrome.runtime.lastError) {
+        console.error('[Background] contextMenus.create error:', chrome.runtime.lastError.message);
+      }
+    };
+    // 一级菜单：直接展示所有字段，无需父级分组
     FILL_FIELD_ITEMS.forEach((item) => {
       chrome.contextMenus.create({
         id: `fill_${item.id}`,
-        parentId: FILL_FIELD_MENU_ID,
-        title: item.title,
+        title: `📋 ${item.title}`,
         contexts
-      });
+      }, logErr);
     });
 
+    // 分隔线
     chrome.contextMenus.create({
-      id: FILL_FIELD_BLOG_MENU_ID,
-      title: '填充单个字段 · Blog 评论 (外链提交助手)',
+      id: 'fill_separator',
+      type: 'separator',
       contexts
-    });
+    }, logErr);
+
+    // Blog 评论相关字段
     FILL_FIELD_BLOG_ITEMS.forEach((item) => {
       chrome.contextMenus.create({
         id: `fill_${item.id}`,
-        parentId: FILL_FIELD_BLOG_MENU_ID,
-        title: item.title,
+        title: `💬 ${item.title}`,
         contexts
-      });
+      }, logErr);
     });
   });
 }
@@ -244,10 +247,24 @@ chrome.runtime.onStartup.addListener(() => {
 buildContextMenu();
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (!info.menuItemId || String(info.menuItemId).indexOf('fill_') !== 0) return;
+  if (!info.menuItemId || String(info.menuItemId).indexOf('fill_') !== 0 || info.menuItemId === 'fill_separator') return;
   const standardField = String(info.menuItemId).replace(/^fill_/, '');
   if (tab?.id) {
-    chrome.tabs.sendMessage(tab.id, { action: 'fillSingleField', standardField }).catch(() => {});
+    // 在 background 端直接读取当前站点数据，传给 content script
+    chrome.storage.local.get(['sites', 'settings'], (result) => {
+      const siteId = result.settings?.currentSiteId;
+      const sites = result.sites || [];
+      const siteData = siteId ? sites.find(s => s.id === siteId) : null;
+      chrome.tabs.sendMessage(tab.id, { action: 'fillSingleField', standardField, siteData: siteData || null })
+        .then(resp => {
+          if (resp?.success) {
+            console.log(`[Background] fillSingleField(${standardField}) OK`);
+          } else {
+            console.warn(`[Background] fillSingleField(${standardField}) failed:`, resp?.error);
+          }
+        })
+        .catch(err => console.warn(`[Background] fillSingleField(${standardField}) error:`, err));
+    });
   }
 });
 
@@ -1296,16 +1313,6 @@ function parseBlogCommentResponse(data) {
     return rawContent.replace(/^["']|["']$/g, '').trim();
   }
   const reasoningContent = thinkingBlocks.map(b => b.thinking || b.text || '').join('');
-  if (reasoningContent) {
-    const extracted = extractCommentFromReasoning(reasoningContent);
-    if (extracted) return extracted;
-  }
-  return '';
-}
-
-  if (rawContent) {
-    return rawContent.replace(/^["']|["']$/g, '').trim();
-  }
   if (reasoningContent) {
     const extracted = extractCommentFromReasoning(reasoningContent);
     if (extracted) return extracted;
