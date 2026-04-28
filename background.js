@@ -101,6 +101,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const FILL_FIELD_MENU_ID = 'nav-submitter-fill-single';
+const FILL_FIELD_BLOG_MENU_ID = 'nav-submitter-fill-blog';
 /** 提交后自动验证：tabId -> { siteUrl }，该 tab 下次 load complete 时触发验证 */
 let pendingVerifyByTab = {};
 const VERIFY_AFTER_LOAD_DELAY_MS = 2500;
@@ -167,6 +168,13 @@ const FILL_FIELD_ITEMS = [
   { id: 'screenshot', title: '界面截图' }
 ];
 
+const FILL_FIELD_BLOG_ITEMS = [
+  { id: 'commentName', title: '评论姓名 (commentName)' },
+  { id: 'commentEmail', title: '评论邮箱 (commentEmail)' },
+  { id: 'commentWebsite', title: '评论网址 (commentWebsite)' },
+  { id: 'comment', title: '评论内容 (comment)' }
+];
+
 function buildContextMenu() {
   const contexts = ['page', 'editable'];
   chrome.contextMenus.removeAll(() => {
@@ -179,6 +187,20 @@ function buildContextMenu() {
       chrome.contextMenus.create({
         id: `fill_${item.id}`,
         parentId: FILL_FIELD_MENU_ID,
+        title: item.title,
+        contexts
+      });
+    });
+
+    chrome.contextMenus.create({
+      id: FILL_FIELD_BLOG_MENU_ID,
+      title: '填充单个字段 · Blog 评论 (外链提交助手)',
+      contexts
+    });
+    FILL_FIELD_BLOG_ITEMS.forEach((item) => {
+      chrome.contextMenus.create({
+        id: `fill_${item.id}`,
+        parentId: FILL_FIELD_BLOG_MENU_ID,
         title: item.title,
         contexts
       });
