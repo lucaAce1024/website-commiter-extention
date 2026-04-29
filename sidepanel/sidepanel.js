@@ -47,6 +47,9 @@ const elements = {
   // 导航站模式
   navSiteSelect: document.getElementById('navSiteSelect'),
   navCurrentSiteUrl: document.getElementById('navCurrentSiteUrl'),
+  navAssetPreview: document.getElementById('navAssetPreview'),
+  navLogoPreview: document.getElementById('navLogoPreview'),
+  navScreenshotPreview: document.getElementById('navScreenshotPreview'),
   navAddSiteLink: document.getElementById('navAddSiteLink'),
   navNoSitesHint: document.getElementById('navNoSitesHint'),
   navPageDomain: document.getElementById('navPageDomain'),
@@ -969,6 +972,41 @@ function updateCurrentSiteUrlDisplay() {
       elements.blogCurrentSiteUrl.classList.add('hidden');
     }
   }
+  // 按需加载 Logo / Screenshot 预览（从本地缓存读取，不占 storage）
+  updateAssetPreview(site);
+}
+
+/** 从本地缓存读取图片并以 dataUrl 形式显示预览（通过 background 中转） */
+async function updateAssetPreview(site) {
+  if (!elements.navAssetPreview) return;
+  const logoImg = elements.navLogoPreview;
+  const screenshotImg = elements.navScreenshotPreview;
+  logoImg.src = '';
+  screenshotImg.src = '';
+
+  if (!site) {
+    elements.navAssetPreview.classList.add('hidden');
+    return;
+  }
+
+  let hasAny = false;
+  const loadAsset = async (relPath, imgEl) => {
+    if (!relPath) return false;
+    try {
+      const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readAsDataUrl', relPath });
+      if (resp?.success && resp.dataUrl) {
+        imgEl.src = resp.dataUrl;
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  };
+
+  const hasLogo = await loadAsset(site.logoAsset?.relPath, logoImg);
+  const hasScreenshot = await loadAsset(site.screenshotAsset?.relPath, screenshotImg);
+  hasAny = hasLogo || hasScreenshot;
+
+  elements.navAssetPreview.classList.toggle('hidden', !hasAny);
 }
 
 // ========== 模式切换 ==========

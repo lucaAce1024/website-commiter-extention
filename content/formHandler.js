@@ -6,6 +6,28 @@
 // Console tag for debugging
 const TAG = '[NavSubmitter]';
 
+/** base64 字符串 → ArrayBuffer（用于从 background 消息还原图片数据） */
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/** 从 assetCache_readFile 响应中提取 File 对象（兼容 base64 和 arrayBuffer 两种格式） */
+function fileFromAssetResponse(resp, defaultName) {
+  if (!resp?.success) return null;
+  let buffer;
+  if (resp.base64) {
+    buffer = base64ToArrayBuffer(resp.base64);
+  } else if (resp.arrayBuffer) {
+    buffer = resp.arrayBuffer;
+  } else {
+    return null;
+  }
+  return new File([buffer], resp.name || defaultName, { type: resp.mime || 'image/jpeg' });
+}
+
 /** 字段填充时间隔离：每填完一个字段后等待的毫秒数，保证同一时间只填充一个字段 */
 const FILL_FIELD_DELAY_MS = 280;
 
@@ -2977,8 +2999,8 @@ async function fillForm(siteId) {
         try {
           if (siteData.logoAsset?.relPath) {
             const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: siteData.logoAsset.relPath });
-            if (resp?.success && resp.arrayBuffer) {
-              const file = new File([resp.arrayBuffer], resp.name || 'logo.jpg', { type: resp.mime || 'image/jpeg' });
+            const file = fileFromAssetResponse(resp, 'logo.jpg');
+            if (file) {
               const dt = new DataTransfer();
               dt.items.add(file);
               element.files = dt.files;
@@ -3006,8 +3028,8 @@ async function fillForm(siteId) {
         try {
           if (siteData.screenshotAsset?.relPath) {
             const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: siteData.screenshotAsset.relPath });
-            if (resp?.success && resp.arrayBuffer) {
-              const file = new File([resp.arrayBuffer], resp.name || 'screenshot.jpg', { type: resp.mime || 'image/jpeg' });
+            const file = fileFromAssetResponse(resp, 'screenshot.jpg');
+            if (file) {
               const dt = new DataTransfer();
               dt.items.add(file);
               element.files = dt.files;
@@ -3177,6 +3199,32 @@ function getFileInputNearTarget(target) {
 }
 
 /**
+ * 根据字段关键词在页面中查找匹配的 file input
+ * 通过 name/id/label 中包含的关键词来定位
+ */
+function findFileInputByFieldHint(standardField) {
+  const hints = {
+    logo: ['icon', 'logo', 'favicon'],
+    screenshot: ['screenshot', 'shot', 'capture', 'preview']
+  };
+  const keywords = hints[standardField];
+  if (!keywords) return null;
+
+  const allFileInputs = document.querySelectorAll('input[type="file"]');
+  for (const input of allFileInputs) {
+    const nameLower = (input.name || '').toLowerCase();
+    const idLower = (input.id || '').toLowerCase();
+    const label = getFieldLabel(input).toLowerCase();
+    const dataField = (input.dataset?.field || '').toLowerCase();
+    const combined = `${nameLower} ${idLower} ${label} ${dataField}`;
+    if (keywords.some(kw => combined.includes(kw))) {
+      return input;
+    }
+  }
+  return null;
+}
+
+/**
  * 右键菜单「填充单个字段」：只做一件事 —— 用当前站点（popup 已选）的该字段值，填到右键所在的输入框。
  * 点哪个字段就填哪个字段的 value，无其它逻辑。
  */
@@ -3187,9 +3235,16 @@ async function fillSingleField(standardField, siteDataFromBg) {
   // 图片字段特殊处理：如果没有命中目标元素，尝试在页面上查找 file input
   const isImageField = standardField === 'logo' || standardField === 'screenshot';
   if ((!el || !document.contains(el)) && isImageField) {
-    el = findVisibleFileInput();
+    // 优先根据字段关键词匹配（如 name 含 "icon" 的 file input 对应 logo 字段）
+    el = findFileInputByFieldHint(standardField);
     if (el) {
-      console.log(`${TAG} [右键] 图片字段自动定位到 file input:`, el);
+      console.log(`${TAG} [右键] ${standardField} 按关键词定位到 file input:`, el.name || el.id);
+    } else {
+      // fallback: 找页面上任意 file input
+      el = findVisibleFileInput();
+      if (el) {
+        console.log(`${TAG} [右键] ${standardField} 自动定位到 file input:`, el);
+      }
     }
   }
 
@@ -3311,8 +3366,8 @@ function fillOneElement(element, standardField, value, siteData) {
     if (value && typeof value === 'object' && value.__assetRelPath) {
       // 右键填充：异步读取本地文件并注入
       chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath }).then((resp) => {
-        if (resp?.success && resp.arrayBuffer) {
-          const file = new File([resp.arrayBuffer], resp.name || 'logo.jpg', { type: resp.mime || 'image/jpeg' });
+        const file = fileFromAssetResponse(resp, 'logo.jpg');
+        if (file) {
           const dt = new DataTransfer();
           dt.items.add(file);
           element.files = dt.files;
@@ -3332,8 +3387,8 @@ function fillOneElement(element, standardField, value, siteData) {
   if (standardField === 'screenshot' && element.type === 'file') {
     if (value && typeof value === 'object' && value.__assetRelPath) {
       chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath }).then((resp) => {
-        if (resp?.success && resp.arrayBuffer) {
-          const file = new File([resp.arrayBuffer], resp.name || 'screenshot.jpg', { type: resp.mime || 'image/jpeg' });
+        const file = fileFromAssetResponse(resp, 'screenshot.jpg');
+        if (file) {
           const dt = new DataTransfer();
           dt.items.add(file);
           element.files = dt.files;
@@ -3406,8 +3461,8 @@ async function fillOneElementAsync(element, standardField, value, siteData) {
   // 3. 没有找到 file input：尝试用拖拽模拟填充到目标元素
   if (value && typeof value === 'object' && value.__assetRelPath) {
     const resp = await chrome.runtime.sendMessage({ action: 'assetCache_readFile', relPath: value.__assetRelPath });
-    if (resp?.success && resp.arrayBuffer) {
-      const file = new File([resp.arrayBuffer], resp.name || `${standardField}.jpg`, { type: resp.mime || 'image/jpeg' });
+    const file = fileFromAssetResponse(resp, `${standardField}.jpg`);
+    if (file) {
       const dropped = await simulateFileDrop(element, file);
       if (dropped) {
         console.log(`${TAG} [右键] ${standardField}: 拖拽模拟成功`);

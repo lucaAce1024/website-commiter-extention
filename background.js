@@ -6,17 +6,21 @@ importScripts('lib/fullAiAgent.js');
 // ========== Local Asset Cache (read-only helpers for content/options) ==========
 const ASSET_CACHE_IDB_NAME = 'local_asset_cache_idb_v1';
 const ASSET_CACHE_IDB_STORE = 'handles';
+const ASSET_CACHE_IDB_BLOB_STORE = 'blobs';
 const ASSET_CACHE_ROOT_KEY = 'asset_cache_root_dir';
 const ASSET_CACHE_SUBDIR = 'backlink-collector-cache';
 
 function openAssetCacheIDB() {
   return new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 1);
+      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 2);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_STORE)) {
           db.createObjectStore(ASSET_CACHE_IDB_STORE);
+        }
+        if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_BLOB_STORE)) {
+          db.createObjectStore(ASSET_CACHE_IDB_BLOB_STORE);
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -51,11 +55,33 @@ async function resolveRelPathFileHandle(rootHandle, relPath) {
   return await dir.getFileHandle(fileName, { create: false });
 }
 
+/** 从 IndexedDB blobs store 读取 */
+async function idbReadBlob(relPath) {
+  const db = await openAssetCacheIDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_BLOB_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_CACHE_IDB_BLOB_STORE).get(relPath);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+
 async function assetCacheReadFileAsArrayBuffer(relPath) {
+  // 优先从 IndexedDB blobs store 读取（扩展重载后数据不丢失）
+  const blob = await idbReadBlob(relPath);
+  if (blob) {
+    const buf = await blob.arrayBuffer();
+    return { name: relPath.split('/').pop(), mime: blob.type || 'application/octet-stream', byteSize: blob.size, arrayBuffer: buf };
+  }
+
+  // fallback: 从文件系统读取（需要权限）
   const root = await assetCacheGetRootHandle();
   if (!root) throw new Error('未设置图片缓存文件夹');
-  const perm = await root.requestPermission?.({ mode: 'read' });
-  if (perm && perm !== 'granted') throw new Error('未授予缓存目录读取权限');
+  let perm = await root.queryPermission?.({ mode: 'read' });
+  if (perm !== 'granted') {
+    perm = await root.requestPermission?.({ mode: 'read' });
+  }
+  if (perm !== 'granted') throw new Error('未授予缓存目录读取权限');
   const fileHandle = await resolveRelPathFileHandle(root, relPath);
   const file = await fileHandle.getFile();
   const buf = await file.arrayBuffer();
@@ -79,7 +105,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const out = await assetCacheReadFileAsArrayBuffer(message.relPath);
-        sendResponse({ success: true, ...out });
+        // ArrayBuffer 无法通过 Chrome 消息传递（JSON 序列化会丢失），转为 base64
+        const bytes = new Uint8Array(out.arrayBuffer);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const base64 = btoa(binary);
+        sendResponse({ success: true, name: out.name, mime: out.mime, byteSize: out.byteSize, base64 });
       } catch (e) {
         sendResponse({ success: false, error: e?.message || String(e) });
       }
@@ -214,27 +248,40 @@ function buildContextMenu() {
 // Initialize default storage on install
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
-    // Initialize default storage structure
-    await chrome.storage.local.set({
+    // 只初始化缺失的字段，保留已有数据（避免覆盖 sites 中的 logoAsset/screenshotAsset 引用）
+    const existing = await chrome.storage.local.get(null);
+    const defaults = {
       sites: [],
       navSites: [],
       fieldMappings: {},
       submissionRecords: {},
-      blogCommentSites: [],         // Blog 评论站点列表（目标 URL）
-      blogCommentFieldMappings: {}, // 评论表单字段映射缓存
-      blogCommentRecords: {},       // 评论提交记录（可选）
+      blogCommentSites: [],
+      blogCommentFieldMappings: {},
+      blogCommentRecords: {},
       settings: {
         currentSiteId: null,
-        llmConfig: {
-          enabled: false,
-          endpoint: '',
-          apiKey: '',
-          model: 'gpt-3.5-turbo'
-        },
+        llmConfig: { enabled: false, endpoint: '', apiKey: '', model: 'gpt-3.5-turbo' },
         autoSubmit: false
       }
-    });
-    console.log('[Background] Extension installed, default storage initialized');
+    };
+    const patch = {};
+    for (const [key, defVal] of Object.entries(defaults)) {
+      if (existing[key] === undefined) {
+        patch[key] = defVal;
+      }
+    }
+    // settings 特殊处理：合并缺失的子字段，不覆盖已有配置
+    if (!existing.settings) {
+      patch.settings = defaults.settings;
+    } else {
+      const merged = { ...defaults.settings, ...existing.settings };
+      merged.llmConfig = { ...defaults.settings.llmConfig, ...(existing.settings.llmConfig || {}) };
+      patch.settings = merged;
+    }
+    if (Object.keys(patch).length > 0) {
+      await chrome.storage.local.set(patch);
+    }
+    console.log('[Background] Extension installed, storage initialized (preserved existing data)');
   }
   buildContextMenu();
 });

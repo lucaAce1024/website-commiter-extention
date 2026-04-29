@@ -22,6 +22,7 @@ const MAX_IMAGE_BYTES = 1024 * 1024; // 1MB
 // 目标：不再把 base64(data URL) 写入 chrome.storage，避免 QUOTA_BYTES exceeded
 const ASSET_CACHE_IDB_NAME = 'local_asset_cache_idb_v1';
 const ASSET_CACHE_IDB_STORE = 'handles';
+const ASSET_CACHE_IDB_BLOB_STORE = 'blobs';
 const ASSET_CACHE_ROOT_KEY = 'asset_cache_root_dir';
 const ASSET_CACHE_SUBDIR = 'backlink-collector-cache';
 /** 预览用 objectURL 缓存：避免反复读盘；每次重新渲染会清理 */
@@ -30,11 +31,15 @@ const assetPreviewObjectUrls = new Map();
 function openAssetCacheIDB() {
   return new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 1);
+      const req = indexedDB.open(ASSET_CACHE_IDB_NAME, 2);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_STORE)) {
           db.createObjectStore(ASSET_CACHE_IDB_STORE);
+        }
+        // v2: 新增 blobs store，将图片 Blob 存入 IndexedDB，扩展重载后无需重新授权即可读取
+        if (!db.objectStoreNames.contains(ASSET_CACHE_IDB_BLOB_STORE)) {
+          db.createObjectStore(ASSET_CACHE_IDB_BLOB_STORE);
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -42,6 +47,28 @@ function openAssetCacheIDB() {
     } catch (e) {
       reject(e);
     }
+  });
+}
+
+/** 将 Blob 存入 IndexedDB blobs store（key = relPath） */
+async function idbSaveBlob(relPath, blob) {
+  const db = await openAssetCacheIDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_BLOB_STORE, 'readwrite');
+    tx.objectStore(ASSET_CACHE_IDB_BLOB_STORE).put(blob, relPath);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve(); // best-effort
+  });
+}
+
+/** 从 IndexedDB blobs store 读取 Blob（key = relPath） */
+async function idbReadBlob(relPath) {
+  const db = await openAssetCacheIDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(ASSET_CACHE_IDB_BLOB_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_CACHE_IDB_BLOB_STORE).get(relPath);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
   });
 }
 
@@ -122,9 +149,14 @@ async function buildLocalAssetRefForSite(siteId, kind, blob, mimeHint) {
   const fileName = `${sanitizeRelPathPart(kind)}.${ext}`;
   await writeBlobToFile(siteDir, fileName, blob);
 
+  const relPath = `sites/${sanitizeRelPathPart(siteId)}/${fileName}`;
+
+  // 同时存入 IndexedDB blobs store，扩展重载后无需重新授权即可读取
+  await idbSaveBlob(relPath, blob);
+
   return {
     kind: 'local-file',
-    relPath: `sites/${sanitizeRelPathPart(siteId)}/${fileName}`,
+    relPath,
     mime,
     byteSize: blob.size,
     updatedAt: new Date().toISOString()
@@ -172,18 +204,33 @@ async function assetCacheReadAsObjectUrl(relPath) {
   if (!key) return null;
   if (assetPreviewObjectUrls.has(key)) return assetPreviewObjectUrls.get(key);
 
+  // 优先从 IndexedDB blobs store 读取（扩展重载后数据不丢失，无需文件系统权限）
+  const blob = await idbReadBlob(key);
+  if (blob) {
+    const url = URL.createObjectURL(blob);
+    assetPreviewObjectUrls.set(key, url);
+    return url;
+  }
+
+  // fallback: 从文件系统读取
   const root = await assetCacheGetRootHandle();
   if (!root) return null;
-
-  // 预览只读即可；若无权限则返回 null
-  const perm = await root.queryPermission?.({ mode: 'read' });
-  if (perm && perm !== 'granted') return null;
-
-  const fileHandle = await resolveRelPathFileHandleInCache(root, relPath);
-  const file = await fileHandle.getFile();
-  const url = URL.createObjectURL(file);
-  assetPreviewObjectUrls.set(key, url);
-  return url;
+  try {
+    let perm = await root.queryPermission?.({ mode: 'read' });
+    if (perm !== 'granted') {
+      perm = await root.requestPermission?.({ mode: 'read' });
+    }
+    if (perm !== 'granted') return null;
+    const fileHandle = await resolveRelPathFileHandleInCache(root, relPath);
+    const file = await fileHandle.getFile();
+    const url = URL.createObjectURL(file);
+    // 回填到 IndexedDB，下次就不需要文件系统权限了
+    await idbSaveBlob(key, file);
+    assetPreviewObjectUrls.set(key, url);
+    return url;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function renderAssetCacheStatus() {
@@ -197,7 +244,7 @@ async function renderAssetCacheStatus() {
       return;
     }
     if (!root) {
-      el.innerHTML = '<p><strong>状态</strong>：已启用但未选择缓存文件夹（请点击“选择缓存文件夹”）</p>';
+      el.innerHTML = '<p><strong>状态</strong>：已启用但未选择缓存文件夹（请点击”选择缓存文件夹”）</p>';
       return;
     }
     const perm = await root.queryPermission?.({ mode: 'readwrite' });
@@ -208,19 +255,52 @@ async function renderAssetCacheStatus() {
       screenshot: (sites || []).filter((s) => s?.screenshotAsset?.relPath).length
     };
     const first = (sites || []).slice(0, 8).map((s) => {
-      const logo = s?.logoAsset?.relPath ? `<code>${escapeHtml(s.logoAsset.relPath)}</code>` : '<span class="muted">—</span>';
-      const shot = s?.screenshotAsset?.relPath ? `<code>${escapeHtml(s.screenshotAsset.relPath)}</code>` : '<span class="muted">—</span>';
+      const logo = s?.logoAsset?.relPath ? `<code>${escapeHtml(s.logoAsset.relPath)}</code>` : '<span class=”muted”>—</span>';
+      const shot = s?.screenshotAsset?.relPath ? `<code>${escapeHtml(s.screenshotAsset.relPath)}</code>` : '<span class=”muted”>—</span>';
       const name = escapeHtml(s?.siteName || s?.siteUrl || s?.id || '—');
       return `<li><strong>${name}</strong><div>logo: ${logo}</div><div>screenshot: ${shot}</div></li>`;
     }).join('');
     el.innerHTML =
       `<p><strong>状态</strong>：已启用 · 目录权限 <code>${escapeHtml(p)}</code> · 根目录 <code>${escapeHtml(root.name || '—')}</code></p>` +
       `<p><strong>引用统计</strong>：站点 ${stats.total} 个 · 有 logo 引用 ${stats.logo} 个 · 有 screenshot 引用 ${stats.screenshot} 个</p>` +
-      `<p class="muted">缓存文件实际位于：<code>${escapeHtml(root.name || 'ROOT')}/${ASSET_CACHE_SUBDIR}/</code>（此处展示的是相对路径 relPath）</p>` +
-      (first ? `<ul class="extension-status-list">${first}</ul>` : '');
+      `<p class=”muted”>缓存文件实际位于：<code>${escapeHtml(root.name || 'ROOT')}/${ASSET_CACHE_SUBDIR}/</code>（此处展示的是相对路径 relPath）</p>` +
+      (first ? `<ul class=”extension-status-list”>${first}</ul>` : '');
   } catch (e) {
-    el.innerHTML = `<p class="error-text">加载失败：${escapeHtml(e.message || String(e))}</p>`;
+    el.innerHTML = `<p class=”error-text”>加载失败：${escapeHtml(e.message || String(e))}</p>`;
   }
+}
+
+/**
+ * 将文件系统中的已有图片迁移到 IndexedDB blobs store（一次性）
+ * 已有 IndexedDB 中对应 key 的文件会跳过
+ */
+async function migrateFilesystemToIdb() {
+  const root = await assetCacheGetRootHandle();
+  if (!root) return 0;
+  let perm = await root.queryPermission?.({ mode: 'read' });
+  if (perm !== 'granted') {
+    perm = await root.requestPermission?.({ mode: 'read' });
+  }
+  if (perm !== 'granted') return 0;
+
+  let migrated = 0;
+  for (const s of (sites || [])) {
+    if (!s) continue;
+    for (const field of ['logoAsset', 'screenshotAsset']) {
+      const relPath = s[field]?.relPath;
+      if (!relPath) continue;
+      // 已存在于 IndexedDB 则跳过
+      const existing = await idbReadBlob(relPath);
+      if (existing) continue;
+      try {
+        const fileHandle = await resolveRelPathFileHandleInCache(root, relPath);
+        const file = await fileHandle.getFile();
+        await idbSaveBlob(relPath, file);
+        migrated++;
+      } catch (_) {}
+    }
+  }
+  return migrated;
 }
 
 async function pickAssetCacheDirectory() {
@@ -433,6 +513,12 @@ async function init() {
   // Load data
   await loadData();
 
+  // 自动迁移：将本地文件夹中的已有图片导入 IndexedDB（幂等，已有则跳过）
+  const migrated = await migrateFilesystemToIdb();
+  if (migrated > 0) {
+    console.log(`[Options] 已迁移 ${migrated} 张图片到 IndexedDB`);
+  }
+
   // Initialize UI
   initTabs();
   renderCurrentTab();
@@ -477,6 +563,8 @@ function cacheElements() {
   elements.restoreMode = document.getElementById('restoreMode');
   elements.backupFileInput = document.getElementById('backupFileInput');
   elements.restoreBackupBtn = document.getElementById('restoreBackupBtn');
+  elements.exportImagesBtn = document.getElementById('exportImagesBtn');
+  elements.importImagesBtn = document.getElementById('importImagesBtn');
   elements.summarySites = document.getElementById('summarySites');
   elements.summaryNavSites = document.getElementById('summaryNavSites');
   elements.summaryRecords = document.getElementById('summaryRecords');
@@ -559,6 +647,8 @@ function setupEventListeners() {
   elements.createBackupBtn?.addEventListener('click', createBackup);
   elements.backupFileInput?.addEventListener('change', onBackupFileSelected);
   elements.restoreBackupBtn?.addEventListener('click', restoreBackup);
+  elements.exportImagesBtn?.addEventListener('click', exportImagesToFolder);
+  elements.importImagesBtn?.addEventListener('click', importImagesFromFolder);
 
   // Settings
   elements.llmEnabled?.addEventListener('change', (e) => {
@@ -1801,6 +1891,139 @@ function mergeById(existing, incoming) {
   return Array.from(map.values());
 }
 
+/** 从 URL 提取域名作为文件夹名（去掉 www. 前缀和端口） */
+function domainFolderName(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '').replace(/:/g, '_');
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+/**
+ * 导出所有站点的 Logo / Screenshot 到用户选择的文件夹
+ * 文件夹结构：domain/logo.png, domain/screenshot.png
+ */
+async function exportImagesToFolder() {
+  if (!window.showDirectoryPicker) {
+    showToast('当前浏览器不支持选择文件夹（需要 Chrome 86+）', 'error');
+    return;
+  }
+  const sitesWithImages = (sites || []).filter(s => s && (s.logoAsset?.relPath || s.screenshotAsset?.relPath));
+  if (!sitesWithImages.length) {
+    showToast('没有可导出的图片', 'warning');
+    return;
+  }
+  try {
+    const outDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+    let exported = 0;
+    for (const site of sitesWithImages) {
+      const folder = domainFolderName(site.siteUrl || site.id);
+      const siteDir = await outDir.getDirectoryHandle(folder, { create: true });
+      // 导出 Logo
+      if (site.logoAsset?.relPath) {
+        const blob = await idbReadBlob(site.logoAsset.relPath);
+        if (blob) {
+          const ext = guessImageExt(blob.type);
+          const fh = await siteDir.getFileHandle(`logo.${ext}`, { create: true });
+          const w = await fh.createWritable();
+          await w.write(blob);
+          await w.close();
+          exported++;
+        }
+      }
+      // 导出 Screenshot
+      if (site.screenshotAsset?.relPath) {
+        const blob = await idbReadBlob(site.screenshotAsset.relPath);
+        if (blob) {
+          const ext = guessImageExt(blob.type);
+          const fh = await siteDir.getFileHandle(`screenshot.${ext}`, { create: true });
+          const w = await fh.createWritable();
+          await w.write(blob);
+          await w.close();
+          exported++;
+        }
+      }
+    }
+    showToast(`已导出 ${exported} 张图片到 ${outDir.name}/`, 'success');
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      showToast('导出图片失败: ' + e.message, 'error');
+    }
+  }
+}
+
+/**
+ * 从用户选择的文件夹中导入图片（补全 Logo / Screenshot）
+ * 期望文件夹结构：domain/logo.png, domain/screenshot.png
+ * 按域名匹配到已有站点，将图片写入 IndexedDB 并更新站点引用
+ */
+async function importImagesFromFolder() {
+  if (!window.showDirectoryPicker) {
+    showToast('当前浏览器不支持选择文件夹（需要 Chrome 86+）', 'error');
+    return;
+  }
+  try {
+    const srcDir = await window.showDirectoryPicker({ mode: 'read' });
+    let imported = 0;
+    // 建立域名 → site 的映射
+    const domainMap = new Map();
+    for (const s of (sites || [])) {
+      if (!s) continue;
+      const domain = domainFolderName(s.siteUrl || '');
+      if (domain && domain !== 'unknown') {
+        domainMap.set(domain, s);
+      }
+    }
+    // 遍历用户选择的文件夹中的子目录
+    for await (const entry of srcDir.values()) {
+      if (entry.kind !== 'directory') continue;
+      const folderName = entry.name;
+      const site = domainMap.get(folderName);
+      if (!site) continue;
+      // 遍历子目录中的文件
+      for await (const fileEntry of entry.values()) {
+        if (fileEntry.kind !== 'file') continue;
+        const name = fileEntry.name.toLowerCase();
+        const isLogo = name.startsWith('logo.');
+        const isScreenshot = name.startsWith('screenshot.');
+        if (!isLogo && !isScreenshot) continue;
+        try {
+          const file = await fileEntry.getFile();
+          if (!file.type.startsWith('image/')) continue;
+          const kind = isLogo ? 'logo' : 'screenshot';
+          const relPath = `sites/${sanitizeRelPathPart(site.id)}/${sanitizeRelPathPart(kind)}.${guessImageExt(file.type)}`;
+          // 存入 IndexedDB
+          await idbSaveBlob(relPath, file);
+          // 更新站点引用
+          site[kind === 'logo' ? 'logoAsset' : 'screenshotAsset'] = {
+            kind: 'local-file',
+            relPath,
+            mime: file.type,
+            byteSize: file.size,
+            updatedAt: new Date().toISOString()
+          };
+          imported++;
+        } catch (_) {}
+      }
+    }
+    if (imported > 0) {
+      // 保存更新后的 sites 到 chrome.storage
+      await chrome.storage.local.set({ sites });
+      revokeAllAssetPreviewObjectUrls();
+      renderCurrentTab();
+      showToast(`已导入 ${imported} 张图片`, 'success');
+    } else {
+      showToast('未找到匹配的图片文件（文件夹名需与站点域名一致）', 'warning');
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      showToast('导入图片失败: ' + e.message, 'error');
+    }
+  }
+}
+
 /**
  * LLM provider change：切换提供商时更新端点并只展示该提供商的模型列表
  */
@@ -2112,6 +2335,11 @@ const AUTO_COLLECT_TASK_KEY = 'autoCollectTask';
  */
 async function renderCacheTab() {
   await renderAssetCacheStatus();
+  // 自动迁移文件系统图片到 IndexedDB（已有则跳过，幂等）
+  const count = await migrateFilesystemToIdb();
+  if (count > 0) {
+    console.log(`[Options] 已迁移 ${count} 张图片到 IndexedDB`);
+  }
   await renderExtensionExploreTaskStatus();
 
   // Load WHOIS cache
