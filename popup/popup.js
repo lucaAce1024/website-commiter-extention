@@ -78,6 +78,8 @@ let pageState = null;
 let sites = [];
 let currentSiteId = null;
 let llmEnabled = false;
+/** 飞书多维表格：至少需配置 App ID，AI 智能识别按钮才可用 */
+let feishuAppIdConfigured = false;
 let currentMode = 'nav'; // 'nav' | 'blog'
 let commentPageState = null;
 
@@ -150,7 +152,7 @@ async function tryShowLastVerifyResult() {
  */
 async function loadSites() {
   try {
-    const result = await chrome.storage.local.get(['sites', 'settings', 'popupMode']);
+    const result = await chrome.storage.local.get(['sites', 'settings', 'popupMode', 'feishuConfig', 'feishuCredentials']);
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
     if (result.popupMode === 'blog' || result.popupMode === 'nav') {
@@ -163,6 +165,11 @@ async function loadSites() {
     // 检查 LLM 是否启用
     const llmConfig = result.settings?.llmConfig;
     llmEnabled = !!(llmConfig?.enabled && llmConfig?.apiKey);
+
+    const feishuCfg = result.feishuConfig || {};
+    const legacyCreds = result.feishuCredentials || {};
+    const appIdRaw = feishuCfg.appId || legacyCreds.feishuAppId || '';
+    feishuAppIdConfigured = !!(appIdRaw && String(appIdRaw).trim());
 
     // Populate site select
     populateSiteSelect();
@@ -296,11 +303,8 @@ function updateFormStatus() {
   // 主按钮「自动识别并填充」：有选中站点即可用，点击后会先识别再填充
   elements.fillFormBtn.disabled = !currentSiteId;
 
-  // AI 按钮：需要配置 LLM 且有选中站点
-  elements.aiFillFormBtn.disabled = !currentSiteId || !llmEnabled;
-  if (!llmEnabled) {
-    elements.aiFillFormBtn.title = '请在设置中启用 LLM 并配置 GLM API Key';
-  }
+  // AI 按钮：需选中站点 + 飞书 App ID + LLM API
+  applyAiFillFormBtnUi();
 
   // If has form but not recognized
   if (pageState.hasForm && !pageState.fieldMappings) {
@@ -393,8 +397,26 @@ function updateFormStatusFromDetect(detectResult) {
     elements.recognitionStatus.textContent = '待识别';
     elements.fieldCount.textContent = detectResult.inputCount + ' 个输入项';
     elements.fillFormBtn.disabled = !currentSiteId;
+    applyAiFillFormBtnUi();
   } else {
     showNoForm();
+  }
+}
+
+/**
+ * 「AI 智能识别」：无站点 / 未配飞书 App ID / 未配 LLM 时禁用，并设置对应 title
+ */
+function applyAiFillFormBtnUi() {
+  const ready = !!(currentSiteId && llmEnabled && feishuAppIdConfigured);
+  elements.aiFillFormBtn.disabled = !ready;
+  if (!currentSiteId) {
+    elements.aiFillFormBtn.title = '请先选择一个站点';
+  } else if (!feishuAppIdConfigured) {
+    elements.aiFillFormBtn.title = '请在设置中配置飞书 App ID';
+  } else if (!llmEnabled) {
+    elements.aiFillFormBtn.title = '请在设置中启用 LLM 并配置 API Key';
+  } else {
+    elements.aiFillFormBtn.title = '使用 AI 智能识别表单字段（需已配置飞书 App ID 与 LLM API）';
   }
 }
 
@@ -405,6 +427,8 @@ function showNoForm() {
   elements.formStatus.classList.add('hidden');
   elements.noFormHint.classList.remove('hidden');
   elements.fillFormBtn.disabled = true;
+  elements.aiFillFormBtn.disabled = true;
+  elements.aiFillFormBtn.title = '当前页面未检测到可填表单';
   updateFieldFillList();
 }
 
@@ -723,6 +747,11 @@ function setupEventListeners() {
       return;
     }
 
+    if (!feishuAppIdConfigured) {
+      showWarning('请先在设置中配置飞书 App ID');
+      return;
+    }
+
     if (!llmEnabled) {
       showWarning('请先在设置中启用 LLM 并配置 GLM API Key');
       return;
@@ -790,8 +819,13 @@ function setupEventListeners() {
       console.error('[Popup] AI recognize or fill error:', error);
       showError(error?.message?.includes('Receiving end') ? '无法在此页面使用（请打开普通网页）' : '操作失败: ' + error.message);
     } finally {
-      elements.aiFillFormBtn.disabled = false;
       elements.aiFillFormBtn.innerHTML = '<span class="btn-icon">🤖</span> AI 智能识别';
+      if (pageState) {
+        updateFormStatus();
+      } else {
+        elements.aiFillFormBtn.disabled = true;
+        elements.aiFillFormBtn.title = '当前页面未检测到可填表单';
+      }
     }
   });
 

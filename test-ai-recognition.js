@@ -141,6 +141,10 @@ test('llmEnabled 状态变量', () => {
   assert(popupJs.includes('let llmEnabled = false'), '缺少 llmEnabled 状态变量');
 });
 
+test('feishuAppIdConfigured 状态（AI 按钮依赖飞书 App ID）', () => {
+  assert(popupJs.includes('feishuAppIdConfigured'), '缺少 feishuAppIdConfigured 状态或与飞书联动的 AI 按钮逻辑');
+});
+
 test('AI 按钮事件监听器', () => {
   assert(popupJs.includes("elements.aiFillFormBtn.addEventListener('click'"), '缺少 AI 按钮事件监听器');
 });

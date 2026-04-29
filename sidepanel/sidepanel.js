@@ -231,6 +231,8 @@ let currentTab = null;
 let sites = [];
 let currentSiteId = null;
 let llmEnabled = false;
+/** 飞书：至少需配置 App ID，AI 智能识别按钮才可用 */
+let feishuAppIdConfigured = false;
 let currentMode = 'nav'; // 默认为导航站模式
 let pageState = null; // 导航站表单状态
 let commentPageState = null;
@@ -848,7 +850,7 @@ function setupTabChangeListener() {
 
 async function loadSites() {
   try {
-    const result = await chrome.storage.local.get(['sites', 'settings', 'sidePanelMode']);
+    const result = await chrome.storage.local.get(['sites', 'settings', 'sidePanelMode', 'feishuConfig', 'feishuCredentials']);
     sites = result.sites || [];
     currentSiteId = result.settings?.currentSiteId;
 
@@ -870,6 +872,11 @@ async function loadSites() {
     // 检查 LLM 是否启用
     const llmConfig = result.settings?.llmConfig;
     llmEnabled = !!(llmConfig?.enabled && llmConfig?.apiKey);
+
+    const feishuCfg = result.feishuConfig || {};
+    const legacyCreds = result.feishuCredentials || {};
+    const appIdRaw = feishuCfg.appId || legacyCreds.feishuAppId || '';
+    feishuAppIdConfigured = !!(appIdRaw && String(appIdRaw).trim());
 
     // 更新站点下拉框
     syncNavSiteSelect();
@@ -2980,12 +2987,9 @@ function updateNavFormStatus() {
     elements.navFillFormBtn.disabled = !currentSiteId;
   }
 
-  // AI 按钮
+  // AI 按钮：需选中站点 + 飞书 App ID + LLM API
   if (elements.navAiFillFormBtn) {
-    elements.navAiFillFormBtn.disabled = !currentSiteId || !llmEnabled;
-    if (!llmEnabled) {
-      elements.navAiFillFormBtn.title = '请在设置中启用 LLM 并配置 GLM API Key';
-    }
+    applyNavAiFillFormBtnUi();
   }
 
   // 如果有表单但未识别
@@ -3005,8 +3009,25 @@ function updateNavFormStatusFromDetect(detectResult) {
     if (elements.navRecognitionStatus) elements.navRecognitionStatus.textContent = '待识别';
     if (elements.navFieldCount) elements.navFieldCount.textContent = detectResult.inputCount + ' 个输入项';
     if (elements.navFillFormBtn) elements.navFillFormBtn.disabled = !currentSiteId;
+    applyNavAiFillFormBtnUi();
   } else {
     showNavNoForm();
+  }
+}
+
+/** 「AI 智能识别」：无站点 / 未配飞书 App ID / 未配 LLM 时禁用 */
+function applyNavAiFillFormBtnUi() {
+  if (!elements.navAiFillFormBtn) return;
+  const ready = !!(currentSiteId && llmEnabled && feishuAppIdConfigured);
+  elements.navAiFillFormBtn.disabled = !ready;
+  if (!currentSiteId) {
+    elements.navAiFillFormBtn.title = '请先选择一个站点';
+  } else if (!feishuAppIdConfigured) {
+    elements.navAiFillFormBtn.title = '请在设置中配置飞书 App ID';
+  } else if (!llmEnabled) {
+    elements.navAiFillFormBtn.title = '请在设置中启用 LLM 并配置 API Key';
+  } else {
+    elements.navAiFillFormBtn.title = '使用 AI 智能识别表单字段（需已配置飞书 App ID 与 LLM API）';
   }
 }
 
@@ -3014,7 +3035,10 @@ function showNavNoForm() {
   if (elements.navFormStatus) elements.navFormStatus.classList.add('hidden');
   if (elements.navNoFormHint) elements.navNoFormHint.classList.remove('hidden');
   if (elements.navFillFormBtn) elements.navFillFormBtn.disabled = true;
-  if (elements.navAiFillFormBtn) elements.navAiFillFormBtn.disabled = true;
+  if (elements.navAiFillFormBtn) {
+    elements.navAiFillFormBtn.disabled = true;
+    elements.navAiFillFormBtn.title = '当前页面未检测到可填表单';
+  }
   updateNavFieldFillList();
 }
 
@@ -3708,6 +3732,11 @@ function setupEventListeners() {
       return;
     }
 
+    if (!feishuAppIdConfigured) {
+      showNavMessage('请先在设置中配置飞书 App ID', 'warning');
+      return;
+    }
+
     if (!llmEnabled) {
       showNavMessage('请先在设置中启用 LLM 并配置 GLM API Key', 'warning');
       return;
@@ -3775,8 +3804,13 @@ function setupEventListeners() {
       console.error('[SidePanel] AI recognize or fill error:', error);
       showNavMessage(error?.message?.includes('Receiving end') ? '无法在此页面使用（请打开普通网页）' : '操作失败: ' + error.message, 'error');
     } finally {
-      elements.navAiFillFormBtn.disabled = false;
       elements.navAiFillFormBtn.innerHTML = '<span class="btn-icon">🤖</span> AI 智能识别';
+      if (pageState) {
+        updateNavFormStatus();
+      } else if (elements.navAiFillFormBtn) {
+        elements.navAiFillFormBtn.disabled = true;
+        elements.navAiFillFormBtn.title = '当前页面未检测到可填表单';
+      }
     }
   });
 
@@ -4909,6 +4943,13 @@ function setupEventListeners() {
   // 监听 storage 变更
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
+
+    if (changes.feishuConfig || changes.feishuCredentials || changes.settings) {
+      loadSites().then(() => {
+        if (currentMode === 'nav' && pageState) updateNavFormStatus();
+      });
+    }
+
     if (currentMode !== 'blog' || !currentTab) return;
     const cacheKey = getCommentCacheKeyForTab(currentTab);
     if (!cacheKey) return;
