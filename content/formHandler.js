@@ -3060,6 +3060,22 @@ async function fillForm(siteId) {
       // Website URL：根据输入框是否已有 https:// 前缀动态决定填完整 URL 还是仅填域名+路径
       if (mapping.standardField === 'siteUrl') {
         value = getUrlValueForInput(element, value);
+        // 追加 utm_source 参数：值为当前所在页面的域名（去掉 www.）
+        try {
+          const currentDomain = (pageState.domain || window.location.hostname).replace(/^www\./, '');
+          if (currentDomain) {
+            const urlObj = new URL(value.startsWith('http') ? value : 'https://' + value);
+            urlObj.searchParams.set('utm_source', currentDomain);
+            // 还原为与原始 value 相同的格式（有无协议前缀）
+            if (value.startsWith('http')) {
+              value = urlObj.toString();
+            } else {
+              value = urlObj.hostname + urlObj.pathname + urlObj.search;
+            }
+          }
+        } catch (_) {
+          // URL 解析失败时不追加参数，保持原值
+        }
       }
 
       // longDescription/Introduction：只填真正的 textarea；若当前是 wrapper 或未找到，用 label 备用查找
