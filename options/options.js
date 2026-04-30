@@ -9,6 +9,7 @@ let sites = [];
 let navSites = [];
 let blogCommentSites = [];
 let fieldMappings = {};
+let blogCommentFieldMappings = {};
 let settings = {};
 let feishuConfig = {};
 /** 当前编辑中待保存的 Logo 图片（data URL），用于文件上传类表单项 */
@@ -710,6 +711,7 @@ async function loadData() {
   navSites = result.navSites || [];
   blogCommentSites = result.blogCommentSites || [];
   fieldMappings = result.fieldMappings || {};
+  blogCommentFieldMappings = result.blogCommentFieldMappings || {};
   settings = result.settings || {
     llmConfig: { enabled: false, endpoint: '', apiKey: '', model: '' },
     autoSubmit: false
@@ -720,7 +722,7 @@ async function loadData() {
   elements.summarySites.textContent = sites.length;
   elements.summaryNavSites.textContent = navSites.length;
   elements.summaryRecords.textContent = Object.keys(result.submissionRecords || {}).length;
-  elements.summaryMappings.textContent = Object.keys(fieldMappings).length;
+  elements.summaryMappings.textContent = Object.keys(fieldMappings).length + Object.keys(blogCommentFieldMappings).length;
 }
 
 /**
@@ -963,12 +965,20 @@ function renderBlogSitesTab() {
 }
 
 /**
- * Render mappings tab
+ * Render mappings tab（合并 nav + blog 类型缓存）
  */
 function renderMappingsTab() {
-  const domains = Object.keys(fieldMappings);
+  // 合并 nav 和 blog 映射为统一列表
+  const allEntries = [];
 
-  if (domains.length === 0) {
+  for (const [key, val] of Object.entries(fieldMappings)) {
+    allEntries.push({ cacheKey: key, type: 'nav', data: val });
+  }
+  for (const [key, val] of Object.entries(blogCommentFieldMappings)) {
+    allEntries.push({ cacheKey: key, type: 'blog', data: val });
+  }
+
+  if (allEntries.length === 0) {
     elements.mappingsList.classList.add('hidden');
     elements.noMappingsHint.classList.remove('hidden');
     return;
@@ -977,40 +987,124 @@ function renderMappingsTab() {
   elements.mappingsList.classList.remove('hidden');
   elements.noMappingsHint.classList.add('hidden');
 
-  elements.mappingsList.innerHTML = domains.map(domain => {
-    const mapping = fieldMappings[domain];
-    const mappingCount = mapping.mappings?.length || 0;
+  elements.mappingsList.innerHTML = allEntries.map(entry => {
+    const { cacheKey, type, data } = entry;
+    const mappings = data.mappings || [];
+    const cachedAt = data.cachedAt ? new Date(data.cachedAt).toLocaleString() : '-';
+
+    // 字段卡片 HTML
+    const fieldCardsHtml = mappings.map((m, idx) => {
+      const fieldName = m.standardField || 'unknown';
+      const confidence = Math.round((m.confidence || 0) * 100);
+      const source = m.source || m.method || 'cache';
+      const xpath = m.xpath || '';
+      const locator = m.locator || null;
+      const locatorDesc = m.locatorDesc || (locator ? formatLocatorSimple(locator) : '');
+      const updatedAt = m.updatedAt || '';
+
+      // locator JSON 字符串
+      const locatorJson = locator ? JSON.stringify(locator, null, 2) : '';
+
+      return `
+        <div class="mapping-field-card" data-expand="${type}-${cacheKey}-${idx}">
+          <div class="mapping-field-summary">
+            <span class="field-name">${escapeHtml(fieldName)}</span>
+            <span class="source-badge ${getSourceBadgeClass(source)}">${escapeHtml(source)}</span>
+            <span class="field-confidence">${confidence}%</span>
+            <span class="expand-arrow">▼</span>
+          </div>
+          <div class="mapping-field-details">
+            ${xpath ? `<div class="detail-item"><span class="detail-key">XPath</span><span class="detail-val"><code>${escapeHtml(xpath)}</code></span></div>` : ''}
+            ${locatorDesc ? `<div class="detail-item"><span class="detail-key">Locator</span><span class="detail-val"><code>${escapeHtml(locatorDesc)}</code></span></div>` : ''}
+            ${locatorJson ? `<div class="detail-item"><span class="detail-key">Locator JSON</span><span class="detail-val"><code>${escapeHtml(locatorJson)}</code></span></div>` : ''}
+            <div class="detail-item"><span class="detail-key">来源</span><span class="detail-val">${escapeHtml(source)}</span></div>
+            ${updatedAt ? `<div class="detail-item"><span class="detail-key">更新时间</span><span class="detail-val">${new Date(updatedAt).toLocaleString()}</span></div>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Blog 类型的额外信息（submitButton、consentCheckboxes）
+    let extraHtml = '';
+    if (type === 'blog') {
+      const submitBtn = data.submitButton;
+      const consentCbs = data.consentCheckboxes;
+
+      if (submitBtn || (consentCbs && consentCbs.length > 0)) {
+        extraHtml = `<div class="mapping-extra-info">
+          <div class="mapping-extra-info-title">Blog 额外信息</div>
+          ${submitBtn ? `<div class="detail-item"><span class="detail-key">提交按钮</span><span class="detail-val"><code>${escapeHtml(formatLocatorSimple(submitBtn))}</code></span></div>` : ''}
+          ${consentCbs && consentCbs.length > 0 ? `<div class="detail-item"><span class="detail-key">确认勾选</span><span class="detail-val">${consentCbs.length} 个复选框</span></div>` : ''}
+        </div>`;
+      }
+    }
 
     return `
       <div class="mapping-card">
         <div class="mapping-header">
-          <h4 class="mapping-title">${escapeHtml(domain)}</h4>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <h4 class="mapping-title">${escapeHtml(cacheKey)}</h4>
+            <span class="mapping-type-badge ${type}">${type === 'nav' ? 'nav' : 'blog'}</span>
+          </div>
           <div class="mapping-actions">
-            <button class="btn-icon" data-action="clear" data-domain="${escapeHtml(domain)}" title="清除缓存">🗑️</button>
+            <button class="btn-icon" data-action="clear" data-key="${escapeHtml(cacheKey)}" data-type="${type}" title="清除缓存">🗑️</button>
           </div>
         </div>
         <div class="mapping-info">
-          <span class="mapping-count">${mappingCount} 个字段映射</span>
-          <span class="mapping-date">${mapping.cachedAt ? new Date(mapping.cachedAt).toLocaleString() : '-'}</span>
+          <span class="mapping-count">${mappings.length} 个字段映射</span>
+          <span class="mapping-date">${cachedAt}</span>
         </div>
-        <div class="mapping-fields">
-          ${mapping.mappings?.map(m => `
-            <div class="mapping-field">
-              <span class="field-name">${escapeHtml(m.standardField || 'unknown')}</span>
-              <span class="field-confidence">${Math.round((m.confidence || 0) * 100)}%</span>
-            </div>
-          `).join('') || ''}
+        <div class="mapping-fields" style="flex-direction:column;gap:6px;">
+          ${fieldCardsHtml}
         </div>
+        ${extraHtml}
       </div>
     `;
   }).join('');
 
-  // Add event listeners
-  elements.mappingsList.querySelectorAll('[data-action="clear"]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      clearMapping(e.target.dataset.domain);
+  // 字段卡片展开/折叠事件
+  elements.mappingsList.querySelectorAll('.mapping-field-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      // 防止事件冒泡到清除按钮
+      if (e.target.closest('[data-action="clear"]')) return;
+      card.classList.toggle('expanded');
     });
   });
+
+  // 清除单个缓存事件
+  elements.mappingsList.querySelectorAll('[data-action="clear"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const key = e.currentTarget.dataset.key;
+      const type = e.currentTarget.dataset.type;
+      clearMapping(key, type);
+    });
+  });
+}
+
+/**
+ * 根据来源返回 source-badge 的 CSS 类名
+ */
+function getSourceBadgeClass(source) {
+  const s = (source || '').toLowerCase();
+  if (s.includes('manual')) return 'manual';
+  if (s.includes('ai') || s.includes('oneshot') || s.includes('llm')) return 'ai';
+  if (s.includes('keyword')) return 'keyword';
+  return 'cache';
+}
+
+/**
+ * 简单格式化 locator 为可读字符串
+ */
+function formatLocatorSimple(locator) {
+  if (!locator) return '';
+  switch (locator.type) {
+    case 'id': return `id="${locator.value}"`;
+    case 'name': return `name="${locator.value}"`;
+    case 'data': return `data="${locator.value}"`;
+    case 'xpath': return `xpath: ${locator.value}`;
+    case 'index': return `index: ${locator.parentTag || ''}[${locator.parentIndex ?? 0}] > [${locator.fieldIndex ?? 0}]`;
+    default: return JSON.stringify(locator);
+  }
 }
 
 /**
@@ -1719,14 +1813,15 @@ async function importBlogSites() {
 }
 
 /**
- * Clear all mappings
+ * Clear all mappings（nav + blog）
  */
 async function clearAllMappings() {
-  if (!confirm('确定要清除所有识别缓存吗？')) return;
+  if (!confirm('确定要清除所有识别缓存（导航站 + Blog 评论）吗？')) return;
 
   try {
-    await chrome.storage.local.set({ fieldMappings: {} });
+    await chrome.storage.local.set({ fieldMappings: {}, blogCommentFieldMappings: {} });
     fieldMappings = {};
+    blogCommentFieldMappings = {};
     renderMappingsTab();
     elements.summaryMappings.textContent = '0';
     showToast('缓存已清除', 'success');
@@ -1736,16 +1831,21 @@ async function clearAllMappings() {
 }
 
 /**
- * Clear single mapping
+ * Clear single mapping（支持 nav 和 blog 类型）
  */
-async function clearMapping(domain) {
-  if (!confirm(`确定要清除 ${domain} 的识别缓存吗？`)) return;
+async function clearMapping(key, type) {
+  if (!confirm(`确定要清除 ${key} 的识别缓存吗？`)) return;
 
   try {
-    delete fieldMappings[domain];
-    await chrome.storage.local.set({ fieldMappings });
+    if (type === 'blog') {
+      delete blogCommentFieldMappings[key];
+      await chrome.storage.local.set({ blogCommentFieldMappings });
+    } else {
+      delete fieldMappings[key];
+      await chrome.storage.local.set({ fieldMappings });
+    }
     renderMappingsTab();
-    elements.summaryMappings.textContent = Object.keys(fieldMappings).length;
+    elements.summaryMappings.textContent = Object.keys(fieldMappings).length + Object.keys(blogCommentFieldMappings).length;
     showToast('缓存已清除', 'success');
   } catch (error) {
     showToast('清除失败: ' + error.message, 'error');

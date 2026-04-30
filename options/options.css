@@ -531,6 +531,169 @@ body {
   color: var(--text-secondary);
 }
 
+/* Mappings - 类型标签 */
+.mapping-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mapping-type-badge.nav {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.mapping-type-badge.blog {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Mappings - 字段卡片（可展开） */
+.mapping-field-card {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  user-select: none;
+}
+
+.mapping-field-card:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.08);
+}
+
+.mapping-field-card.expanded {
+  border-color: var(--primary-color);
+}
+
+.mapping-field-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mapping-field-summary .field-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mapping-field-summary .field-confidence {
+  color: var(--text-secondary);
+}
+
+/* 来源标签配色 */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.source-badge.manual {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.source-badge.ai {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.source-badge.keyword {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.source-badge.cache {
+  background: var(--bg-color);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+/* 展开箭头 */
+.expand-arrow {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+}
+
+.mapping-field-card.expanded .expand-arrow {
+  transform: rotate(180deg);
+}
+
+/* XPath 详情面板 */
+.mapping-field-details {
+  display: none;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.mapping-field-card.expanded .mapping-field-details {
+  display: block;
+}
+
+.detail-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.detail-item .detail-key {
+  color: var(--text-secondary);
+  min-width: 70px;
+  flex-shrink: 0;
+}
+
+.detail-item .detail-val {
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.detail-item .detail-val code {
+  font-family: 'SF Mono', Monaco, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  background: var(--card-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-color);
+  color: #b45309;
+}
+
+/* Blog 额外信息 */
+.mapping-extra-info {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.mapping-extra-info-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
 /* Backup Section */
 .backup-section {
   margin-bottom: 32px;
